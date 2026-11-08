@@ -162,7 +162,7 @@ let STATE=null, SYMBOL='NIFTY', REPLAY=-1, RUN_ID=null, POLL=null, FILTER='all';
 
 /* ---------------- data ---------------- */
 const FIREBASE_DB = (window.KRONOS_CONFIG && window.KRONOS_CONFIG.firebaseDbUrl)
-  || 'https://kronos-nifty-desk-default-rtdb.firebaseio.com';
+  || 'https://kronos-nifty-desk-default-rtdb.asia-southeast1.firebasedatabase.app';
 
 function stateSources(){
   const db = (FIREBASE_DB || '').replace(/\/$/, '');

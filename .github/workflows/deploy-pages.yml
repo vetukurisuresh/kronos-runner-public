@@ -27,7 +27,7 @@ jobs:
           cp -r dashboard/static/. site/
           # Firebase URL is public metadata, not a secret.
           DB_URL="${{ vars.FIREBASE_DB_URL }}"
-          [ -z "$DB_URL" ] && DB_URL="https://kronos-nifty-desk-default-rtdb.firebaseio.com"
+          [ -z "$DB_URL" ] && DB_URL="https://kronos-nifty-desk-default-rtdb.asia-southeast1.firebasedatabase.app"
           printf 'window.KRONOS_CONFIG = { firebaseDbUrl: "%s" };\n' "$DB_URL" > site/config.js
           ls -la site
 
