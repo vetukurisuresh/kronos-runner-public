@@ -28,7 +28,7 @@ on:
         type: string
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: kronos-nifty-forecast
@@ -100,6 +100,15 @@ jobs:
         run: |
           ls -lh state/ || true
           python -c "import json;d=json.load(open('state/nifty_kronos_state.json'));print('symbols:',list(d['symbols']));print('elapsed:',d['elapsed_seconds'],'s');print('firebase:',d.get('firebase',{}).get('ok'));print('replay:',d['replay_summary'])"
+
+      - name: Publish state snapshot for the Pages mirror
+        run: |
+          cp state/nifty_kronos_state.json dashboard/static/latest_cloud_state.json
+          git config user.name "kronos-runner"
+          git config user.email "actions@users.noreply.github.com"
+          git add dashboard/static/latest_cloud_state.json
+          git commit -m "Update cloud state snapshot" || echo "state unchanged"
+          git push origin HEAD:main || echo "push skipped"
 
       - name: Upload forecast state
         if: always()

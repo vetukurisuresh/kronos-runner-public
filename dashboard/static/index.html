@@ -89,13 +89,14 @@
     .tab{white-space:nowrap;padding:8px 11px;font-size:11px;flex:0 0 auto}
     .badge{font-size:10.5px;padding:5px 9px}
     .spacer{display:none}
-    button.act{font-size:11px;padding:9px 10px;flex:1 1 46%}
+    button.act{font-size:11px;padding:9px 10px;flex:1 1 46%;min-width:0;white-space:normal;line-height:1.25;text-align:center}
     footer{font-size:11px;gap:8px;padding:8px 10px;min-height:56px}
     footer .plan{width:100%;line-height:1.5;font-size:10.5px}
     .sheet{width:100vw;border-left:none}
     #chart{touch-action:pinch-zoom}
     .toast{left:10px;right:10px;transform:none;bottom:72px;text-align:center}
-    body{-webkit-tap-highlight-color:transparent}
+    body{-webkit-tap-highlight-color:transparent;overflow-x:hidden}
+    header,main,footer{min-width:0;max-width:100vw}
   }
 </style>
 </head>
@@ -268,7 +269,8 @@ function draw(){
   const nFut = (fut.length ? fut.length : f.horizon);
   const fanOn = !fut.length;
 
-  const L=10, R=104, T=54, B=26;
+  const narrow = W < 560;
+  const L=8, R=narrow?64:104, T=narrow?46:54, B=26;
   const volH = Math.round((H-T-B)*0.17);
   const priceH = H-T-B-volH-8;
   const plotW = W-L-R;
@@ -434,14 +436,14 @@ function draw(){
     `Paths up: ${f.paths_up} / ${f.samples}`,
     `Regime: ${f.regime}`,
   ];
-  const w=210, h=lines.length*15+16;
+  const w=narrow?168:210, h=lines.length*15+16;
   ctx.fillStyle='rgba(9,13,20,.82)'; ctx.strokeStyle='#1c2432';
   ctx.fillRect(L+4, T+4, w, h); ctx.strokeRect(L+4, T+4, w, h);
   ctx.textAlign='left'; ctx.textBaseline='middle';
   lines.forEach((t,i)=>{
     ctx.fillStyle = i===0?'#4aa3ff':'#9fb0c3';
-    ctx.font = i===0?'bold 11px Consolas,monospace':'11px Consolas,monospace';
-    ctx.fillText(t, L+14, T+16+i*15);
+    ctx.font = i===0 ? `bold ${narrow?10:11}px Consolas,monospace` : `${narrow?10:11}px Consolas,monospace`;
+    ctx.fillText(t, L+10, T+14+i*14);
   });
 }
 
