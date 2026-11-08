@@ -98,6 +98,12 @@
     body{-webkit-tap-highlight-color:transparent;overflow-x:hidden}
     header,main,footer{min-width:0;max-width:100vw}
   }
+  .ribbon{display:flex;gap:8px;overflow-x:auto;padding:6px 10px;border-bottom:1px solid #1a2230;font:10px Consolas,monospace;color:#9fb0c3;scrollbar-width:none}
+  .ribbon::-webkit-scrollbar{display:none}
+  .ribbon .rx{white-space:nowrap;background:#0f1620;border:1px solid #1b2432;border-radius:999px;padding:4px 9px}
+  .ribbon .rx b{color:#4aa3ff;font-weight:600}
+  .ribbon .rx .up{color:#3ddc97}.ribbon .rx .dn{color:#ff5c5c}
+  .pill.mm{border-color:#2a3f5c;color:#cfe1f5}
 </style>
 </head>
 <body>
@@ -121,6 +127,8 @@
   <span id="replayLabel">—</span>
 </div>
 
+<div class="ribbon" id="ribbon"></div>
+
 <main>
   <canvas id="chart"></canvas>
   <div id="empty">
@@ -135,6 +143,7 @@
   <span class="spacer"></span>
   <span class="pill" id="spotPill">spot —</span>
   <span class="pill" id="metaPill">no data</span>
+  <span class="pill mm" id="mmhud">MM —</span>
 </footer>
 
 <div id="modal">
@@ -549,7 +558,50 @@ document.querySelectorAll('.filters button').forEach(b=>{
   });
 });
 window.addEventListener('resize', draw);
+
+/* ---------------- live telemetry ribbon + money HUD ---------------- */
+async function loadLive(){
+  try{
+    const r = await fetch('/api/live',{cache:'no-store'});
+    const j = await r.json();
+    if(!j.ok) return;
+    renderRibbon(j.telemetry||[]);
+    renderMM(j.money||{}, j.traffic||null);
+  }catch(e){ /* offline: keep the last ribbon */ }
+}
+
+function renderRibbon(rows){
+  const host = $('#ribbon');
+  if(!rows.length){ host.innerHTML=''; return; }
+  host.innerHTML = rows.map(r=>{
+    const pct = r.oi_change_pct==null?0:r.oi_change_pct;
+    const cls = pct<0?'dn':'up';
+    const fan = r.paths_up!=null ? ` · ${r.paths_up}/${r.samples} up` : '';
+    return `<span class="rx"><b>${r.label||r.key}</b> ${fmt(r.ltp,2)} · ATP ${fmt(r.atp,2)}`+
+      ` · <span class="${cls}">ΔOI ${pct}%</span> · Δ${r.delta||0} · ${fmt(r.bid,2)}/${fmt(r.ask,2)}${fan}</span>`;
+  }).join('');
+}
+
+function renderMM(m, traffic){
+  const host = $('#mmhud');
+  const capital = m.capital || 100000;
+  const vault = m.vault || 0;
+  const qty = m.qty || 300;
+  const state = m.recovery_active ? 'ACTIVE' : 'CLEAR';
+  host.textContent = `Capital ₹${fmt(capital,0)} · Vault ₹${fmt(vault,0)} · Recovery ${state} · ${qty} Qty`;
+  if(traffic && traffic.light){
+    const badge = $('#traffic');
+    if(!badge.dataset.locked){
+      const cap = traffic.light==='RED' ? 0 : (traffic.light==='YELLOW' ? 2 : 5);
+      badge.textContent = `${traffic.light==='RED'?'🔴':traffic.light==='YELLOW'?'🟡':'🟢'} ${traffic.light} (${cap})`;
+      badge.className = 'badge ' + (traffic.light==='RED'?'red':traffic.light==='YELLOW'?'yellow':'green');
+    }
+  }
+}
+
 loadState();
+loadLive();
+setInterval(loadLive, 5000);
 // The runner streams to Firebase every cycle; poll it every 5s so a phone
 // updates the moment a new forecast lands.
 setInterval(()=>{ if(!RUN_ID) loadState(); }, FIREBASE_DB ? 5000 : 60000);

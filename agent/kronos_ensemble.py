@@ -232,6 +232,19 @@ class KronosTrioEnsemble:
         collect_frames: bool = False,
     ) -> None:
         self.collect_frames = collect_frames
+        #: per-role config, optionally narrowed for CPU-only runs. The 512
+        #: max_context is a ceiling, never a requirement: a shorter lookback
+        #: cuts prefill cost proportionally on the 4-vCPU runner.
+        self.role_config = {role: dict(config) for role, config in ROLE_CONFIG.items()}
+        cap = os.environ.get("KRONOS_LOOKBACK_CAP", "").strip()
+        if cap:
+            try:
+                limit = max(int(cap), 32)
+            except (TypeError, ValueError):
+                limit = 0
+            if limit:
+                for config in self.role_config.values():
+                    config["lookback"] = min(int(config["lookback"]), limit)
         self.frames: dict[str, list] = {}
         #: every draw's close path, and the per-bar median candle of the cone
         self.close_paths: dict[str, list[list[float]]] = {}
@@ -338,7 +351,7 @@ class KronosTrioEnsemble:
             raise EnsembleUnavailable("call load() before forecast()")
         import pandas as pd
 
-        config = ROLE_CONFIG[role]
+        config = self.role_config[role]
         frame, timestamps = self._frame(candles, int(config["lookback"]))
         last_close = float(frame["close"].iloc[-1])
         pred_len = int(config["pred_len"])

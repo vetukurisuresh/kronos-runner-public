@@ -4,6 +4,7 @@
 Serves the dark-theme dashboard plus three tiny JSON endpoints:
 
 * ``GET  /api/state``            — the latest cloud forecast artifact
+* ``GET  /api/live``             — telemetry ribbon + money-manager HUD
 * ``POST /api/run``              — dispatch the 16 GB runner workflow
 * ``GET  /api/run_status?run_id=``— live run status
 * ``POST /api/pull?run_id=``     — download the artifact into state/
@@ -34,6 +35,7 @@ except (AttributeError, ValueError):  # pragma: no cover
 REPO_ROOT = Path(__file__).resolve().parents[1]
 STATIC = Path(__file__).resolve().parent / "static"
 STATE_FILE = REPO_ROOT / "state" / "latest_cloud_state.json"
+LIVE_FILE = REPO_ROOT / "state" / "live_telemetry.json"
 API = "https://api.github.com"
 WORKFLOW_FILE = "cloud-nifty-forecast.yml"
 ARTIFACT_NAME = "nifty-kronos-state"
@@ -179,6 +181,16 @@ class Handler(SimpleHTTPRequestHandler):
             self._json({"ok": True, "state": payload,
                         "mtime": datetime.fromtimestamp(STATE_FILE.stat().st_mtime).isoformat()})
             return
+        if parsed.path == "/api/live":
+            payload: dict = {"ok": True, "telemetry": [], "money": {}, "traffic": None}
+            if LIVE_FILE.is_file():
+                try:
+                    payload.update(json.loads(LIVE_FILE.read_text(encoding="utf-8")))
+                except ValueError:
+                    payload["reason"] = "live telemetry is corrupt"
+            payload.update(self._derived_ribbon())
+            self._json(payload)
+            return
         if parsed.path == "/api/run_status":
             query = parse_qs(parsed.query)
             run_id = (query.get("run_id") or [""])[0]
@@ -195,6 +207,45 @@ class Handler(SimpleHTTPRequestHandler):
         super().do_GET()
 
     # -- POST --------------------------------------------------------------
+    @staticmethod
+    def _derived_ribbon() -> dict:
+        """Fallback ribbon built from the newest cloud artifact."""
+        if not STATE_FILE.is_file():
+            return {"traffic": None}
+        try:
+            state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        except ValueError:
+            return {"traffic": None}
+        rows = []
+        for name, block in (state.get("symbols") or {}).items():
+            forecast = block.get("forecast") or {}
+            rows.append(
+                {
+                    "key": name,
+                    "label": block.get("display", name),
+                    "kind": "index",
+                    "ltp": block.get("spot"),
+                    "atp": (block.get("vwap") or [0])[-1],
+                    "oi_change_pct": 0.0,
+                    "delta": 0.0,
+                    "bid": 0.0,
+                    "ask": 0.0,
+                    "paths_up": forecast.get("paths_up"),
+                    "samples": forecast.get("samples"),
+                    "regime": forecast.get("regime"),
+                }
+            )
+        traffic = None
+        first = next(iter((state.get("symbols") or {}).values()), None)
+        if first:
+            decision = first.get("decision") or {}
+            traffic = {
+                "light": "RED" if (decision.get("action") == "NO_TRADE") else "GREEN",
+                "action": decision.get("action"),
+                "confidence": decision.get("confidence"),
+            }
+        return {"telemetry": rows, "traffic": traffic}
+
     def do_POST(self) -> None:  # noqa: N802 - stdlib naming
         parsed = urlparse(self.path)
         length = int(self.headers.get("Content-Length") or 0)

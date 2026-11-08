@@ -9,7 +9,7 @@ on:
       samples:
         description: Base-model Monte Carlo draws (one batched pass)
         required: false
-        default: "8"
+        default: "6"
         type: string
       replay_evals:
         description: Walk-forward replay checkpoints (mini model)

@@ -531,12 +531,18 @@ def push_firebase(payload: dict) -> dict:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Fast Nifty/BankNifty KRONOS cloud forecast")
     parser.add_argument("--symbols", default="NIFTY,BANKNIFTY")
-    parser.add_argument("--samples", type=int, default=8, help="base Monte Carlo draws")
-    parser.add_argument("--small-samples", type=int, default=8)
-    parser.add_argument("--mini-samples", type=int, default=8)
-    parser.add_argument("--replay-evals", type=int, default=6)
-    parser.add_argument("--replay-samples", type=int, default=8)
-    parser.add_argument("--replay-stride", type=int, default=8)
+    parser.add_argument("--samples", type=int, default=6, help="base Monte Carlo draws")
+    parser.add_argument("--small-samples", type=int, default=6)
+    parser.add_argument("--mini-samples", type=int, default=6)
+    parser.add_argument(
+        "--lookback-cap",
+        type=int,
+        default=192,
+        help="max bars per model; 512 is the ceiling, 192 the CPU-fast default",
+    )
+    parser.add_argument("--replay-evals", type=int, default=4)
+    parser.add_argument("--replay-samples", type=int, default=6)
+    parser.add_argument("--replay-stride", type=int, default=12)
     parser.add_argument("--live-loop", action="store_true")
     parser.add_argument("--interval-sec", type=int, default=300)
     parser.add_argument("--max-cycles", type=int, default=0, help="0 = until the market closes")
@@ -545,6 +551,9 @@ def main(argv: list[str] | None = None) -> int:
 
     symbols = [name.strip().upper() for name in args.symbols.split(",") if name.strip()]
     started = time.time()
+    # Prefill cost is linear in lookback on CPU; the 512 max_context stays a
+    # ceiling. TRADE-OFF: a shorter window is faster but sees less structure.
+    os.environ["KRONOS_LOOKBACK_CAP"] = str(max(args.lookback_cap, 32))
     trio = KronosTrioEnsemble(verbose=True).load()
     trio.samples.update(
         {"base": max(args.samples, 1), "small": max(args.small_samples, 1),
