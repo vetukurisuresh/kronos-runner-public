@@ -210,8 +210,11 @@ def test_up_pct_and_direction() -> None:
 
 
 def test_cone_tightness() -> None:
-    tight = _forecast("base", 84, p10=99.7, p90=100.9)
+    # 1.1%, deliberately inside the gate: an exact 1.2% boundary lands at
+    # 0.012000000000000028 in binary floating point and would trip the >.
+    tight = _forecast("base", 84, p10=99.8, p90=100.9)
     assert tight.cone_tight is True
+    assert tight.dispersion < CONE_TIGHT_RATIO
     wide = _forecast("base", 84, p10=96.0, p90=104.0)
     assert wide.cone_tight is False
     assert wide.dispersion > CONE_TIGHT_RATIO
