@@ -233,6 +233,15 @@ async function loadState(){
   else $('#empty').classList.add('show');
   render();
   renderHealthFallback();
+  renderMMFallback();
+}
+
+// Hosted pages have no /api/live either: show the paper desk defaults rather
+// than a bare "MM -".
+function renderMMFallback(){
+  const host = $('#mmhud');
+  if(!host || host.dataset.filled) return;
+  host.textContent = `Capital \u20b9${fmt(100000,0)} \u00b7 Vault \u20b90 \u00b7 Recovery CLEAR \u00b7 300 Qty`;
 }
 
 /* ---------------- header / plan ---------------- */
