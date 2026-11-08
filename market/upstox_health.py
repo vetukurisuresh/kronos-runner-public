@@ -176,6 +176,38 @@ def save_access_token(
             "saved_at": record["saved_at"]}
 
 
+def load_token_meta(token_file: Path = TOKEN_FILE) -> dict[str, Any]:
+    """Metadata (never the token itself) recorded next to the saved token."""
+    if not token_file.is_file():
+        return {}
+    try:
+        meta = json.loads(token_file.read_text(encoding="utf-8")) or {}
+    except ValueError:
+        return {}
+    return {key: value for key, value in meta.items() if key != "access_token"}
+
+
+def record_verification(
+    ok: bool, status: int | None = None, token_file: Path = TOKEN_FILE
+) -> dict[str, Any]:
+    """Persist the outcome of the last live probe so the health bar can show it."""
+    meta = load_token_meta(token_file)
+    if token_file.is_file():
+        try:
+            meta = json.loads(token_file.read_text(encoding="utf-8")) or {}
+        except ValueError:
+            meta = {}
+    meta.update(
+        {
+            "verified": bool(ok),
+            "verify_status": status,
+            "verified_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        }
+    )
+    token_file.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    return {key: value for key, value in meta.items() if key != "access_token"}
+
+
 def load_access_token(token_file: Path = TOKEN_FILE) -> str:
     if token_file.is_file():
         try:
@@ -193,6 +225,8 @@ def five_checks(inputs: HealthInputs) -> dict[str, Any]:
 
     if inputs.token_valid:
         checks.append(HealthCheck("auth", "Auth Token", GREEN, "VALID"))
+    elif inputs.token_present and inputs.token_valid is False:
+        checks.append(HealthCheck("auth", "Auth Token", RED, "REJECTED (401) - reconnect"))
     elif inputs.token_present:
         checks.append(HealthCheck("auth", "Auth Token", YELLOW, "FALLBACK REPLAY MODE"))
     else:

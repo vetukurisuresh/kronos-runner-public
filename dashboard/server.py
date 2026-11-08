@@ -277,11 +277,19 @@ class Handler(SimpleHTTPRequestHandler):
 
     @staticmethod
     def _health() -> dict:
-        from market.upstox_health import HealthInputs, five_checks, load_access_token
+        from market.upstox_health import (
+            HealthInputs,
+            five_checks,
+            load_access_token,
+            load_token_meta,
+        )
         from state.paper_trade_ledger import PaperLedger
 
         token = load_access_token()
-        inputs = HealthInputs(token_present=bool(token), token_valid=bool(token))
+        meta = load_token_meta()
+        # None = saved but never probed; False = Upstox rejected it (401).
+        valid = meta.get("verified") if token else None
+        inputs = HealthInputs(token_present=bool(token), token_valid=valid)
         inputs.capital = PaperLedger.load().capital
         if STATE_FILE.is_file():
             try:

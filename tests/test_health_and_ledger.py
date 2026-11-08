@@ -34,10 +34,16 @@ def test_all_five_indicators_green_when_fully_synced() -> None:
     assert "tick" in result["checks"][1]["detail"]
 
 
-def test_token_without_feed_is_yellow_replay_mode() -> None:
-    result = five_checks(HealthInputs(token_present=True, token_valid=False, buffer_5m={}))
+def test_unverified_token_is_yellow_replay_mode() -> None:
+    result = five_checks(HealthInputs(token_present=True, token_valid=None, buffer_5m={}))
     assert result["checks"][0]["status"] == "YELLOW"
     assert "REPLAY" in result["checks"][0]["detail"]
+
+
+def test_rejected_token_is_red() -> None:
+    result = five_checks(HealthInputs(token_present=True, token_valid=False, buffer_5m={}))
+    assert result["checks"][0]["status"] == "RED"
+    assert "REJECTED" in result["checks"][0]["detail"]
     assert result["checks"][1]["status"] == "RED"
     assert result["checks"][2]["status"] == "RED"
     assert result["overall"] == "RED"
