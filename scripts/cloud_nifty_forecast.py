@@ -482,7 +482,14 @@ def run_cycle(trio: KronosTrioEnsemble, symbols: list[str], replay_evals: int,
             "runner_os": os.environ.get("RUNNER_OS", "unknown"),
             "mode": "live-loop" if os.environ.get("KRONOS_LIVE_LOOP") else "single",
         },
-        "model": {"name": "Kronos-base", "params": "102.3M", "context": LOOKBACK, "horizon": HORIZON},
+        "model": {
+            "name": "Kronos-base",
+            "params": "102.3M",
+            # Report what the models actually consumed, not the 512 ceiling.
+            "context": min(LOOKBACK, int(os.environ.get("KRONOS_LOOKBACK_CAP") or LOOKBACK)),
+            "max_context": 512,
+            "horizon": HORIZON,
+        },
         "symbols": {},
     }
 
