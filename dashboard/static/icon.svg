@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" rx="96" fill="#080b11"/>
+  <rect x="56" y="56" width="400" height="400" rx="56" fill="#0f141d" stroke="#1c2432" stroke-width="6"/>
+  <polyline points="96,340 160,300 208,318 256,246 304,268 352,196 416,152"
+            fill="none" stroke="#26a69a" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+  <polyline points="256,352 300,330 344,346 392,286"
+            fill="none" stroke="#e6edf3" stroke-width="10" stroke-dasharray="14 12" stroke-linecap="round"/>
+  <circle cx="416" cy="152" r="18" fill="#26a69a"/>
+  <text x="96" y="150" fill="#4aa3ff" font-family="Segoe UI, sans-serif" font-size="74" font-weight="700">K</text>
+</svg>

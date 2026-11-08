@@ -1,25 +1,30 @@
 name: Cloud Nifty Forecast (16 GB runner)
 
-# Real NIFTY 50 / BANK NIFTY inference on the hosted runner. Uploads a compact
-# JSON state that the local dashboard downloads; no weights ever reach a laptop.
+# Real NIFTY 50 / BANK NIFTY inference. Batched Monte Carlo keeps a cycle under
+# a minute; the result is written to Firebase and uploaded as a JSON artifact.
 
 on:
   workflow_dispatch:
     inputs:
       samples:
-        description: Monte Carlo samples for the base model
+        description: Base-model Monte Carlo draws (one batched pass)
         required: false
-        default: "100"
-        type: string
-      replay_samples:
-        description: Samples per walk-forward checkpoint
-        required: false
-        default: "6"
+        default: "32"
         type: string
       replay_evals:
-        description: Walk-forward checkpoints across the last sessions
+        description: Walk-forward replay checkpoints (mini model)
         required: false
-        default: "6"
+        default: "12"
+        type: string
+      live_loop:
+        description: Keep streaming to Firebase during market hours
+        required: false
+        default: false
+        type: boolean
+      interval_sec:
+        description: Seconds between live cycles
+        required: false
+        default: "300"
         type: string
 
 permissions:
@@ -38,6 +43,8 @@ jobs:
     env:
       PYTHONUNBUFFERED: "1"
       HF_HUB_DISABLE_TELEMETRY: "1"
+      FIREBASE_CREDENTIALS_JSON: ${{ secrets.FIREBASE_CREDENTIALS_JSON }}
+      FIREBASE_DB_URL: ${{ secrets.FIREBASE_DB_URL }}
 
     steps:
       - name: Checkout runner workspace
@@ -75,19 +82,30 @@ jobs:
         run: python -m model.download_all_kronos --target model/weights
 
       - name: Run real-market forecast
+        env:
+          KRONOS_LIVE_LOOP: ${{ github.event.inputs.live_loop }}
         run: |
-          python scripts/cloud_nifty_forecast.py \
-            --samples "${{ github.event.inputs.samples }}" \
-            --replay-samples "${{ github.event.inputs.replay_samples }}" \
-            --replay-evals "${{ github.event.inputs.replay_evals }}"
+          FLAGS="--samples ${{ github.event.inputs.samples }} --replay-evals ${{ github.event.inputs.replay_evals }}"
+          if [ "${{ github.event.inputs.live_loop }}" = "true" ]; then
+            FLAGS="$FLAGS --live-loop --interval-sec ${{ github.event.inputs.interval_sec }}"
+          fi
+          python -u scripts/cloud_nifty_forecast.py $FLAGS
+
+      - name: Ensure public read rules for the dashboard
+        env:
+          FIREBASE_APPLY_RULES: "1"
+        run: python state/firebase_sync.py || echo "firebase rules step skipped"
 
       - name: Report artifact size
-        run: ls -lh state/ && python -c "import json;d=json.load(open('state/nifty_kronos_state.json'));print('symbols:',list(d['symbols']));print('replay:',d['replay_summary'])"
+        run: |
+          ls -lh state/ || true
+          python -c "import json;d=json.load(open('state/nifty_kronos_state.json'));print('symbols:',list(d['symbols']));print('elapsed:',d['elapsed_seconds'],'s');print('firebase:',d.get('firebase',{}).get('ok'));print('replay:',d['replay_summary'])"
 
       - name: Upload forecast state
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: nifty-kronos-state
           path: state/nifty_kronos_state.json
           retention-days: 14
-          if-no-files-found: error
+          if-no-files-found: warn

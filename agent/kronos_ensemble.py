@@ -20,6 +20,7 @@ Torch, pandas and the vendored architecture are imported lazily so that
 from __future__ import annotations
 
 import os
+import statistics
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -39,7 +40,9 @@ DEFAULT_SAMPLES: dict[str, int] = {"base": 100, "small": 24, "mini": 24}
 ROLE_CONFIG: dict[str, dict[str, Any]] = {
     "base": {"interval": "5m", "lookback": 480, "pred_len": 24, "max_context": 512},
     "small": {"interval": "5m", "lookback": 256, "pred_len": 12, "max_context": 512},
-    "mini": {"interval": "1m", "lookback": 120, "pred_len": 6, "max_context": 2048},
+    # 512, never 2048: self-attention is quadratic in context and the mini
+    # checkpoint does not need 2k tokens to time an entry.
+    "mini": {"interval": "1m", "lookback": 120, "pred_len": 6, "max_context": 512},
 }
 
 TOKENIZER_FOR_ROLE = {
@@ -230,6 +233,9 @@ class KronosTrioEnsemble:
     ) -> None:
         self.collect_frames = collect_frames
         self.frames: dict[str, list] = {}
+        #: every draw's close path, and the per-bar median candle of the cone
+        self.close_paths: dict[str, list[list[float]]] = {}
+        self.median_candles: dict[str, list[dict]] = {}
         self.weights_root = Path(weights_root)
         self.threads = max(int(threads), 1)
         self.device = device
@@ -344,29 +350,38 @@ class KronosTrioEnsemble:
             freq="5min",
         )
 
-        finals: list[float] = []
-        draws_frames: list = []
+        # ONE batched generation for all draws. Calling predict() in a Python
+        # loop was ~30x slower for the same maths.
         with self.torch.inference_mode():
-            for seed in range(draws):
-                self.torch.manual_seed(seed)
-                predicted = self.predictors[role].predict(
-                    df=frame,
-                    x_timestamp=timestamps,
-                    y_timestamp=pd.Series(future),
-                    pred_len=pred_len,
-                    T=1.0,
-                    top_p=0.9,
-                    sample_count=1,
-                    verbose=False,
-                )
-                finals.append(float(predicted["close"].iloc[-1]))
-                if self.collect_frames:
-                    draws_frames.append(predicted)
+            batch = self.predictors[role].predict_paths(
+                df=frame,
+                x_timestamp=timestamps,
+                y_timestamp=pd.Series(future),
+                pred_len=pred_len,
+                T=1.0,
+                top_p=0.9,
+                sample_count=draws,
+                verbose=False,
+            )
 
-        if self.collect_frames:
-            self.frames[role] = draws_frames
-
+        draws_n = int(batch.shape[0])
+        closes = [[float(value) for value in batch[i, :, 3]] for i in range(draws_n)]
+        finals = [path[-1] for path in closes]
         p10, p50, p90 = quantiles(finals)
+
+        median: list[dict] = []
+        for bar in range(batch.shape[1]):
+            median.append(
+                {
+                    "o": round(statistics.median(float(batch[i, bar, 0]) for i in range(draws_n)), 2),
+                    "h": round(statistics.median(float(batch[i, bar, 1]) for i in range(draws_n)), 2),
+                    "l": round(statistics.median(float(batch[i, bar, 2]) for i in range(draws_n)), 2),
+                    "c": round(statistics.median(float(batch[i, bar, 3]) for i in range(draws_n)), 2),
+                }
+            )
+        self.close_paths[role] = closes
+        self.median_candles[role] = median
+
         return ModelForecast(
             model=role,
             last_close=last_close,
@@ -374,7 +389,7 @@ class KronosTrioEnsemble:
             p50=p50,
             p90=p90,
             paths_up=sum(1 for value in finals if value > last_close),
-            samples=len(finals),
+            samples=draws_n,
             paths=tuple(finals),
         )
 

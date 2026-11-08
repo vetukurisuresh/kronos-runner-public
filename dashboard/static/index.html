@@ -1,0 +1,554 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#080b11">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="KRONOS">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon.svg">
+<script src="config.js" onerror="window.KRONOS_CONFIG=window.KRONOS_CONFIG||{}"></script>
+<title>KRONOS · NIFTY 50 Terminal</title>
+<style>
+  :root{
+    --bg:#080b11; --panel:#0f141d; --line:#1c2432; --grid:#161d29;
+    --text:#e6edf3; --muted:#8b98a9; --green:#26a69a; --red:#ef5350;
+    --amber:#f0b429; --blue:#4aa3ff;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--text);
+    font-family:"Segoe UI",system-ui,-apple-system,sans-serif;overflow:hidden}
+  body{display:flex;flex-direction:column}
+  header{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--panel);
+    border-bottom:1px solid var(--line);flex-wrap:wrap}
+  .brand{font-weight:700;letter-spacing:.14em;font-size:13px;color:var(--blue)}
+  .brand small{display:block;letter-spacing:.02em;color:var(--muted);font-weight:400;font-size:10px}
+  .tabs{display:flex;gap:4px;margin-left:8px}
+  .tab{padding:6px 12px;border-radius:6px;border:1px solid var(--line);background:#0b0f16;
+    color:var(--muted);font-size:12px;cursor:pointer}
+  .tab:hover{border-color:#2a3444;color:var(--text)}
+  .tab.active{background:#16202c;color:var(--text);border-color:#2f6fed}
+  .badge{padding:6px 12px;border-radius:999px;font-size:11.5px;font-weight:600;letter-spacing:.04em}
+  .badge.green{background:rgba(38,166,154,.16);color:#4fd1c5;border:1px solid rgba(38,166,154,.45)}
+  .badge.yellow{background:rgba(240,180,41,.14);color:#f0b429;border:1px solid rgba(240,180,41,.45)}
+  .badge.red{background:rgba(239,83,80,.14);color:#ff8a87;border:1px solid rgba(239,83,80,.45)}
+  .spacer{flex:1}
+  button.act{padding:7px 13px;border-radius:6px;border:1px solid #2f6fed;background:#17233a;
+    color:#cfe2ff;font-size:12px;cursor:pointer;font-weight:600}
+  button.act:hover{background:#1d2c49}
+  button.act:disabled{opacity:.55;cursor:progress}
+  button.ghost{border-color:var(--line);background:#0b0f16;color:var(--muted);font-weight:500}
+  button.ghost:hover{color:var(--text);border-color:#2a3444}
+  main{position:relative;flex:1;min-height:0}
+  #chart{display:block;width:100%;height:100%}
+  #empty{position:absolute;inset:0;display:none;place-items:center;text-align:center;
+    color:var(--muted);font-size:13px;line-height:1.7;padding:40px}
+  #empty.show{display:grid}
+  footer{background:var(--panel);border-top:1px solid var(--line);padding:9px 14px;
+    font-size:12px;display:flex;gap:14px;align-items:center;flex-wrap:wrap;min-height:44px}
+  footer .plan{font-family:"Cascadia Mono",Consolas,monospace;color:#cfe2ff}
+  footer .k{color:var(--muted)}
+  .pill{padding:3px 9px;border-radius:5px;background:#101a26;border:1px solid var(--line);font-size:11px}
+  .slider-wrap{display:none;align-items:center;gap:10px;padding:8px 14px;background:#0b0f16;
+    border-bottom:1px solid var(--line);font-size:11.5px;color:var(--muted)}
+  .slider-wrap.show{display:flex}
+  input[type=range]{flex:1;accent-color:#2f6fed}
+  /* modal */
+  #modal{position:fixed;inset:0;background:rgba(3,6,10,.72);display:none;z-index:50}
+  #modal.show{display:block}
+  .sheet{position:absolute;right:0;top:0;bottom:0;width:min(560px,92vw);background:#0c1119;
+    border-left:1px solid var(--line);display:flex;flex-direction:column;animation:slide .18s ease-out}
+  @keyframes slide{from{transform:translateX(30px);opacity:.4}to{transform:none;opacity:1}}
+  .sheet header{background:#0c1119;border-bottom:1px solid var(--line);padding:12px 14px}
+  .sheet h3{margin:0;font-size:14px;letter-spacing:.02em}
+  .filters{display:flex;gap:6px;margin-top:10px}
+  .filters button{font-size:11px;padding:4px 10px;border-radius:999px;border:1px solid var(--line);
+    background:#0b0f16;color:var(--muted);cursor:pointer}
+  .filters button.on{background:#16202c;color:#cfe2ff;border-color:#2f6fed}
+  #logs{overflow-y:auto;padding:12px 14px;display:flex;flex-direction:column;gap:10px}
+  .log{border-left:2px solid var(--line);padding-left:10px}
+  .log.order{border-color:var(--green)}
+  .log.no_trade{border-color:var(--red)}
+  .log .t{font-size:10px;color:#5f6d7f;font-family:Consolas,monospace}
+  .log .x{font-size:12.5px;line-height:1.65;color:#cfd8e3}
+  .close{margin-left:auto;background:none;border:none;color:var(--muted);font-size:18px;cursor:pointer}
+  .toast{position:fixed;bottom:58px;left:50%;transform:translateX(-50%);background:#16202c;
+    border:1px solid #2f6fed;color:#cfe2ff;padding:9px 16px;border-radius:8px;font-size:12px;
+    opacity:0;transition:opacity .2s;pointer-events:none;z-index:60}
+  .toast.show{opacity:1}
+
+  /* ---------- phones (360-430px): thumb-first layout ---------- */
+  @media (max-width: 560px){
+    header{padding:8px 10px;gap:6px}
+    .brand{font-size:11px;letter-spacing:.1em}
+    .brand small{display:none}
+    .tabs{order:4;width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;margin-left:0}
+    .tab{white-space:nowrap;padding:8px 11px;font-size:11px;flex:0 0 auto}
+    .badge{font-size:10.5px;padding:5px 9px}
+    .spacer{display:none}
+    button.act{font-size:11px;padding:9px 10px;flex:1 1 46%}
+    footer{font-size:11px;gap:8px;padding:8px 10px;min-height:56px}
+    footer .plan{width:100%;line-height:1.5;font-size:10.5px}
+    .sheet{width:100vw;border-left:none}
+    #chart{touch-action:pinch-zoom}
+    .toast{left:10px;right:10px;transform:none;bottom:72px;text-align:center}
+    body{-webkit-tap-highlight-color:transparent}
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">KRONOS<small>NIFTY · BANK NIFTY · QUANT DESK</small></div>
+  <div class="tabs">
+    <div class="tab active" data-sym="NIFTY">NIFTY 50 (5m)</div>
+    <div class="tab" data-sym="BANKNIFTY">BANK NIFTY (5m)</div>
+    <div class="tab" data-sym="REPLAY">Walk-Forward Replay</div>
+  </div>
+  <div id="traffic" class="badge red">🔴 RED NO-TRADE</div>
+  <div class="spacer"></div>
+  <button class="act" id="runBtn">🔄 Run Fresh Cloud Forecast on 16GB Runner</button>
+  <button class="act ghost" id="logBtn">📜 తెలుగు లైవ్ లాగ్</button>
+</header>
+
+<div class="slider-wrap" id="sliderWrap">
+  <span>Checkpoint</span>
+  <input type="range" id="replaySlider" min="0" max="0" value="0" step="1">
+  <span id="replayLabel">—</span>
+</div>
+
+<main>
+  <canvas id="chart"></canvas>
+  <div id="empty">
+    No cloud artifact yet.<br>
+    Press <b>“Run Fresh Cloud Forecast on 16GB Runner”</b> — the models run on GitHub,<br>
+    only the JSON comes back to this laptop.
+  </div>
+</main>
+
+<footer>
+  <span class="k">Plan:</span><span class="plan" id="planText">—</span>
+  <span class="spacer"></span>
+  <span class="pill" id="spotPill">spot —</span>
+  <span class="pill" id="metaPill">no data</span>
+</footer>
+
+<div id="modal">
+  <div class="sheet">
+    <header style="display:flex;align-items:center">
+      <div>
+        <h3>📜 తెలుగు లైవ్ లాగ్ — AI Thought Window</h3>
+        <div class="filters">
+          <button class="on" data-f="all">All</button>
+          <button data-f="order">Orders Only</button>
+          <button data-f="no_trade">Why No Trade</button>
+        </div>
+      </div>
+      <button class="close" id="closeModal">×</button>
+    </header>
+    <div id="logs"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const fmt = (n,d=2) => (n==null||isNaN(n)) ? '—' : Number(n).toLocaleString('en-IN',{minimumFractionDigits:d,maximumFractionDigits:d});
+let STATE=null, SYMBOL='NIFTY', REPLAY=-1, RUN_ID=null, POLL=null, FILTER='all';
+
+/* ---------------- data ---------------- */
+const FIREBASE_DB = (window.KRONOS_CONFIG && window.KRONOS_CONFIG.firebaseDbUrl)
+  || 'https://kronos-nifty-desk-default-rtdb.firebaseio.com';
+
+function stateSources(){
+  const db = (FIREBASE_DB || '').replace(/\/$/, '');
+  const list = [];
+  if(db) list.push(`${db}/kronos_state/live.json`);
+  list.push('/api/state');
+  list.push('./latest_cloud_state.json');
+  return list;
+}
+
+async function loadState(){
+  let loaded = null;
+  for(const url of stateSources()){
+    try{
+      const r = await fetch(url,{cache:'no-store'});
+      if(!r.ok) continue;
+      const j = await r.json();
+      const candidate = (j && j.state) ? j.state : j;
+      if(candidate && candidate.symbols){ loaded = candidate; break; }
+    }catch(e){ /* try the next source */ }
+  }
+  STATE = loaded;
+  if(STATE) $('#empty').classList.remove('show');
+  else $('#empty').classList.add('show');
+  render();
+}
+
+/* ---------------- header / plan ---------------- */
+function active(){
+  if(!STATE) return null;
+  if(SYMBOL==='REPLAY') return STATE.symbols[Object.keys(STATE.symbols)[0]];
+  return STATE.symbols[SYMBOL] || null;
+}
+
+function render(){
+  const block = active();
+  const traffic = $('#traffic');
+  if(!block){
+    traffic.className='badge red'; traffic.textContent='🔴 RED NO-TRADE';
+    $('#planText').textContent='—'; $('#spotPill').textContent='spot —';
+    $('#metaPill').textContent='no data';
+    draw(); return;
+  }
+  const plan = block.plan;
+  traffic.className = 'badge ' + (plan.traffic.startsWith('GREEN')?'green':plan.traffic.startsWith('YELLOW')?'yellow':'red');
+  traffic.textContent = (plan.traffic.startsWith('GREEN')?'🟢 ':plan.traffic.startsWith('YELLOW')?'🟡 ':'🔴 ') + plan.traffic;
+  $('#spotPill').textContent = `spot ${fmt(block.spot)}`;
+  const live = STATE.runner && STATE.runner.run_id && STATE.runner.run_id !== 'synthetic-preview';
+  $('#metaPill').textContent = `${live?'':'PREVIEW · '}${block.forecast.paths_up}/${block.forecast.samples} up · ${block.forecast.regime}`;
+  renderPlan(block);
+  renderLogs(block);
+  draw();
+}
+
+function renderPlan(block){
+  if(SYMBOL==='REPLAY' && REPLAY>=0 && STATE.replay && STATE.replay[REPLAY]){
+    const r = STATE.replay[REPLAY];
+    $('#planText').textContent =
+      `REPLAY ${r.session} ${r.at.slice(11,16)} · ${r.action} · entry ${fmt(r.spot)} · ` +
+      `${r.paths_up}/${r.samples} up · outcome ${r.outcome} (${fmt(r.realized_pct)}%)`;
+    return;
+  }
+  const p = block.plan;
+  if(p.action==='NO_TRADE'){
+    $('#planText').textContent = `NO TRADE · watch ${fmt(p.watch_entry)} · no entries until the trio aligns`;
+    return;
+  }
+  const side = p.action==='BUY_CE' ? 'long above' : 'short below';
+  $('#planText').textContent =
+    `${p.strike} · ${side} ${fmt(p.watch_entry)} · stop ${fmt(p.stop_loss)} · ` +
+    `T1 ${fmt(p.target1)} · T2 ${fmt(p.target2)} · ${p.tsl} · win ${p.win_rate}%`;
+}
+
+/* ---------------- Telugu logs ---------------- */
+function renderLogs(block){
+  const host = $('#logs');
+  const logs = (block.telugu_logs||[]).filter(l => FILTER==='all' || l.kind===FILTER);
+  host.innerHTML = logs.map(l =>
+    `<div class="log ${l.kind}"><div class="t">${l.t.slice(11,19)} · ${l.kind}</div>` +
+    `<div class="x">${l.text}</div></div>`).join('') || '<div class="x" style="color:#8b98a9">No entries for this filter.</div>';
+}
+
+/* ---------------- canvas chart ---------------- */
+const canvas = $('#chart'), ctx = canvas.getContext('2d');
+
+function draw(){
+  const wrap = canvas.parentElement;
+  const dpr = window.devicePixelRatio || 1;
+  const W = wrap.clientWidth, H = wrap.clientHeight;
+  canvas.width = Math.max(1, W*dpr); canvas.height = Math.max(1, H*dpr);
+  canvas.style.width = W+'px'; canvas.style.height = H+'px';
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle = '#080b11'; ctx.fillRect(0,0,W,H);
+
+  const block = active();
+  if(!block) return;
+
+  const candles = block.candles;
+  const f = block.forecast;
+  const fut = (SYMBOL==='REPLAY' && REPLAY>=0 && STATE.replay && STATE.replay[REPLAY])
+      ? STATE.replay[REPLAY].future_candles : [];
+  const nFut = (fut.length ? fut.length : f.horizon);
+  const fanOn = !fut.length;
+
+  const L=10, R=104, T=54, B=26;
+  const volH = Math.round((H-T-B)*0.17);
+  const priceH = H-T-B-volH-8;
+  const plotW = W-L-R;
+  // The forecast needs a real slice of the canvas: 12 bars inside 2% of the
+  // width would hide the fan, the cone and the median candles entirely.
+  const futW = Math.min(Math.max(plotW*0.15, 130), 260);
+  const slotH = (plotW - futW) / candles.length;
+  const slotF = futW / nFut;
+  const xNow = L + plotW - futW;
+  const x = i => i < candles.length
+      ? L + slotH*(i+0.5)
+      : xNow + slotF*(i-candles.length+0.5);
+  const pEnd = T + priceH;
+
+  let lo = Infinity, hi = -Infinity;
+  candles.forEach(c=>{ lo=Math.min(lo,c.l); hi=Math.max(hi,c.h); });
+  const extra = fanOn ? [f.p10,f.p90,f.median] : fut.flatMap(c=>[c.l,c.h]);
+  extra.forEach(v=>{ if(v!=null){ lo=Math.min(lo,v); hi=Math.max(hi,v);} });
+  (block.overlays.support||[]).forEach(v=>lo=Math.min(lo,v));
+  (block.overlays.resistance||[]).forEach(v=>hi=Math.max(hi,v));
+  const pad = (hi-lo)*0.06 || 1; lo-=pad; hi+=pad;
+  const y = p => T + priceH - (p-lo)/(hi-lo)*priceH;
+
+  // price grid
+  ctx.font='10px Consolas,monospace'; ctx.textAlign='left'; ctx.textBaseline='middle';
+  for(let i=0;i<=5;i++){
+    const price = lo + (hi-lo)*i/5, yy = y(price);
+    ctx.strokeStyle='#161d29'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(L,yy); ctx.lineTo(W-R,yy); ctx.stroke();
+    ctx.fillStyle='#66788c'; ctx.fillText(fmt(price,0), W-R+6, yy);
+  }
+
+  // future zones
+  if(fanOn){
+    const grad=(a,b,alpha)=>{ ctx.fillStyle=alpha; ctx.fillRect(xNow, y(b), (W-R)-xNow, Math.max(1,y(a)-y(b))); };
+    grad(f.median, f.p90, 'rgba(239,83,80,.10)');
+    grad(f.p10, f.median, 'rgba(38,166,154,.10)');
+    ctx.setLineDash([3,5]);
+    [['#26a69a',f.p10],['#ef5350',f.p90],['#8b98a9',f.median]].forEach(([c,v])=>{
+      ctx.strokeStyle=c; ctx.beginPath(); ctx.moveTo(xNow,y(v)); ctx.lineTo(W-R,y(v)); ctx.stroke();
+    });
+    ctx.setLineDash([]);
+  }
+
+  // volume
+  const maxV = Math.max(...candles.map(c=>c.v||0), 1);
+  const volBase = H-B;
+  candles.forEach((c,i)=>{
+    const h = (c.v||0)/maxV*(volH-6);
+    ctx.fillStyle = c.c>=c.o ? 'rgba(38,166,154,.35)' : 'rgba(239,83,80,.35)';
+    ctx.fillRect(x(i)-Math.max(slotH*0.32,1), volBase-h, Math.max(slotH*0.64,1), h);
+  });
+
+  // support / resistance
+  ctx.font='10px Consolas,monospace';
+  const hline=(price,color,label)=>{
+    if(price==null||!isFinite(price)) return;
+    const yy=y(price);
+    ctx.strokeStyle=color; ctx.setLineDash([6,6]); ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(L,yy); ctx.lineTo(W-R,yy); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle=color; ctx.textAlign='left'; ctx.fillText(label, L+4, yy-8);
+  };
+  (block.overlays.resistance||[]).slice(0,2).forEach((v,i)=>hline(v,'rgba(239,83,80,.7)','R'+(i+1)));
+  (block.overlays.support||[]).slice(0,2).forEach((v,i)=>hline(v,'rgba(38,166,154,.7)','S'+(i+1)));
+
+  // order blocks
+  (block.overlays.order_blocks||[]).forEach(ob=>{
+    const idx = candles.findIndex(c=>c.t>=ob.t);
+    if(idx<0) return;
+    ctx.fillStyle = ob.type==='bullish' ? 'rgba(38,166,154,.08)' : 'rgba(239,83,80,.08)';
+    ctx.fillRect(x(idx), y(ob.top), Math.max(W-R-x(idx),2), Math.max(y(ob.bottom)-y(ob.top),1));
+  });
+
+  // candles
+  const cw = Math.max(slotH*0.62, 1);
+  const cwF = Math.max(slotF*0.55, 2);
+  candles.forEach((c,i)=>{
+    const up = c.c>=c.o, col = up?'#26a69a':'#ef5350';
+    ctx.strokeStyle=col; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(x(i), y(c.h)); ctx.lineTo(x(i), y(c.l)); ctx.stroke();
+    ctx.fillStyle=col;
+    const top=y(Math.max(c.o,c.c)), hgt=Math.max(Math.abs(y(c.o)-y(c.c)),1);
+    ctx.fillRect(x(i)-cw/2, top, cw, hgt);
+  });
+
+  // vwap
+  if(block.vwap && block.vwap.length===candles.length){
+    ctx.strokeStyle='rgba(74,163,255,.75)'; ctx.lineWidth=1.2; ctx.beginPath();
+    block.vwap.forEach((v,i)=> i?ctx.lineTo(x(i),y(v)):ctx.moveTo(x(i),y(v)));
+    ctx.stroke();
+  }
+
+  // fan
+  if(fanOn && f.all_paths && f.all_paths.length){
+    ctx.lineWidth=1;
+    f.all_paths.forEach(path=>{
+      ctx.strokeStyle='rgba(230,237,243,.07)';
+      ctx.beginPath();
+      path.forEach((v,i)=> i?ctx.lineTo(x(candles.length+i), y(v)) : ctx.moveTo(xNow, y(v)));
+      ctx.stroke();
+    });
+  }
+
+  // median hollow candles
+  if(fanOn && f.median_candles && f.median_candles.length){
+    f.median_candles.forEach((c,i)=>{
+      const cx = x(candles.length+i);
+      ctx.strokeStyle='rgba(230,237,243,.85)'; ctx.lineWidth=1;
+      ctx.beginPath(); ctx.moveTo(cx,y(c.h)); ctx.lineTo(cx,y(c.l)); ctx.stroke();
+      ctx.strokeRect(cx-cwF/2, y(Math.max(c.o,c.c)), cwF, Math.max(Math.abs(y(c.o)-y(c.c)),1.2));
+    });
+  }
+
+  // replay realized candles
+  if(fut.length){
+    fut.forEach((c,i)=>{
+      const cx=x(candles.length+i), up=c.c>=c.o;
+      ctx.strokeStyle=up?'#4fd1c5':'#ff8a87'; ctx.lineWidth=1;
+      ctx.beginPath(); ctx.moveTo(cx,y(c.h)); ctx.lineTo(cx,y(c.l)); ctx.stroke();
+      ctx.fillStyle=up?'rgba(38,166,154,.55)':'rgba(239,83,80,.55)';
+      ctx.fillRect(cx-cwF/2, y(Math.max(c.o,c.c)), cwF, Math.max(Math.abs(y(c.o)-y(c.c)),1));
+    });
+  }
+
+  // NOW line
+  ctx.strokeStyle='rgba(240,180,41,.85)'; ctx.setLineDash([5,5]); ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(xNow, T); ctx.lineTo(xNow, pEnd); ctx.stroke(); ctx.setLineDash([]);
+  ctx.fillStyle='rgba(240,180,41,.9)'; ctx.font='10px Consolas,monospace'; ctx.textAlign='center';
+  ctx.fillText('NOW', xNow, T-10);
+
+  // right-axis tags
+  const tag=(price,label,color)=>{
+    const yy=Math.max(T+8,Math.min(pEnd-8,y(price)));
+    ctx.fillStyle=color; ctx.fillRect(W-R+2, yy-9, R-4, 18);
+    ctx.fillStyle='#060a0f'; ctx.font='bold 10px Consolas,monospace';
+    ctx.textAlign='left'; ctx.fillText(label, W-R+8, yy);
+  };
+  if(fanOn){
+    tag(f.p90, 'p90 '+fmt(f.p90,0), '#ef5350');
+    tag(f.median, 'MED '+fmt(f.median,0), '#c9d4e2');
+    tag(f.p10, 'p10 '+fmt(f.p10,0), '#26a69a');
+  }
+  tag(block.spot, 'SPOT '+fmt(block.spot,0), '#f0b429');
+
+  // entry marker
+  if(block.plan.action!=='NO_TRADE' && fanOn){
+    const buy = block.plan.action==='BUY_CE';
+    const my = y(block.spot) + (buy?-26:26);
+    ctx.fillStyle = buy?'#26a69a':'#ef5350';
+    ctx.beginPath();
+    ctx.moveTo(xNow, my + (buy?12:-12)); ctx.lineTo(xNow-7, my); ctx.lineTo(xNow+7, my);
+    ctx.closePath(); ctx.fill();
+    ctx.textAlign='center'; ctx.font='bold 10px Consolas,monospace';
+    ctx.fillText(buy?'🟢 BUY CE':'🔴 BUY PE', xNow, my + (buy?26:-20));
+  }
+
+  // HUD
+  const lines = [
+    `Kronos-base · 102.3M + Ensemble`,
+    `Context: ${candles.length} candles`,
+    `Horizon: next ${f.horizon} candles`,
+    `Samples: ${f.samples} futures`,
+    `Paths up: ${f.paths_up} / ${f.samples}`,
+    `Regime: ${f.regime}`,
+  ];
+  const w=210, h=lines.length*15+16;
+  ctx.fillStyle='rgba(9,13,20,.82)'; ctx.strokeStyle='#1c2432';
+  ctx.fillRect(L+4, T+4, w, h); ctx.strokeRect(L+4, T+4, w, h);
+  ctx.textAlign='left'; ctx.textBaseline='middle';
+  lines.forEach((t,i)=>{
+    ctx.fillStyle = i===0?'#4aa3ff':'#9fb0c3';
+    ctx.font = i===0?'bold 11px Consolas,monospace':'11px Consolas,monospace';
+    ctx.fillText(t, L+14, T+16+i*15);
+  });
+}
+
+/* ---------------- actions ---------------- */
+function toast(msg){ const t=$('#toast'); t.textContent=msg; t.classList.add('show');
+  clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove('show'), 3200); }
+
+let SINCE=null;
+async function runForecast(){
+  const btn=$('#runBtn'); btn.disabled=true; btn.textContent='⏳ dispatching…';
+  SINCE=new Date().toISOString(); RUN_ID=null;
+  try{
+    const r = await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({samples:32,replay_evals:12})});
+    const j = await r.json();
+    if(!j.ok) throw new Error(j.reason||'dispatch failed');
+    toast('Cloud runner dispatched — watching for the run…');
+    pollForRun();
+  }catch(e){
+    toast('Dispatch failed: '+e.message);
+    btn.disabled=false; btn.textContent='🔄 Run Fresh Cloud Forecast on 16GB Runner';
+  }
+}
+
+async function pollForRun(){
+  const btn=$('#runBtn');
+  btn.textContent='⏳ waiting for run…';
+  const started = Date.now();
+  const tick = async ()=>{
+    try{
+      // find the newest run via the status proxy (run id resolved server-side on first hit)
+      const rq = '/api/run_status?run_id='+(RUN_ID||'latest')+(SINCE&&!RUN_ID?'&since='+encodeURIComponent(SINCE):'');
+      const r = await fetch(rq);
+      const j = await r.json();
+      if(j.ok && !j.status){ btn.textContent='⏳ queued…'; }
+      if(j.ok && j.status){
+        if(j.run_id && !RUN_ID) RUN_ID = String(j.run_id);
+        const mins = ((Date.now()-started)/60000).toFixed(0);
+        btn.textContent = `⏳ ${j.status}${j.conclusion?' · '+j.conclusion:''} (${mins}m)`;
+        if(j.status==='completed'){
+          clearInterval(POLL);
+          if(j.conclusion==='success'){
+            btn.textContent='📥 pulling artifact…';
+            const p = await fetch('/api/pull?run_id='+RUN_ID,{method:'POST'});
+            const pj = await p.json();
+            if(!pj.ok) throw new Error(pj.reason);
+            toast('Fresh cloud forecast loaded ('+(pj.bytes/1024).toFixed(0)+' KB)');
+            await loadState();
+          } else {
+            toast('Cloud run finished with '+j.conclusion);
+          }
+          btn.disabled=false; btn.textContent='🔄 Run Fresh Cloud Forecast on 16GB Runner';
+          return;
+        }
+      }
+    }catch(e){ /* keep polling */ }
+    POLL = setTimeout(tick, 8000);
+  };
+  tick();
+}
+
+/* ---------------- wiring ---------------- */
+document.querySelectorAll('.tab').forEach(tab=>{
+  tab.addEventListener('click',()=>{
+    document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+    tab.classList.add('active');
+    SYMBOL = tab.dataset.sym;
+    REPLAY = -1;
+    $('#sliderWrap').classList.toggle('show', SYMBOL==='REPLAY');
+    if(SYMBOL==='REPLAY') buildSlider();
+    render();
+  });
+});
+
+function buildSlider(){
+  const slider=$('#replaySlider'); const list=STATE?STATE.replay||[]:[];
+  slider.max = Math.max(list.length-1,0); slider.value=0;
+  const set = ()=>{
+    REPLAY = Number(slider.value);
+    const r = list[REPLAY];
+    $('#replayLabel').textContent = r ? `${r.session} ${r.at.slice(11,16)} · ${r.action} · ${r.outcome}` : '—';
+    render();
+  };
+  slider.oninput = set;
+  if(list.length){ REPLAY=0; set(); } else { $('#replayLabel').textContent='no replay data'; }
+}
+
+$('#runBtn').addEventListener('click', runForecast);
+$('#logBtn').addEventListener('click',()=>{
+  const block=active();
+  if(block) renderLogs(block);
+  $('#modal').classList.add('show');
+});
+$('#closeModal').addEventListener('click',()=>$('#modal').classList.remove('show'));
+$('#modal').addEventListener('click',e=>{ if(e.target.id==='modal') $('#modal').classList.remove('show'); });
+document.querySelectorAll('.filters button').forEach(b=>{
+  b.addEventListener('click',()=>{
+    document.querySelectorAll('.filters button').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on'); FILTER=b.dataset.f;
+    const block=active(); if(block) renderLogs(block);
+  });
+});
+window.addEventListener('resize', draw);
+loadState();
+// The runner streams to Firebase every cycle; poll it every 5s so a phone
+// updates the moment a new forecast lands.
+setInterval(()=>{ if(!RUN_ID) loadState(); }, FIREBASE_DB ? 5000 : 60000);
+</script>
+</body>
+</html>
