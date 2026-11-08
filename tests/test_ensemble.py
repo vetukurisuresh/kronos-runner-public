@@ -189,9 +189,12 @@ def test_quantiles_single_and_empty() -> None:
         quantiles([])
 
 
+# A 1.1% cone: comfortably inside CONE_TIGHT_RATIO (1.2%) unless a test says
+# otherwise, so "aligned" fixtures are approved and only explicit wide-cone
+# fixtures are rejected.
 def _forecast(role: str, paths_up: int, samples: int = 100,
-              last: float = 100.0, p10: float = 99.6,
-              p50: float = 100.6, p90: float = 101.0) -> ModelForecast:
+              last: float = 100.0, p10: float = 99.8,
+              p50: float = 100.6, p90: float = 100.9) -> ModelForecast:
     return ModelForecast(
         model=role, last_close=last, p10=p10, p50=p50, p90=p90,
         paths_up=paths_up, samples=samples,
