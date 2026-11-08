@@ -518,7 +518,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {name}: {len(candles)} 5m candles, {len(minute_candles)} 1m candles, spot {spot:.2f}")
 
     print(f"loading the trio (base samples={args.samples}) …")
-    trio = KronosTrioEnsemble(samples=args.samples, verbose=True, collect_frames=True).load()
+    # Only the macro judge gets the full Monte Carlo budget; the validator and
+    # trigger keep their lighter defaults so a 100-draw run stays affordable.
+    trio = KronosTrioEnsemble(verbose=True, collect_frames=True).load()
+    trio.samples["base"] = max(int(args.samples), 1)
 
     payload: dict = {
         "generated_at": datetime.now(tz=IST).isoformat(timespec="seconds"),
