@@ -1,0 +1,93 @@
+name: Cloud Nifty Forecast (16 GB runner)
+
+# Real NIFTY 50 / BANK NIFTY inference on the hosted runner. Uploads a compact
+# JSON state that the local dashboard downloads; no weights ever reach a laptop.
+
+on:
+  workflow_dispatch:
+    inputs:
+      samples:
+        description: Monte Carlo samples for the base model
+        required: false
+        default: "100"
+        type: string
+      replay_samples:
+        description: Samples per walk-forward checkpoint
+        required: false
+        default: "6"
+        type: string
+      replay_evals:
+        description: Walk-forward checkpoints across the last sessions
+        required: false
+        default: "6"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kronos-nifty-forecast
+  cancel-in-progress: false
+
+jobs:
+  forecast:
+    name: Real Nifty + BankNifty forecast
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    env:
+      PYTHONUNBUFFERED: "1"
+      HF_HUB_DISABLE_TELEMETRY: "1"
+
+    steps:
+      - name: Checkout runner workspace
+        uses: actions/checkout@v4
+
+      - name: Report runner capacity
+        run: |
+          echo "vCPU: $(nproc)"
+          free -h
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-cloud.txt
+
+      - name: Cache HuggingFace model cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/huggingface
+            model/weights
+          key: kronos-trio-${{ runner.os }}-v1
+          restore-keys: |
+            kronos-trio-${{ runner.os }}-
+
+      - name: Install CPU PyTorch and deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r requirements-cloud.txt
+
+      - name: Download the KRONOS trio
+        run: python -m model.download_all_kronos --target model/weights
+
+      - name: Run real-market forecast
+        run: |
+          python scripts/cloud_nifty_forecast.py \
+            --samples "${{ github.event.inputs.samples }}" \
+            --replay-samples "${{ github.event.inputs.replay_samples }}" \
+            --replay-evals "${{ github.event.inputs.replay_evals }}"
+
+      - name: Report artifact size
+        run: ls -lh state/ && python -c "import json;d=json.load(open('state/nifty_kronos_state.json'));print('symbols:',list(d['symbols']));print('replay:',d['replay_summary'])"
+
+      - name: Upload forecast state
+        uses: actions/upload-artifact@v4
+        with:
+          name: nifty-kronos-state
+          path: state/nifty_kronos_state.json
+          retention-days: 14
+          if-no-files-found: error

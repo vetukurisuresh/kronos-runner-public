@@ -69,6 +69,8 @@ class ModelForecast:
     p90: float
     paths_up: int
     samples: int
+    #: Final close of every Monte Carlo draw, in draw order (the UI fan chart).
+    paths: tuple[float, ...] = ()
 
     @property
     def up_pct(self) -> float:
@@ -224,7 +226,10 @@ class KronosTrioEnsemble:
         device: str = "cpu",
         samples: int | None = None,
         verbose: bool = False,
+        collect_frames: bool = False,
     ) -> None:
+        self.collect_frames = collect_frames
+        self.frames: dict[str, list] = {}
         self.weights_root = Path(weights_root)
         self.threads = max(int(threads), 1)
         self.device = device
@@ -340,6 +345,7 @@ class KronosTrioEnsemble:
         )
 
         finals: list[float] = []
+        draws_frames: list = []
         with self.torch.inference_mode():
             for seed in range(draws):
                 self.torch.manual_seed(seed)
@@ -354,6 +360,11 @@ class KronosTrioEnsemble:
                     verbose=False,
                 )
                 finals.append(float(predicted["close"].iloc[-1]))
+                if self.collect_frames:
+                    draws_frames.append(predicted)
+
+        if self.collect_frames:
+            self.frames[role] = draws_frames
 
         p10, p50, p90 = quantiles(finals)
         return ModelForecast(
@@ -364,6 +375,7 @@ class KronosTrioEnsemble:
             p90=p90,
             paths_up=sum(1 for value in finals if value > last_close),
             samples=len(finals),
+            paths=tuple(finals),
         )
 
     def evaluate(self, frames: dict[str, Any], **gates: Any) -> TrioDecision:
