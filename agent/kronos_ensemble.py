@@ -38,7 +38,7 @@ DEFAULT_THREADS = 4
 DEFAULT_SAMPLES: dict[str, int] = {"base": 100, "small": 24, "mini": 24}
 
 ROLE_CONFIG: dict[str, dict[str, Any]] = {
-    "base": {"interval": "5m", "lookback": 480, "pred_len": 24, "max_context": 512},
+    "base": {"interval": "5m", "lookback": 480, "pred_len": 12, "max_context": 512},
     "small": {"interval": "5m", "lookback": 256, "pred_len": 12, "max_context": 512},
     # 512, never 2048: self-attention is quadratic in context and the mini
     # checkpoint does not need 2k tokens to time an entry.
@@ -364,6 +364,10 @@ class KronosTrioEnsemble:
                 verbose=False,
             )
 
+        # auto_regressive_inference returns [batch, draws, pred_len, 5]; collapse
+        # the batch axis so each row is one Monte Carlo path.
+        if batch.ndim == 4:
+            batch = batch.reshape(-1, batch.shape[-2], batch.shape[-1])
         draws_n = int(batch.shape[0])
         closes = [[float(value) for value in batch[i, :, 3]] for i in range(draws_n)]
         finals = [path[-1] for path in closes]

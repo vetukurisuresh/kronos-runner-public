@@ -9,12 +9,12 @@ on:
       samples:
         description: Base-model Monte Carlo draws (one batched pass)
         required: false
-        default: "32"
+        default: "8"
         type: string
       replay_evals:
         description: Walk-forward replay checkpoints (mini model)
         required: false
-        default: "12"
+        default: "6"
         type: string
       live_loop:
         description: Keep streaming to Firebase during market hours
