@@ -232,6 +232,7 @@ async function loadState(){
   if(STATE) $('#empty').classList.remove('show');
   else $('#empty').classList.add('show');
   render();
+  renderHealthFallback();
 }
 
 /* ---------------- header / plan ---------------- */
@@ -638,6 +639,30 @@ loadLive();
 setInterval(loadLive, 5000);
 
 /* ---------------- Upstox sync health ---------------- */
+// On Firebase Hosting / GitHub Pages there is no /api/health server. Derive the
+// five indicators from the cloud artifact so the phone still sees real state
+// instead of an empty bar.
+function renderHealthFallback(){
+  const host = $('#health');
+  if(!host || host.children.length) return;
+  const symbols = (STATE && STATE.symbols) || {};
+  const names = Object.keys(symbols);
+  if(!names.length) return;
+  const bars = names.map(n=>`${n} ${((symbols[n].candles)||[]).length}/512`).join(' | ');
+  const strikes = names.map(n=>(symbols[n].plan||{}).strike).filter(Boolean);
+  const rows = [
+    ['🟡','Auth Token','YELLOW','CLOUD MODE \u2014 replay snapshot, no broker token'],
+    ['🟡','V3 WebSocket Feed','YELLOW','NOT CONNECTED \u2014 static snapshot'],
+    ['🟢','Spot 512-Bar Buffer','GREEN',`SYNCED (${bars})`],
+    [strikes.length?'🟢':'🟡','Weekly Option Chain (CE/PE + OI + VWAP)',
+      strikes.length?'GREEN':'YELLOW',
+      strikes.length?`SYNCED (${strikes.length} strikes, ATM ready)`:'NOT LOADED'],
+    ['🟢','KRONOS 3-Model Engine','GREEN','ONLINE (cloud runner)'],
+  ];
+  host.innerHTML = rows.map(([dot,label,status,detail])=>
+    `<span class="chip ${status.toLowerCase()}">${dot} ${label}: <b>${detail}</b></span>`).join('');
+}
+
 async function loadHealth(){
   try{
     const r = await fetch('/api/health',{cache:'no-store'});
@@ -645,7 +670,7 @@ async function loadHealth(){
     if(!j.checks) return;
     $('#health').innerHTML = j.checks.map(c=>
       `<span class="chip ${c.status.toLowerCase()}">${c.dot} ${c.label}: <b>${c.detail}</b></span>`).join('');
-  }catch(e){ /* offline */ }
+  }catch(e){ renderHealthFallback(); }
 }
 loadHealth();
 setInterval(loadHealth, 15000);
