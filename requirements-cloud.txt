@@ -1,0 +1,11 @@
+# Cloud runner verification deps.
+# torch is installed separately from the CPU wheel index (see the workflow).
+# huggingface_hub is pinned to the version the vendored Kronos code targets.
+numpy==2.4.6
+pandas==3.1.1
+huggingface_hub==0.33.1
+safetensors==0.8.0
+einops==0.8.2
+tqdm==4.70.1
+requests==2.31.0
+pytest==9.2.0

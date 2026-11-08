@@ -1,0 +1,94 @@
+name: Verify KRONOS Trio Ensemble (cloud)
+
+# Runs entirely on the GitHub-hosted 16 GB runner. Model weights are downloaded
+# here and cached by Actions — never on a developer laptop.
+
+on:
+  workflow_dispatch:
+    inputs:
+      samples:
+        description: Monte Carlo samples per model (runtime control)
+        required: false
+        default: "8"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kronos-ensemble-verify
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Download trio + verify ensemble (16 GB runner)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    env:
+      PYTHONUNBUFFERED: "1"
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      KRONOS_MC_SAMPLES: ${{ github.event.inputs.samples }}
+
+    steps:
+      - name: Checkout runner workspace
+        uses: actions/checkout@v4
+
+      - name: Report runner capacity
+        run: |
+          echo "vCPU: $(nproc)"
+          free -h
+          df -h /
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Cache HuggingFace model cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/huggingface
+            model/weights
+          key: kronos-trio-${{ runner.os }}-v1
+          restore-keys: |
+            kronos-trio-${{ runner.os }}-
+
+      - name: Install CPU PyTorch and verification deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r requirements-cloud.txt
+          python -c "import torch, huggingface_hub, pandas; print('torch', torch.__version__); print('hf', huggingface_hub.__version__); print('pandas', pandas.__version__)"
+
+      - name: Download the KRONOS trio (cloud only)
+        run: python model/download_all_kronos.py --target model/weights
+
+      - name: Report downloaded sizes
+        run: |
+          for role in mini small base; do
+            if [ -d "model/weights/$role" ]; then
+              echo "$role: $(du -sh model/weights/$role | cut -f1) :: $(ls model/weights/$role | tr '\n' ' ')"
+            else
+              echo "$role: MISSING"
+            fi
+          done
+          echo "tokenizers: $(ls model/weights/tokenizers 2>/dev/null | tr '\n' ' ')"
+          du -sh model/weights
+
+      - name: Verify ensemble (pytest)
+        run: python -m pytest tests/test_ensemble.py -v -s --durations=10
+
+      - name: Cloud summary
+        if: always()
+        run: |
+          echo "=================== CLOUD SUMMARY ==================="
+          free -h
+          du -sh model/weights 2>/dev/null || true
+          for role in mini small base; do
+            size=$(stat -c %s "model/weights/$role/model.safetensors" 2>/dev/null || echo 0)
+            echo "$role weights: $size bytes"
+          done
+          echo "===================================================="
