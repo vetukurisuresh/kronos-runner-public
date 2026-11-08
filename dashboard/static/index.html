@@ -203,6 +203,10 @@
 const $ = s => document.querySelector(s);
 const fmt = (n,d=2) => (n==null||isNaN(n)) ? '—' : Number(n).toLocaleString('en-IN',{minimumFractionDigits:d,maximumFractionDigits:d});
 let STATE=null, SYMBOL='NIFTY', REPLAY=-1, RUN_ID=null, POLL=null, FILTER='all';
+// Firebase Hosting / GitHub Pages have no local API: those buttons must not 404.
+const HOSTED = !/^(localhost|127\.0\.0\.1)$/.test(location.hostname);
+const LOCAL_ONLY = 'This action runs on your laptop \u2014 open http://localhost:8080';
+function hostedGuard(){ if(HOSTED){ toast(LOCAL_ONLY); return true; } return false; }
 
 /* ---------------- data ---------------- */
 const FIREBASE_DB = (window.KRONOS_CONFIG && window.KRONOS_CONFIG.firebaseDbUrl)
@@ -586,7 +590,7 @@ function buildSlider(){
   if(list.length){ REPLAY=0; set(); } else { $('#replayLabel').textContent='no replay data'; }
 }
 
-$('#runBtn').addEventListener('click', runForecast);
+$('#runBtn').addEventListener('click', ()=>{ if(!hostedGuard()) runForecast(); });
 $('#logBtn').addEventListener('click',()=>{
   const block=active();
   if(block) renderLogs(block);
@@ -683,7 +687,7 @@ async function loadHealth(){
 }
 loadHealth();
 setInterval(loadHealth, 15000);
-$('#connectBtn').addEventListener('click',()=>{ window.location.href='/api/upstox/login'; });
+$('#connectBtn').addEventListener('click',()=>{ if(!hostedGuard()) window.location.href='/api/upstox/login'; });
 
 /* ---------------- paper ledger drawer ---------------- */
 let LEDGER = null;
@@ -715,6 +719,7 @@ $('#ledgerBtn').addEventListener('click',async()=>{ await loadLedger(); $('#ledg
 $('#closeLedger').addEventListener('click',()=>$('#ledgerModal').classList.remove('show'));
 $('#ledgerModal').addEventListener('click',e=>{ if(e.target.id==='ledgerModal') $('#ledgerModal').classList.remove('show'); });
 $('#resetLedger').addEventListener('click',async()=>{
+  if(hostedGuard()) return;
   const r = await fetch('/api/ledger/reset',{method:'POST'});
   LEDGER = await r.json(); renderLedger(); toast('Ledger reset to ₹1,00,000 for Monday');
 });
