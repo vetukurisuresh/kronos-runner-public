@@ -1,0 +1,84 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      build-type:
+        description: Flutter build flavour
+        required: false
+        default: release
+        type: choice
+        options:
+          - release
+          - profile
+          - debug
+  push:
+    branches:
+      - main
+    paths:
+      - "mobile/**"
+      - ".github/workflows/build-apk.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-apk:
+    name: Flutter APK (16 GB runner)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Report runner capacity
+        run: |
+          nproc
+          free -h
+          df -h /
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Preflight - locate Flutter app
+        id: preflight
+        run: |
+          if [ -f mobile/pubspec.yaml ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "Flutter app found at mobile/."
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::mobile/pubspec.yaml not found - APK build skipped. Add the KRONOS mobile app under mobile/ to enable it."
+          fi
+
+      - name: Set up Java 17
+        if: steps.preflight.outputs.found == 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Flutter
+        if: steps.preflight.outputs.found == 'true'
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Build APK
+        if: steps.preflight.outputs.found == 'true'
+        working-directory: mobile
+        run: |
+          flutter pub get
+          flutter build apk --${{ inputs.build-type || 'release' }} --split-per-abi
+
+      - name: Upload APK artifacts
+        if: steps.preflight.outputs.found == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: kronos-apk
+          path: mobile/build/app/outputs/flutter-apk/*.apk
+          if-no-files-found: error
+          retention-days: 14
