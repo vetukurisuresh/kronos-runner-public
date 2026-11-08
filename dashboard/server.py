@@ -33,6 +33,10 @@ except (AttributeError, ValueError):  # pragma: no cover
     pass
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+# Running ``python dashboard/server.py`` puts dashboard/ on sys.path, not the
+# repo root; the health/ledger handlers import market.* and state.*.
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 STATIC = Path(__file__).resolve().parent / "static"
 STATE_FILE = REPO_ROOT / "state" / "latest_cloud_state.json"
 LIVE_FILE = REPO_ROOT / "state" / "live_telemetry.json"
