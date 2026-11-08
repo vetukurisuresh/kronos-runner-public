@@ -65,7 +65,7 @@ jobs:
           python -c "import torch, huggingface_hub, pandas; print('torch', torch.__version__); print('hf', huggingface_hub.__version__); print('pandas', pandas.__version__)"
 
       - name: Download the KRONOS trio (cloud only)
-        run: python model/download_all_kronos.py --target model/weights
+        run: python -m model.download_all_kronos --target model/weights
 
       - name: Report downloaded sizes
         run: |

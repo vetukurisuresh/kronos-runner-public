@@ -30,7 +30,12 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-from config.settings import KRONOS_MODELS, WEIGHTS_DIR
+# Support `python model/download_all_kronos.py` as well as the -m form: running a
+# script puts its own directory on sys.path, not the repository root.
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from config.settings import KRONOS_MODELS, WEIGHTS_DIR  # noqa: E402
 
 TOKENIZER_FOR_MODEL = {
     "mini": "NeoQuasar/Kronos-Tokenizer-2k",
