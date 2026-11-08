@@ -252,7 +252,9 @@ const canvas = $('#chart'), ctx = canvas.getContext('2d');
 function draw(){
   const wrap = canvas.parentElement;
   const dpr = window.devicePixelRatio || 1;
-  const W = wrap.clientWidth, H = wrap.clientHeight;
+  // Clamp to the visual viewport: an over-wide flex child must never let the
+  // canvas grow past the screen, or the price axis is clipped on phones.
+  const W = Math.min(wrap.clientWidth || 0, document.documentElement.clientWidth), H = wrap.clientHeight;
   canvas.width = Math.max(1, W*dpr); canvas.height = Math.max(1, H*dpr);
   canvas.style.width = W+'px'; canvas.style.height = H+'px';
   ctx.setTransform(dpr,0,0,dpr,0,0);
