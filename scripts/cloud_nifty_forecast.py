@@ -334,12 +334,13 @@ def walk_forward(trio: KronosTrioEnsemble, candles: list[dict], evaluations: int
     for index, stamp in enumerate(stamps):
         sessions.setdefault(stamp.strftime("%Y-%m-%d"), []).append(index)
 
-    candidates: list[tuple[str, int]] = []
-    for day, indices in sorted(sessions.items()):
-        for offset in range(LOOKBACK, len(indices) - HORIZON, max(stride, 1)):
-            index = indices[offset]
-            if index + HORIZON < len(candles):
-                candidates.append((day, index))
+    # Walk GLOBAL bar indices: a session only holds ~75 bars, so indexing each
+    # session from LOOKBACK produced zero checkpoints.
+    day_of = {index: day for day, indices in sessions.items() for index in indices}
+    candidates: list[tuple[str, int]] = [
+        (day_of.get(index, ""), index)
+        for index in range(LOOKBACK - 1, len(candles) - HORIZON, max(stride, 1))
+    ]
     if not candidates:
         return []
 

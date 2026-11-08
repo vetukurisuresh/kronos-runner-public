@@ -520,7 +520,11 @@ class KronosPredictor:
 
         preds = auto_regressive_inference(self.tokenizer, self.model, x_tensor, x_stamp_tensor, y_stamp_tensor, self.max_context, pred_len,
                                           self.clip, T, top_k, top_p, sample_count, verbose, average)
-        preds = preds[:, -pred_len:, :]
+        # 4-D input is [batch, draws, seq, 5]: the length axis is the third one.
+        if preds.ndim == 4:
+            preds = preds[:, :, -pred_len:, :]
+        else:
+            preds = preds[:, -pred_len:, :]
         return preds
 
     def predict(self, df, x_timestamp, y_timestamp, pred_len, T=1.0, top_k=0, top_p=0.9, sample_count=1, verbose=True):
