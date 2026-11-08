@@ -181,6 +181,58 @@ class Handler(SimpleHTTPRequestHandler):
             self._json({"ok": True, "state": payload,
                         "mtime": datetime.fromtimestamp(STATE_FILE.stat().st_mtime).isoformat()})
             return
+        if parsed.path == "/api/upstox/login":
+            try:
+                from market.upstox_health import authorize_url
+
+                target = authorize_url(read_env("UPSTOX_API_KEY"), read_env("UPSTOX_REDIRECT_URI"))
+                self.send_response(302)
+                self.send_header("Location", target)
+                self.end_headers()
+            except Exception as exc:  # noqa: BLE001
+                self._json({"ok": False, "reason": str(exc)}, status=500)
+            return
+        if parsed.path == "/upstox/callback":
+            code = (parse_qs(parsed.query).get("code") or [""])[0]
+            try:
+                from market.upstox_health import exchange_code, save_access_token, verify_token
+
+                result = exchange_code(
+                    code,
+                    read_env("UPSTOX_API_KEY"),
+                    read_env("UPSTOX_API_SECRET"),
+                    read_env("UPSTOX_REDIRECT_URI"),
+                )
+                if not result.get("ok"):
+                    raise RuntimeError(f"token exchange failed ({result.get('status')})")
+                token = result["access_token"]
+                saved = save_access_token(token, extra={"user": result.get("user")})
+                probe = verify_token(token)
+                self._html(
+                    "<h2>Upstox connected</h2>"
+                    f"<p>Token saved ({saved['length']} chars) - live API: "
+                    f"{'OK' if probe.get('ok') else 'not verified'}</p>"
+                    "<p>You can close this tab.</p><script>setTimeout(()=>window.close(),2500)</script>"
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._html(f"<h2>Upstox connect failed</h2><p>{exc}</p>", status=502)
+            return
+        if parsed.path == "/api/health":
+            self._json(self._health())
+            return
+        if parsed.path == "/api/ledger":
+            from state.paper_trade_ledger import PaperLedger
+
+            ledger = PaperLedger.load()
+            payload: dict = {"ok": True, **ledger.snapshot()}
+            logs_path = REPO_ROOT / "state" / "paper_week_logs.json"
+            if logs_path.is_file():
+                try:
+                    payload["logs"] = json.loads(logs_path.read_text(encoding="utf-8"))
+                except ValueError:
+                    payload["logs"] = []
+            self._json(payload)
+            return
         if parsed.path == "/api/live":
             payload: dict = {"ok": True, "telemetry": [], "money": {}, "traffic": None}
             if LIVE_FILE.is_file():
@@ -207,6 +259,45 @@ class Handler(SimpleHTTPRequestHandler):
         super().do_GET()
 
     # -- POST --------------------------------------------------------------
+    def _html(self, body: str, status: int = 200) -> None:
+        page = (
+            "<!doctype html><meta name=viewport content='width=device-width,initial-scale=1'>"
+            "<body style='background:#0b1017;color:#dbe6f3;font:16px system-ui;padding:32px;"
+            "max-width:640px;margin:auto'>" + body + "</body>"
+        ).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(page)))
+        self.end_headers()
+        self.wfile.write(page)
+
+    @staticmethod
+    def _health() -> dict:
+        from market.upstox_health import HealthInputs, five_checks, load_access_token
+        from state.paper_trade_ledger import PaperLedger
+
+        token = load_access_token()
+        inputs = HealthInputs(token_present=bool(token), token_valid=bool(token))
+        inputs.capital = PaperLedger.load().capital
+        if STATE_FILE.is_file():
+            try:
+                state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            except ValueError:
+                state = {}
+            symbols = state.get("symbols") or {}
+            inputs.buffer_5m = {name: len(block.get("candles") or [])
+                                for name, block in symbols.items()}
+            inputs.option_chain_ready = any(
+                (block.get("plan") or {}).get("strike") for block in symbols.values()
+            )
+            inputs.option_strikes = [
+                str((block.get("plan") or {}).get("strike"))
+                for block in symbols.values()
+                if (block.get("plan") or {}).get("strike")
+            ]
+            inputs.model_online = bool(symbols)
+        return {"ok": True, **five_checks(inputs)}
+
     @staticmethod
     def _derived_ribbon() -> dict:
         """Fallback ribbon built from the newest cloud artifact."""
@@ -264,6 +355,12 @@ class Handler(SimpleHTTPRequestHandler):
                 self._json({"ok": False, "reason": str(exc)}, status=502)
             finally:
                 LOCK.release()
+            return
+        if parsed.path == "/api/ledger/reset":
+            from state.paper_trade_ledger import PaperLedger
+
+            ledger = PaperLedger().reset()
+            self._json({"ok": True, **ledger.snapshot()})
             return
         if parsed.path == "/api/pull":
             run_id = (parse_qs(parsed.query).get("run_id") or [body.get("run_id", "")])[0]

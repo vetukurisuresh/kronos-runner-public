@@ -104,6 +104,21 @@
   .ribbon .rx b{color:#4aa3ff;font-weight:600}
   .ribbon .rx .up{color:#3ddc97}.ribbon .rx .dn{color:#ff5c5c}
   .pill.mm{border-color:#2a3f5c;color:#cfe1f5}
+  .health-title{font:9px Consolas,monospace;letter-spacing:.14em;color:#5d6b7d;padding:4px 10px 0;background:#0c121b}
+  .health{display:flex;gap:6px;overflow-x:auto;padding:4px 10px 6px;background:#0c121b;border-bottom:1px solid #1a2230;font:10px Consolas,monospace;scrollbar-width:none}
+  .health::-webkit-scrollbar{display:none}
+  .health .chip{white-space:nowrap;border:1px solid #1b2432;border-radius:6px;padding:4px 8px;color:#9fb0c3;background:#0f1620}
+  .health .chip.green{border-color:#1f5c42;color:#8ff0c4}
+  .health .chip.yellow{border-color:#5c4a1f;color:#ffe08a}
+  .health .chip.red{border-color:#5c1f1f;color:#ff9a9a}
+  .health .chip b{font-weight:600}
+  #ledgerModal{position:fixed;inset:0;background:rgba(0,0,0,.75);display:none;z-index:70;align-items:flex-end}
+  #ledgerModal.show{display:flex}
+  #ledgerModal .sheet{max-height:88vh;overflow:auto}
+  #ledgerBody table{width:100%;border-collapse:collapse;font:10px Consolas,monospace;color:#cfe1f5}
+  #ledgerBody th,#ledgerBody td{padding:6px 8px;border-bottom:1px solid #16202c;text-align:right;white-space:nowrap}
+  #ledgerBody th:first-child,#ledgerBody td:first-child{text-align:left}
+  #ledgerBody .pos{color:#3ddc97}#ledgerBody .neg{color:#ff6b6b}
 </style>
 </head>
 <body>
@@ -119,7 +134,12 @@
   <div class="spacer"></div>
   <button class="act" id="runBtn">🔄 Run Fresh Cloud Forecast on 16GB Runner</button>
   <button class="act ghost" id="logBtn">📜 తెలుగు లైవ్ లాగ్</button>
+  <button class="act" id="ledgerBtn">📊 1-Week Paper P&amp;L Ledger</button>
+  <button class="act ghost" id="connectBtn">🔑 Connect Upstox Live</button>
 </header>
+
+<div class="health" id="health"></div>
+<div class="health-title">UPSTOX DATA SYNC STATUS</div>
 
 <div class="slider-wrap" id="sliderWrap">
   <span>Checkpoint</span>
@@ -160,6 +180,20 @@
       <button class="close" id="closeModal">×</button>
     </header>
     <div id="logs"></div>
+  </div>
+</div>
+
+<div id="ledgerModal">
+  <div class="sheet">
+    <header style="display:flex;align-items:center">
+      <div>
+        <h3>📊 1-Week Paper Trading P&amp;L Ledger</h3>
+        <div id="ledgerMeta" style="font:11px Consolas,monospace;color:#8b98a9;margin-top:4px"></div>
+      </div>
+      <button class="close" id="closeLedger">×</button>
+    </header>
+    <div id="ledgerBody" style="padding:8px 0;overflow:auto"></div>
+    <button class="act" id="resetLedger" style="width:100%;margin-top:8px">♻️ Reset Ledger for Monday Live Start</button>
   </div>
 </div>
 
@@ -602,6 +636,54 @@ function renderMM(m, traffic){
 loadState();
 loadLive();
 setInterval(loadLive, 5000);
+
+/* ---------------- Upstox sync health ---------------- */
+async function loadHealth(){
+  try{
+    const r = await fetch('/api/health',{cache:'no-store'});
+    const j = await r.json();
+    if(!j.checks) return;
+    $('#health').innerHTML = j.checks.map(c=>
+      `<span class="chip ${c.status.toLowerCase()}">${c.dot} ${c.label}: <b>${c.detail}</b></span>`).join('');
+  }catch(e){ /* offline */ }
+}
+loadHealth();
+setInterval(loadHealth, 15000);
+$('#connectBtn').addEventListener('click',()=>{ window.location.href='/api/upstox/login'; });
+
+/* ---------------- paper ledger drawer ---------------- */
+let LEDGER = null;
+async function loadLedger(){
+  try{
+    const r = await fetch('/api/ledger',{cache:'no-store'});
+    LEDGER = await r.json();
+    renderLedger();
+  }catch(e){ toast('Ledger unavailable'); }
+}
+function renderLedger(){
+  const j = LEDGER || {};
+  const rows = j.rows || [];
+  $('#ledgerMeta').textContent =
+    `Capital ₹${fmt(j.capital||100000,0)} · Net ₹${fmt(j.net||0,0)} · Vault ₹${fmt(j.vault||0,0)} · ${j.trades||0} trades`;
+  if(!rows.length){ $('#ledgerBody').innerHTML = '<div style="color:#8b98a9;padding:12px">No paper trades yet — run scripts/paper_week_replay.py.</div>'; return; }
+  const head = '<tr><th>Day</th><th>Date</th><th>Regime</th><th>Trades</th><th>W/BE/SL</th><th>Points</th><th>Gross</th><th>Costs</th><th>Net</th><th>Vault</th><th>Balance</th></tr>';
+  const body = rows.map(r=>{
+    const icon = r.light==='RED'?'🔴':r.light==='YELLOW'?'🟡':'🟢';
+    const cls = r.net>=0?'pos':'neg';
+    return `<tr><td>${r.day}</td><td>${r.date}</td><td>${icon} ${r.light}</td><td>${r.trades}</td>`+
+      `<td>${r.wins}/${r.breakevens}/${r.sls}</td><td>${(r.points||0).toFixed(1)}</td>`+
+      `<td>${fmt(r.gross,0)}</td><td>${fmt(r.costs,0)}</td>`+
+      `<td class="${cls}">${fmt(r.net,0)}</td><td>${fmt(r.vault,0)}</td><td>${fmt(r.balance,0)}</td></tr>`;
+  }).join('');
+  $('#ledgerBody').innerHTML = `<table>${head}${body}</table>`;
+}
+$('#ledgerBtn').addEventListener('click',async()=>{ await loadLedger(); $('#ledgerModal').classList.add('show'); });
+$('#closeLedger').addEventListener('click',()=>$('#ledgerModal').classList.remove('show'));
+$('#ledgerModal').addEventListener('click',e=>{ if(e.target.id==='ledgerModal') $('#ledgerModal').classList.remove('show'); });
+$('#resetLedger').addEventListener('click',async()=>{
+  const r = await fetch('/api/ledger/reset',{method:'POST'});
+  LEDGER = await r.json(); renderLedger(); toast('Ledger reset to ₹1,00,000 for Monday');
+});
 // The runner streams to Firebase every cycle; poll it every 5s so a phone
 // updates the moment a new forecast lands.
 setInterval(()=>{ if(!RUN_ID) loadState(); }, FIREBASE_DB ? 5000 : 60000);
