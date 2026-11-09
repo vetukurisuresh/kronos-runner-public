@@ -816,11 +816,16 @@ function toLwcCandles(rows){
 function applyCandles(series, data){
   if(!series || !data.length) return;
   if(series.__first !== data[0].time){
+    const grew = data.length > (series.__len||0) + 40;
     series.setData(data);
     series.__first = data[0].time;
+    // A wholesale dataset swap (cold boot, archive refresh) should re-focus
+    // the freshest window; a steady 80-bar slide must not yank a user who panned.
+    if(grew) series.__focused = false;
   } else {
     series.update(data[data.length-1]);
   }
+  series.__len = data.length;
 }
 
 function renderSpot(){
@@ -981,7 +986,9 @@ function paintBadge(){
   if(!badge) return;
   const tr = LIVE.trade;
   const host = $('#chart2');
-  if(!tr || !host){
+  // Once the stop closes the position, the story owns the realized P&L;
+  // keep marking a closed trade against the live premium is misinformation.
+  if(!tr || !host || String(tr.status||'OPEN').toUpperCase() !== 'OPEN'){
     badge.style.display = 'none';
     return;
   }
