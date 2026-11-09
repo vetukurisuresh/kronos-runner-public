@@ -204,6 +204,11 @@ def main(argv: list[str] | None = None) -> int:
     spot_state: dict[str, dict] = {}
     oi_hist: dict[str, deque] = {name: deque(maxlen=400) for name in KEYS}
     last_chain: dict[str, float] = {}
+    # The chain is refetched every ~2s; without these caches the payload (and
+    # the browser pane) would blink empty on every cycle in between.
+    last_option: dict[str, dict] = {}
+    last_trade: dict[str, dict] = {}
+    last_scanner: dict[str, list] = {}
     published = 0.0
     started = time.time()
     deadline = started + args.minutes * 60
@@ -213,7 +218,8 @@ def main(argv: list[str] | None = None) -> int:
         cycle = time.time()
         payload: dict = {"updated_at": datetime.now(tz=IST).isoformat(timespec="seconds"),
                          "updated_epoch": cycle, "prices": {}, "spot": {},
-                         "option": {}, "trade": {}, "scanner": {}}
+                         "option": dict(last_option), "trade": dict(last_trade),
+                         "scanner": dict(last_scanner)}
 
         # ---- spot quotes (indices + heavyweights in one call) ----
         quotes: dict[str, dict] = {}
@@ -403,6 +409,9 @@ def main(argv: list[str] | None = None) -> int:
             "buffer_5m": {n: len(engine.windows(k, 5)) for n, k in KEYS.items()},
             "market_open": any(v["ltp"] > 0 for v in payload["spot"].values()),
         })
+        last_option.update(payload["option"])
+        last_trade.update(payload["trade"])
+        last_scanner.update(payload["scanner"])
         HEARTBEAT.write_text(json.dumps(payload, indent=1), encoding="utf-8")
 
         if not args.no_firebase and cycle - published > 3:
