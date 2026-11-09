@@ -166,6 +166,8 @@ def snapshot(symbol: str = "NIFTY", now: float | None = None) -> dict[str, Any]:
         "option": option or None,
         "active_trade": trade or None,
         "scanner_xray": scanner,
+        "story": feed.get("story") or [],
+        "story_at": feed.get("story_at"),
         "stale": not live,
     }
 

@@ -40,6 +40,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from market.option_picker import choose_side, gear_update, new_trade, pick_atm  # noqa: E402
 from market.upstox_health import load_access_token  # noqa: E402
 from market.upstox_tick_engine import UpstoxTickEngine  # noqa: E402
+from state.telugu_story import StoryTeller  # noqa: E402
 
 IST = timezone(timedelta(hours=5, minutes=30))
 HEARTBEAT = REPO_ROOT / "state" / "live_feed.json"
@@ -241,6 +242,11 @@ def main(argv: list[str] | None = None) -> int:
     socket.start()
     engine = UpstoxTickEngine()
     publisher = Publisher()
+    story = StoryTeller(limit=20)
+    story_started = False
+    story_update_at = 0.0
+    story_gear: dict[str, int] = {}
+    story_stop: dict[str, float] = {}
     edge = None
     if args.edge:
         from market.cloud_edge import CloudEdge
@@ -460,6 +466,70 @@ def main(argv: list[str] | None = None) -> int:
                  "value": f"SL = ₹{risk:.2f} pts (<= ₹10) · Spread ₹{spread:.2f}"},
             ]
 
+            # ---- Story-Mode Telugu narration (NIFTY is the narrative desk) ----
+            if name == "NIFTY":
+                now_story = time.time()
+                five_min = list((spot_state.get("NIFTY") or {}).get("hist5") or [])
+                day_high = max((c["high"] for c in five_min), default=spot)
+                day_low = min((c["low"] for c in five_min), default=spot)
+                support = min((c["low"] for c in five_min[-12:]), default=spot)
+                resistance = max((c["high"] for c in five_min[-12:]), default=spot)
+                ranges5 = [c["high"] - c["low"] for c in five_min[-14:]]
+                atr5 = round(sum(ranges5) / len(ranges5), 2) if ranges5 else 0.0
+                if not story_started:
+                    story.opening(spot=spot, support=support, resistance=resistance,
+                                  paths_up=plan.get("paths_up"), samples=plan.get("samples"),
+                                  side=side)
+                    story_started = True
+                    story_update_at = now_story
+                elif now_story - story_update_at > 300:
+                    if trade.get("status") == "OPEN":
+                        story.market_update(spot=spot, high=day_high, low=day_low, atr=atr5,
+                                            paths_up=plan.get("paths_up"),
+                                            samples=plan.get("samples"),
+                                            pnl=trade.get("live_pnl_rs", 0.0), side=side)
+                    else:
+                        story.waiting(spot=spot, support=support, resistance=resistance,
+                                      reason="KRONOS ఇంకా కన్ఫర్మేషన్ ఇవ్వలేదు",
+                                      paths_up=plan.get("paths_up"),
+                                      samples=plan.get("samples"), side=side)
+                    story_update_at = now_story
+                if trade.get("status") == "OPEN" and not state.get("story_trade"):
+                    story.trade_taken(symbol=symbol, entry=ltp,
+                                      stop=trade.get("current_trailing_sl", 0.0),
+                                      target1=trade.get("target_1", 0.0),
+                                      target2=trade.get("target_2_p90", 0.0),
+                                      risk=trade.get("risk_points", 0.0),
+                                      paths_up=plan.get("paths_up"),
+                                      samples=plan.get("samples"), heavy=len(heavy), side=side)
+                    state["story_trade"] = True
+                    story_gear[name] = int(trade.get("tsl_gear") or 1)
+                    story_stop[name] = float(trade.get("current_trailing_sl") or 0.0)
+                if trade.get("status") == "OPEN":
+                    gear_now = int(trade.get("tsl_gear") or 1)
+                    stop_now = float(trade.get("current_trailing_sl") or 0.0)
+                    if name in story_gear and gear_now != story_gear[name]:
+                        story.gear_moved(gear=gear_now,
+                                         old_stop=story_stop.get(name, stop_now),
+                                         new_stop=stop_now, ltp=ltp,
+                                         pnl=trade.get("live_pnl_rs", 0.0))
+                    story_gear[name] = gear_now
+                    story_stop[name] = stop_now
+                    hits = state.setdefault("story_hits", set())
+                    if ltp >= float(trade.get("target_1") or 1e12) and "t1" not in hits:
+                        story.target_hit("T1", float(trade["target_1"]),
+                                         trade.get("live_pnl_rs", 0.0))
+                        hits.add("t1")
+                    if ltp >= float(trade.get("target_2_p90") or 1e12) and "t2" not in hits:
+                        story.target_hit("T2", float(trade["target_2_p90"]),
+                                         trade.get("live_pnl_rs", 0.0))
+                        hits.add("t2")
+                elif trade.get("status") == "CLOSED":
+                    hits = state.setdefault("story_hits", set())
+                    if "sl" not in hits:
+                        story.stop_hit(price=ltp, pnl=trade.get("live_pnl_rs", 0.0))
+                        hits.add("sl")
+
         payload.update({
             "socket_connected": socket.streaming(),
             "socket_frames": socket.frames,
@@ -469,6 +539,8 @@ def main(argv: list[str] | None = None) -> int:
             "buffer_1m": {n: len(engine.windows(k, 1)) for n, k in KEYS.items()},
             "buffer_5m": {n: len(engine.windows(k, 5)) for n, k in KEYS.items()},
             "market_open": any(v["ltp"] > 0 for v in payload["spot"].values()),
+            "story": story.snapshot(),
+            "story_at": round(time.time(), 3),
         })
         last_option.update(payload["option"])
         last_trade.update(payload["trade"])
@@ -485,12 +557,19 @@ def main(argv: list[str] | None = None) -> int:
                 "option": payload["option"],
                 "trade": payload["trade"],
                 "scanner": payload["scanner"],
+                "story": payload["story"],
                 "socket": {"rate": payload["tick_rate"], "connected": socket.streaming()},
             })
 
         time.sleep(max(0.0, 1.0 - (time.time() - cycle)))
 
     socket.stop.set()
+    story.session_summary(spot=float((payload["spot"].get("NIFTY") or {}).get("ltp") or 0.0),
+                          pnl=float((payload["trade"].get("NIFTY") or {}).get("live_pnl_rs") or 0.0),
+                          trades=1 if (payload["trade"].get("NIFTY") or {}).get("entry_price") else 0,
+                          high=max((payload["spot"].get("NIFTY") or {}).get("ltp") or 0.0,
+                                   float((payload["spot"].get("NIFTY") or {}).get("ltp") or 0.0)),
+                          low=float((payload["spot"].get("NIFTY") or {}).get("ltp") or 0.0))
     if edge:
         edge.stop()
     print("live session finished")
