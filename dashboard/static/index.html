@@ -1006,7 +1006,7 @@ function startLive(){
 }
 
 function liveFrame(ts){
-  const budget = window.innerWidth < 560 ? 50 : 33;
+  const budget = window.innerWidth < 560 ? 50 : 16;
   if(ts - LIVE.lastPaint >= budget){
     LIVE.lastPaint = ts;
     if(document.visibilityState !== 'hidden'){ draw(); drawOption(); }
