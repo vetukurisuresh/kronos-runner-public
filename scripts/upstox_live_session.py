@@ -182,6 +182,34 @@ def load_plan(symbol: str) -> dict:
     }
 
 
+CANDLE_URL = "https://api.upstox.com/v2/historical-candle/intraday/{key}/1minute"
+
+
+def fetch_candles(instrument_key: str, headers: dict, limit: int = 60) -> list[dict]:
+    """Today's 1-minute candles, oldest first, so the option pane opens full."""
+    if not instrument_key:
+        return []
+    try:
+        response = requests.get(CANDLE_URL.format(key=instrument_key), headers=headers, timeout=12)
+        rows = (response.json().get("data") or {}).get("candles") or []
+    except Exception:  # noqa: BLE001
+        return []
+    out: list[dict] = []
+    for row in reversed(rows):
+        try:
+            out.append({"time": row[0], "open": float(row[1]), "high": float(row[2]),
+                        "low": float(row[3]), "close": float(row[4]), "volume": float(row[5])})
+        except (IndexError, TypeError, ValueError):
+            continue
+    return out[-limit:]
+
+
+def strike_step(rows: list[dict]) -> float:
+    strikes = sorted({float(r.get("strike_price") or 0) for r in rows if r.get("strike_price")})
+    gaps = [b - a for a, b in zip(strikes, strikes[1:]) if b > a]
+    return min(gaps) if gaps else 50.0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the live Upstox session")
     parser.add_argument("--minutes", type=float, default=300.0)
@@ -295,6 +323,16 @@ def main(argv: list[str] | None = None) -> int:
             if not atm:
                 continue
             side = choose_side(plan.get("paths_up"), plan.get("samples"), plan.get("action"))
+            # Stay on the current strike until spot walks a full step away; re-picking
+            # on every 50-point wobble wiped the option's candle history.
+            prev = option_state.get(name) or {}
+            step = float(prev.get("step") or 0.0)
+            if prev.get("strike") and step and abs(spot - float(prev["strike"])) <= step:
+                kept = next((row for row in rows
+                             if float(row.get("strike_price") or 0) == float(prev["strike"])), None)
+                if kept:
+                    atm = kept
+                    side = prev.get("side") or side
             leg = (atm.get("call_options") if side == "CE" else atm.get("put_options")) or {}
             market = leg.get("market_data") or {}
             greeks = leg.get("option_greeks") or {}
@@ -311,7 +349,9 @@ def main(argv: list[str] | None = None) -> int:
                 # A new strike resets the book; a half-ATR risk keeps the stop sane.
                 option_state[name] = state = {"symbol": symbol, "hist": deque(maxlen=120),
                                               "cur": None, "cum_value": 0.0, "cum_vol": 0.0,
-                                              "trade": None}
+                                              "trade": None, "strike": strike, "side": side,
+                                              "step": strike_step(rows)}
+                state["hist"].extend(fetch_candles(leg.get("instrument_key"), headers))
             volume = float(market.get("volume") or 0.0)
             state.setdefault("last_volume", volume)
             delta_vol = max(volume - state.get("last_volume", volume), 0.0)
