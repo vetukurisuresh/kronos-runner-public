@@ -1045,10 +1045,20 @@ function bigPrices(){
   }
   const block = active();
   const plan = $('#bigPlan');
-  if(plan && block && block.plan){
-    plan.textContent = block.plan.action === 'NO_TRADE'
-      ? 'NO TRADE · capital protected'
-      : `${block.plan.action} · ${block.plan.strike} · win ${block.plan.win_rate}%`;
+  if(plan){
+    // The plan is the model's latest view; the live paper position is the
+    // headline once it exists, or the hero contradicts the money badge.
+    const tr = LIVE.trade;
+    if(tr && String(tr.status||'').toUpperCase() === 'OPEN'){
+      const sym = String(tr.strike_symbol||'').split(' ').pop();
+      const side = String(tr.side || sym || 'CE').toUpperCase();
+      const pnl = Number(tr.live_pnl_rs||0);
+      plan.textContent = `PAPER ${side} LIVE · ${pnl>=0?'+':'-'}₹${fmt(Math.abs(pnl),0)}`;
+    } else if(block && block.plan){
+      plan.textContent = block.plan.action === 'NO_TRADE'
+        ? 'NO TRADE · capital protected'
+        : `${block.plan.action} · ${block.plan.strike} · win ${block.plan.win_rate}%`;
+    }
   }
   const regime = $('#bigRegime');
   if(regime && block && block.forecast){
