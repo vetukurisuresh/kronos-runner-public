@@ -23,11 +23,14 @@ the registered callback, which is what drives the 1m and 5m scan loops.
 
 from __future__ import annotations
 
+import functools
 import json
 import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable
+
+import requests
 
 from market.upstox_stream import Candle
 
@@ -36,6 +39,84 @@ INTERVALS = (1, 5)
 TICK_SCAN_MS = 100
 MINUTE_SCAN_SEC = 60
 MASTER_SCAN_SEC = 300
+TELUGU_RECONNECT = "⚠️ సిగ్నల్ కట్ అయింది, మళ్లీ కనెక్ట్ చేస్తున్నాను..."
+RETRY_STATUSES = (502, 503, 504)
+
+
+def retry(
+    tries: int = 3,
+    delay: float = 1.5,
+    backoff: float = 2.0,
+    statuses: tuple[int, ...] = RETRY_STATUSES,
+):
+    """Retry transient broker/network failures transparently.
+
+    HTTP responses that carry a retryable status (502/504, plus 503) are
+    re-attempted; connection/timeout exceptions are re-attempted; other 4xx
+    answers fail immediately so a rejected token is not hammered.
+    """
+    if tries < 1:
+        raise ValueError("tries must be at least 1")
+
+    def decorate(operation: Callable[..., Any]) -> Callable[..., Any]:
+        @functools.wraps(operation)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            for attempt in range(tries):
+                try:
+                    return operation(*args, **kwargs)
+                except Exception as exc:  # noqa: BLE001 - classified below
+                    response = getattr(exc, "response", None)
+                    status = getattr(response, "status_code", None)
+                    retryable = (
+                        status in statuses
+                        if status is not None
+                        else isinstance(exc, requests.RequestException)
+                    )
+                    if not retryable or attempt + 1 >= tries:
+                        raise
+                    time.sleep(delay * (backoff ** attempt))
+            raise RuntimeError("retry loop exhausted")
+
+        return wrapper
+
+    return decorate
+
+
+def reconnect_forever(
+    connect: Callable[[], Any],
+    consume: Callable[[Any], None],
+    stop: Any,
+    *,
+    delay: float = 2.0,
+    max_delay: float = 30.0,
+    on_drop: Callable[[Exception], None] | None = None,
+    on_reconnect: Callable[[], None] | None = None,
+    log: Callable[[str], None] = print,
+) -> None:
+    """Keep a broker socket alive for as long as ``stop`` is not set.
+
+    Every disconnect is logged in Telugu, then retried after an exponential
+    backoff (2 s, 4 s, 8 s ... capped at ``max_delay``). There is no retry
+    ceiling: the market feed is allowed to recover for the whole session.
+    """
+    failures = 0
+    while not stop.is_set():
+        recovering = failures > 0
+        try:
+            session = connect()
+            if recovering and on_reconnect is not None:
+                on_reconnect()
+            consume(session)
+            if stop.is_set():
+                return
+            raise ConnectionError("feed closed")
+        except Exception as exc:  # noqa: BLE001 - every failure is a reconnect
+            failures += 1
+            if on_drop is not None:
+                on_drop(exc)
+            log(TELUGU_RECONNECT)
+            wait = min(delay * (2 ** min(failures - 1, 4)), max_delay)
+            stop.wait(wait)
 
 INDEX_KEYS = {
     "NIFTY": "NSE_INDEX|Nifty 50",

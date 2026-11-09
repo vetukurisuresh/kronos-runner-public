@@ -35,6 +35,7 @@ from agent.kronos_ensemble import (  # noqa: E402
     KronosTrioEnsemble,
     decide_trio,
 )
+from market.upstox_tick_engine import retry  # noqa: E402
 
 SYMBOLS = {"NIFTY": "^NSEI", "BANKNIFTY": "^NSEBANK"}
 DISPLAY = {"NIFTY": "NIFTY 50", "BANKNIFTY": "BANK NIFTY"}
@@ -84,28 +85,28 @@ def _parse_chart(payload: dict) -> tuple[list[dict], float]:
     return candles, spot
 
 
+@retry(tries=3, delay=1.5)
+def _chart_json(url: str, params: dict, headers: dict) -> dict:
+    response = requests.get(url, params=params, headers=headers, timeout=30)
+    response.raise_for_status()
+    return response.json()
+
+
 def fetch_candles(symbol: str, interval: str = "5m", range_: str = "15d") -> tuple[list[dict], float]:
+    """Fetch the 512-bar lookback with three transparent retries per host."""
     params = {"interval": interval, "range": range_, "includePrePost": "false"}
     headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
     problems: list[str] = []
     for host in YAHOO_HOSTS:
         url = f"https://{host}/v8/finance/chart/{quote(symbol, safe='')}"
-        for attempt in range(3):
-            try:
-                response = requests.get(url, params=params, headers=headers, timeout=30)
-                if response.status_code != 200:
-                    problems.append(f"{host} HTTP {response.status_code}")
-                    time.sleep(1 + attempt)
-                    continue
-                candles, spot = _parse_chart(response.json())
-                if len(candles) < 60:
-                    problems.append(f"{host} returned only {len(candles)} candles")
-                    time.sleep(1)
-                    continue
-                return candles, spot
-            except Exception as exc:  # noqa: BLE001
-                problems.append(f"{host} {type(exc).__name__}: {exc}")
-                time.sleep(1 + attempt)
+        try:
+            candles, spot = _parse_chart(_chart_json(url, params, headers))
+            if len(candles) < 60:
+                problems.append(f"{host} returned only {len(candles)} candles")
+                continue
+            return candles, spot
+        except Exception as exc:  # noqa: BLE001 - retry already used its three attempts
+            problems.append(f"{host} {type(exc).__name__}: {exc}")
     raise RuntimeError(f"could not fetch {symbol} {interval}: {'; '.join(problems[-4:])}")
 
 

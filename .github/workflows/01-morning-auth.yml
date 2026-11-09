@@ -1,27 +1,28 @@
-name: Morning Upstox auto-login (08:50 IST)
+name: "01 - Ghost morning auth (08:30 IST)"
 
-# Zero-touch alternative to tapping the phone: only runs when UPSTOX_MOBILE,
-# UPSTOX_PIN and UPSTOX_TOTP_SECRET are present as repository secrets.
-# The script exits 0 without doing anything when they are missing.
+# Zero-touch token mint before the open. The Playwright login is skipped
+# cleanly when the credential secrets are absent, so the phone fallback stays
+# usable. The token is published to Firebase before the live-edge shift starts.
 
 on:
   schedule:
-    - cron: "20 3 * * 1-5"   # 08:50 IST, weekdays
+    - cron: "0 3 * * 1-5"   # 08:30 IST, Monday-Friday
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: morning-upstox-login
+  group: kronos-morning-auth
   cancel-in-progress: false
 
 jobs:
-  login:
-    name: Mint the daily token headlessly
+  ghost-login:
+    name: Headless Upstox login + token
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
+      TZ: Asia/Kolkata
       FIREBASE_CREDENTIALS_JSON: ${{ secrets.FIREBASE_CREDENTIALS_JSON }}
       FIREBASE_DB_URL: ${{ secrets.FIREBASE_DB_URL }}
       UPSTOX_API_KEY: ${{ secrets.UPSTOX_API_KEY }}
@@ -39,19 +40,20 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install deps
+      - name: Install Playwright, pyotp and Firebase deps
         run: |
-          python -m pip install --upgrade pip requests google-auth pynacl pyotp playwright
+          python -m pip install --upgrade pip
+          python -m pip install requests google-auth pynacl pyotp playwright
           python -m playwright install --with-deps chromium
 
-      - name: Auto-login (skips cleanly when secrets are absent)
+      - name: Mint today's token headlessly
         run: python scripts/auto_upstox_morning_login.py --push-secret
 
-      - name: Keep a screenshot for debugging
-        if: always()
+      - name: Upload the login screenshot on failure
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: upstox-login-debug
+          name: upstox-login-debug-${{ github.run_id }}
           path: state/logs/upstox_login_*.png
           if-no-files-found: ignore
           retention-days: 7

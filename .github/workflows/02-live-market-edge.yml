@@ -1,16 +1,15 @@
-name: KRONOS Live Edge Stream (cloud SSE -> Cloudflare -> phone)
+name: "02 - Live market edge (08:45 IST)"
 
-# The laptop is no longer part of the path: this job runs the Upstox V3 socket,
-# the SSE server and an ephemeral Cloudflare quick tunnel on the 16 GB runner,
-# then publishes the public URL to Firebase for the Pages terminal.
-#
-# Two shifts keep the 09:15-15:30 IST session covered under the ~6h job cap.
+# Starts the Upstox V3 socket, SSE server and an ephemeral Cloudflare tunnel
+# before the 09:15 open. Two shifts stay under the ~6 h job cap: 08:45 and the
+# 12:45 handoff. The token is read from Firebase first (freshly minted at 08:30)
+# and the repository secret is the fallback.
 
 on:
-  workflow_dispatch:
   schedule:
-    - cron: "40 3 * * 1-5"   # 09:10 IST
-    - cron: "15 7 * * 1-5"   # 12:45 IST (second shift, overlaps by design)
+    - cron: "15 3 * * 1-5"   # 08:45 IST
+    - cron: "15 7 * * 1-5"   # 12:45 IST second shift
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -28,9 +27,9 @@ env:
 
 jobs:
   edge:
-    name: Runner-hosted SSE + tunnel
+    name: SSE + Cloudflare tunnel
     runs-on: ubuntu-latest
-    timeout-minutes: 210
+    timeout-minutes: 270
 
     steps:
       - name: Checkout
@@ -57,10 +56,37 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           "$HOME/.local/bin/cloudflared" --version
 
+      - name: Hydrate today's token from Firebase
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          try:
+              from state.firebase_sync import admin, rt_get
+              url, token = admin()
+              record = rt_get(url, token, "/upstox_auth/token.json") or {}
+          except Exception as exc:  # noqa: BLE001 - secret fallback below
+              print(f"Firebase token unavailable ({type(exc).__name__}); using repository secret")
+              raise SystemExit(0)
+
+          access = str(record.get("access_token") or "").strip()
+          if not access:
+              print("Firebase has no token yet; using repository secret")
+              raise SystemExit(0)
+
+          print(f"::add-mask::{access}", flush=True)
+          Path("state/upstox_token.json").write_text(json.dumps(record), encoding="utf-8")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as handle:
+              handle.write(f"UPSTOX_ACCESS_TOKEN={access}\n")
+          print(f"hydrated token ({len(access)} chars, expires {record.get('expires_at')})")
+          PY
+
       - name: Token sanity
         run: |
           if [ -z "$UPSTOX_ACCESS_TOKEN" ]; then
-            echo "::error::UPSTOX_ACCESS_TOKEN is empty - run the morning login first."
+            echo "::error::UPSTOX_ACCESS_TOKEN is empty - run the 01 morning auth first."
             exit 1
           fi
           echo "token present (${#UPSTOX_ACCESS_TOKEN} chars)"
@@ -68,7 +94,7 @@ jobs:
       - name: Start the cloud edge bridge
         run: |
           mkdir -p state/logs
-          nohup python -u scripts/upstox_live_session.py --minutes 200 --edge \
+          nohup python -u scripts/upstox_live_session.py --minutes 240 --edge \
             > state/logs/edge_session.log 2>&1 &
           echo $! > state/logs/edge_session.pid
           sleep 15

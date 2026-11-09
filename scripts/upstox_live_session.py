@@ -44,7 +44,11 @@ from execution.pro_money_manager import (  # noqa: E402
 )
 from market.option_picker import choose_side, gear_update, new_trade, pick_atm  # noqa: E402
 from market.upstox_health import load_access_token  # noqa: E402
-from market.upstox_tick_engine import UpstoxTickEngine  # noqa: E402
+from market.upstox_tick_engine import (  # noqa: E402
+    UpstoxTickEngine,
+    reconnect_forever,
+    retry,
+)
 from state.telugu_story import StoryTeller  # noqa: E402
 
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -92,41 +96,64 @@ class SocketWatch(threading.Thread):
         self.frames = 0
         self.last_frame = 0.0
         self.last_error = ""
+        self.reconnect_gap = 0.0
         self.prices: dict[str, float] = {}
 
-    def run(self) -> None:  # pragma: no cover - network
+    def _connect(self):  # pragma: no cover - network
         import websocket
 
+        ws = websocket.create_connection(
+            "wss://api.upstox.com/v3/feed/market-data-feed",
+            header=[f"Authorization: Bearer {self.token}", "Accept: */*"],
+            timeout=15,
+        )
+        self.last_error = ""
+        time.sleep(1.0)
+        ws.send(
+            json.dumps({
+                "guid": str(uuid.uuid4()),
+                "method": "sub",
+                "data": {"mode": "full", "instrumentKeys": list(KEYS.values())},
+            }).encode("utf-8"),
+            opcode=websocket.ABNF.OPCODE_BINARY,
+        )
+        return ws
+
+    def _consume(self, ws) -> None:  # pragma: no cover - network
+        import websocket
+
+        ws.settimeout(5)
         while not self.stop.is_set():
             try:
-                ws = websocket.create_connection(
-                    "wss://api.upstox.com/v3/feed/market-data-feed",
-                    header=[f"Authorization: Bearer {self.token}", "Accept: */*"],
-                    timeout=15,
-                )
-                self.last_error = ""
-                time.sleep(1.0)
-                ws.send(
-                    json.dumps({
-                        "guid": str(uuid.uuid4()),
-                        "method": "sub",
-                        "data": {"mode": "full", "instrumentKeys": list(KEYS.values())},
-                    }).encode("utf-8"),
-                    opcode=websocket.ABNF.OPCODE_BINARY,
-                )
-                ws.settimeout(5)
-                while not self.stop.is_set():
-                    try:
-                        message = ws.recv()
-                    except Exception:
-                        continue
-                    if message:
-                        self.frames += 1
-                        self.last_frame = time.time()
-                        self._decode(message)
-            except Exception as exc:  # noqa: BLE001
-                self.last_error = type(exc).__name__
-                time.sleep(3)
+                message = ws.recv()
+            except websocket.WebSocketTimeoutException:
+                continue
+            if not message:
+                raise ConnectionError("Upstox feed closed")
+            self.frames += 1
+            self.last_frame = time.time()
+            self._decode(message)
+
+    def _on_drop(self, exc: Exception) -> None:
+        self.last_error = type(exc).__name__
+
+    def _on_reconnect(self) -> None:
+        now = time.time()
+        self.reconnect_gap = max(0.0, now - self.last_frame) if self.last_frame else 0.0
+        print(f"✅ Upstox feed restored after {self.reconnect_gap:.0f}s gap", flush=True)
+
+    def take_gap(self) -> float:
+        gap, self.reconnect_gap = self.reconnect_gap, 0.0
+        return gap
+
+    def run(self) -> None:  # pragma: no cover - network
+        reconnect_forever(
+            self._connect,
+            self._consume,
+            self.stop,
+            on_drop=self._on_drop,
+            on_reconnect=self._on_reconnect,
+        )
 
     def _decode(self, message: bytes) -> None:  # pragma: no cover - protobuf
         try:
@@ -203,14 +230,27 @@ def load_plan(symbol: str) -> dict:
 CANDLE_URL = "https://api.upstox.com/v2/historical-candle/intraday/{key}/1minute"
 
 
+@retry(tries=3, delay=1.5)
+def _get_json(url: str, *, params: dict, headers: dict, timeout: float) -> dict:
+    response = requests.get(url, params=params, headers=headers, timeout=timeout)
+    response.raise_for_status()
+    return response.json()
+
+
+@retry(tries=3, delay=1.5)
+def _fetch_candle_rows(instrument_key: str, headers: dict) -> list:
+    response = requests.get(CANDLE_URL.format(key=instrument_key), headers=headers, timeout=12)
+    response.raise_for_status()
+    return ((response.json().get("data") or {}).get("candles") or [])
+
+
 def fetch_candles(instrument_key: str, headers: dict, limit: int = 60) -> list[dict]:
     """Today's 1-minute candles, oldest first, so the option pane opens full."""
     if not instrument_key:
         return []
     try:
-        response = requests.get(CANDLE_URL.format(key=instrument_key), headers=headers, timeout=12)
-        rows = (response.json().get("data") or {}).get("candles") or []
-    except Exception:  # noqa: BLE001
+        rows = _fetch_candle_rows(instrument_key, headers)
+    except Exception:  # noqa: BLE001 - the retry already used its three attempts
         return []
     out: list[dict] = []
     for row in reversed(rows):
@@ -323,12 +363,65 @@ def main(argv: list[str] | None = None) -> int:
     last_trade: dict[str, dict] = {}
     last_scanner: dict[str, list] = {}
     published = 0.0
+
+    def _bar_epoch(value) -> int:
+        if isinstance(value, (int, float)):
+            return int(value)
+        try:
+            return int(datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp())
+        except (TypeError, ValueError):
+            return 0
+
+    def _merge_backfill(state: dict, bars: list[dict]) -> None:
+        """Merge REST 1m high/low into the live 1m and 5m buckets."""
+        for bar in bars:
+            try:
+                stamp = _bar_epoch(bar.get("time"))
+                high = float(bar["high"])
+                low = float(bar["low"])
+                close = float(bar["close"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if stamp <= 0:
+                continue
+            for bucket_name in ("1m", "cur"):
+                bucket = state.get(bucket_name)
+                if not bucket or int(bucket.get("time") or 0) != stamp:
+                    continue
+                bucket["high"] = max(float(bucket.get("high") or high), high)
+                bucket["low"] = min(float(bucket.get("low") or low), low)
+                bucket["close"] = close
+            five = state.get("5m")
+            if five:
+                start = int(five.get("time") or 0)
+                if start <= stamp < start + 300:
+                    five["high"] = max(float(five.get("high") or high), high)
+                    five["low"] = min(float(five.get("low") or low), low)
+                    five["close"] = close
+
+    def backfill_missed(gap: float) -> None:
+        """A >5 s socket gap gets repaired from the 1-minute REST candles."""
+        print(f"⚠️ Feed gap {gap:.0f}s - backfilling 1m REST high/low", flush=True)
+        for name, key in KEYS.items():
+            bars = fetch_candles(key, headers, limit=15)
+            if bars:
+                _merge_backfill(spot_state.get(name) or {}, bars)
+        for state in option_state.values():
+            key = state.get("instrument_key")
+            if not key:
+                continue
+            bars = fetch_candles(key, headers, limit=15)
+            if bars:
+                _merge_backfill(state, bars)
     started = time.time()
     deadline = started + args.minutes * 60
     print(f"live session started ({args.minutes} min)")
 
     while time.time() < deadline:
         cycle = time.time()
+        gap = socket.take_gap()
+        if gap >= 5.0:
+            backfill_missed(gap)
         payload: dict = {"updated_at": datetime.now(tz=IST).isoformat(timespec="seconds"),
                          "updated_epoch": cycle, "prices": {}, "spot": {},
                          "option": dict(last_option), "trade": dict(last_trade),
@@ -338,11 +431,9 @@ def main(argv: list[str] | None = None) -> int:
         quotes: dict[str, dict] = {}
         keys = list(KEYS.values()) + list(HEAVYWEIGHTS.values())
         try:
-            response = requests.get(QUOTES_URL, params={"instrument_key": ",".join(keys)},
-                                    headers=headers, timeout=10)
-            if response.ok:
-                quotes = response.json().get("data") or {}
-        except Exception:  # noqa: BLE001
+            quotes = _get_json(QUOTES_URL, params={"instrument_key": ",".join(keys)},
+                               headers=headers, timeout=10).get("data") or {}
+        except Exception:  # noqa: BLE001 - the retry already used its three attempts
             pass
 
         for name, key in KEYS.items():
@@ -386,9 +477,9 @@ def main(argv: list[str] | None = None) -> int:
             plan = load_plan(name)
             if key not in expiries or cycle - last_chain.get(name, 0) > 3600:
                 try:
-                    response = requests.get(CONTRACT_URL, params={"instrument_key": key},
-                                            headers=headers, timeout=10)
-                    dates = sorted({row.get("expiry") for row in (response.json().get("data") or [])
+                    payload_contract = _get_json(CONTRACT_URL, params={"instrument_key": key},
+                                                 headers=headers, timeout=10)
+                    dates = sorted({row.get("expiry") for row in (payload_contract.get("data") or [])
                                     if row.get("expiry")})
                     today = datetime.now(tz=IST).date().isoformat()
                     expiries[key] = next((d for d in dates if d >= today), dates[-1] if dates else "")
@@ -398,11 +489,10 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             last_chain[name] = cycle
             try:
-                response = requests.get(CHAIN_URL, params={"instrument_key": key,
-                                                           "expiry_date": expiries[key]},
-                                        headers=headers, timeout=12)
-                rows = response.json().get("data") or []
-            except Exception:  # noqa: BLE001
+                rows = _get_json(CHAIN_URL, params={"instrument_key": key,
+                                                    "expiry_date": expiries[key]},
+                                 headers=headers, timeout=12).get("data") or []
+            except Exception:  # noqa: BLE001 - the retry already used its three attempts
                 continue
             atm = pick_atm(rows, spot)
             if not atm:
@@ -437,6 +527,7 @@ def main(argv: list[str] | None = None) -> int:
                                               "trade": None, "strike": strike, "side": side,
                                               "step": strike_step(rows)}
                 state["hist"].extend(fetch_candles(leg.get("instrument_key"), headers))
+            state["instrument_key"] = leg.get("instrument_key") or ""
             volume = float(market.get("volume") or 0.0)
             state.setdefault("last_volume", volume)
             delta_vol = max(volume - state.get("last_volume", volume), 0.0)
