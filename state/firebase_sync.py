@@ -7,6 +7,10 @@ as a GitHub secret, or ``state/firebase-key.json`` locally) and writes:
     PUT {db}/kronos_state/live.json          candles, fan, plan, regime
     PUT {db}/kronos_state/telugu_logs.json   Telugu thought stream
 
+Both scopes are required. With only ``firebase.database`` the Realtime Database
+REST endpoint answers ``401 Unauthorized`` for this regional instance, so the
+token also carries ``userinfo.email``.
+
 Missing configuration is never fatal: the forecast still runs and the dashboard
 falls back to the local JSON file.
 """
@@ -17,11 +21,43 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import requests
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_SCOPE = "https://www.googleapis.com/auth/firebase.database"
+
+# Both scopes are needed: firebase.database alone returns 401 on the regional
+# instance, and userinfo.email is what the RTDB REST gateway checks.
+SCOPES = [
+    "https://www.googleapis.com/auth/firebase.database",
+    "https://www.googleapis.com/auth/userinfo.email",
+]
+
+# Applied by the forecast workflow (FIREBASE_APPLY_RULES=1). /kronos_state is
+# world-readable for the phone; the token itself is never readable.
+PUBLIC_RULES = {
+    "rules": {
+        ".read": False,
+        ".write": False,
+        "kronos_state": {".read": True, ".write": False},
+        "upstox_auth": {
+            "status": {".read": True, ".write": False},
+            "token": {".read": False, ".write": False},
+        },
+        "upstox_handshake": {
+            "pending_code": {
+                ".read": False,
+                ".write": True,
+                ".validate": (
+                    "newData.hasChildren(['code']) && newData.child('code').isString() "
+                    "&& newData.child('code').val().length > 10 "
+                    "&& newData.child('code').val().length < 600"
+                ),
+            }
+        },
+    }
+}
 
 
 def _credentials_info() -> dict | None:
@@ -53,16 +89,46 @@ def database_url(info: dict | None) -> str:
     project = (info or {}).get("project_id") or os.environ.get("FIREBASE_PROJECT_ID", "")
     if not project:
         return ""
-    return f"https://{project}-default-rtdb.firebaseio.com"
+    region = (os.environ.get("FIREBASE_DB_REGION") or "asia-southeast1").strip()
+    return f"https://{project}-default-rtdb.{region}.firebasedatabase.app"
 
 
 def _access_token(info: dict) -> str:
     from google.auth.transport.requests import Request
     from google.oauth2 import service_account
 
-    credentials = service_account.Credentials.from_service_account_info(info, scopes=[DEFAULT_SCOPE])
+    credentials = service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
     credentials.refresh(Request())
     return credentials.token
+
+
+def admin(info: dict | None = None) -> tuple[str, str]:
+    """Return ``(database_url, access_token)`` or raise a clear error."""
+    info = info if info is not None else _credentials_info()
+    if not info:
+        raise RuntimeError("no Firebase service-account credentials configured")
+    url = database_url(info)
+    if not url:
+        raise RuntimeError("no FIREBASE_DB_URL configured")
+    return url, _access_token(info)
+
+
+def rt_get(url: str, token: str, path: str, timeout: float = 30.0) -> Any:
+    response = requests.get(f"{url}{path}", params={"access_token": token}, timeout=timeout)
+    response.raise_for_status()
+    return response.json()
+
+
+def rt_put(url: str, token: str, path: str, body: Any, timeout: float = 30.0) -> int:
+    response = requests.put(
+        f"{url}{path}", params={"access_token": token}, json=body, timeout=timeout
+    )
+    return response.status_code
+
+
+def rt_delete(url: str, token: str, path: str, timeout: float = 30.0) -> int:
+    response = requests.delete(f"{url}{path}", params={"access_token": token}, timeout=timeout)
+    return response.status_code
 
 
 def push_state(payload: dict, db_url: str = "", info: dict | None = None) -> dict:
@@ -111,21 +177,19 @@ def push_state(payload: dict, db_url: str = "", info: dict | None = None) -> dic
 
 
 def ensure_public_read_rules(info: dict | None = None, db_url: str = "") -> dict:
-    """Allow unauthenticated reads of ``kronos_state`` only (mobile dashboard).
+    """Install PUBLIC_RULES: dashboard reads open, token writes closed.
 
-    Writes stay denied for clients; the runner uses a service-account token,
-    which bypasses rules. Other database paths are untouched.
+    The runner authenticates with a service-account token, which bypasses rules,
+    so it can still read ``upstox_auth/token``.
     """
     info = info if info is not None else _credentials_info()
     url = (db_url or database_url(info)).rstrip("/")
     if not info or not url:
         return {"ok": False, "reason": "credentials or database URL missing"}
-    rules = {"rules": {".read": False, ".write": False,
-                        "kronos_state": {".read": True, ".write": False}}}
     try:
         token = _access_token(info)
         response = requests.put(
-            f"{url}/.settings/rules.json", params={"access_token": token}, json=rules, timeout=45
+            f"{url}/.settings/rules.json", params={"access_token": token}, json=PUBLIC_RULES, timeout=45
         )
         return {"ok": response.status_code == 200, "status": response.status_code,
                 "body": response.text[:200]}

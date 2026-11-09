@@ -647,9 +647,71 @@ function renderMM(m, traffic){
   }
 }
 
+/* ---------------- mobile daily token ---------------- */
+// The phone tap opens the Upstox dialog; Upstox returns ?code= here. The page
+// never sees the API secret: it hands the one-time code to Firebase, and the
+// runner exchanges it (scripts/mobile_token_exchange.py).
+let CLOUD_AUTH = null;
+let HEALTH_FROM_SERVER = false;
+const MOBILE_REDIRECT = location.origin + location.pathname.replace(/index\.html$/, '');
+
+function startMobileLogin(){
+  const cfg = window.KRONOS_CONFIG || {};
+  const id = cfg.upstoxClientId || '';
+  const redirect = cfg.upstoxRedirectUri || MOBILE_REDIRECT;
+  if(!id){ toast('Upstox client id missing \u2014 set the UPSTOX_CLIENT_ID repo variable'); return; }
+  location.href = 'https://api.upstox.com/v2/login/authorization/dialog?response_type=code'
+    + '&client_id=' + encodeURIComponent(id)
+    + '&redirect_uri=' + encodeURIComponent(redirect);
+}
+
+async function handleMobileCode(){
+  const code = new URLSearchParams(location.search).get('code');
+  if(!code) return;
+  history.replaceState({}, '', location.pathname);       // keep the code out of the URL bar
+  const db = (FIREBASE_DB || '').replace(/\/$/, '');
+  if(!db){ toast('No database configured for the mobile handshake'); return; }
+  toast('Upstox code received \u2014 sending it to the cloud runner');
+  try{
+    const r = await fetch(`${db}/upstox_handshake/pending_code.json`, {
+      method:'PUT',
+      body: JSON.stringify({code, at: Date.now(), redirect: MOBILE_REDIRECT})
+    });
+    if(!r.ok) throw new Error('handshake ' + r.status);
+  }catch(e){ toast('Could not reach the cloud handshake'); return; }
+  for(let i=0;i<36;i++){
+    await new Promise(res => setTimeout(res, 5000));
+    try{
+      const r = await fetch(`${db}/upstox_auth/status.json`, {cache:'no-store'});
+      if(!r.ok) continue;
+      const s = await r.json();
+      if(s && s.valid){ CLOUD_AUTH = s; renderHealthFallback(); toast('Upstox connected \u2014 token valid for today'); return; }
+    }catch(e){ /* keep polling */ }
+  }
+  toast('Runner has not confirmed yet \u2014 it retries every 5 minutes');
+}
+
+async function loadCloudAuth(){
+  const db = (FIREBASE_DB || '').replace(/\/$/, '');
+  if(!db) return;
+  try{
+    const r = await fetch(`${db}/upstox_auth/status.json`, {cache:'no-store'});
+    if(!r.ok) return;
+    const s = await r.json();
+    if(s && typeof s === 'object'){ CLOUD_AUTH = s; renderHealthFallback(); }
+  }catch(e){ /* hosted page may be offline */ }
+}
+
+if(HOSTED){
+  const b = $('#connectBtn');
+  if(b) b.textContent = '🔑 Mobile 1-Tap Upstox Login';
+}
+
 loadState();
 loadLive();
 setInterval(loadLive, 5000);
+handleMobileCode();
+loadCloudAuth();
 
 /* ---------------- Upstox sync health ---------------- */
 // On Firebase Hosting / GitHub Pages there is no /api/health server. Derive the
@@ -657,15 +719,18 @@ setInterval(loadLive, 5000);
 // instead of an empty bar.
 function renderHealthFallback(){
   const host = $('#health');
-  if(!host || host.children.length) return;
+  if(!host || HEALTH_FROM_SERVER) return;
   const symbols = (STATE && STATE.symbols) || {};
   const names = Object.keys(symbols);
   if(!names.length) return;
   const bars = names.map(n=>`${n} ${((symbols[n].candles)||[]).length}/512`).join(' | ');
   const strikes = names.map(n=>(symbols[n].plan||{}).strike).filter(Boolean);
+  const authOk = !!(CLOUD_AUTH && CLOUD_AUTH.valid);
   const rows = [
-    ['🟡','Auth Token','YELLOW','CLOUD MODE \u2014 replay snapshot, no broker token'],
-    ['🟡','V3 WebSocket Feed','YELLOW','NOT CONNECTED \u2014 static snapshot'],
+    [authOk?'🟢':'🟡','Auth Token', authOk?'GREEN':'YELLOW',
+      authOk?`VALID \u2014 ${CLOUD_AUTH.date||'today'}`:'CLOUD MODE \u2014 tap Connect'],
+    [authOk?'🟢':'🟡','V3 WebSocket Feed', authOk?'GREEN':'YELLOW',
+      authOk?'STREAMING \u2014 cloud runner':'NOT CONNECTED \u2014 static snapshot'],
     ['🟢','Spot 512-Bar Buffer','GREEN',`SYNCED (${bars})`],
     [strikes.length?'🟢':'🟡','Weekly Option Chain (CE/PE + OI + VWAP)',
       strikes.length?'GREEN':'YELLOW',
@@ -681,13 +746,18 @@ async function loadHealth(){
     const r = await fetch('/api/health',{cache:'no-store'});
     const j = await r.json();
     if(!j.checks) return;
+    HEALTH_FROM_SERVER = true;
     $('#health').innerHTML = j.checks.map(c=>
       `<span class="chip ${c.status.toLowerCase()}">${c.dot} ${c.label}: <b>${c.detail}</b></span>`).join('');
   }catch(e){ renderHealthFallback(); }
 }
 loadHealth();
 setInterval(loadHealth, 15000);
-$('#connectBtn').addEventListener('click',()=>{ if(!hostedGuard()) window.location.href='/api/upstox/login'; });
+$('#connectBtn').addEventListener('click',()=>{
+  if(HOSTED){ startMobileLogin(); return; }
+  if(hostedGuard()) return;
+  window.location.href='/api/upstox/login';
+});
 
 /* ---------------- paper ledger drawer ---------------- */
 let LEDGER = null;

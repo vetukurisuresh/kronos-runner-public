@@ -28,7 +28,11 @@ jobs:
           # Firebase URL is public metadata, not a secret.
           DB_URL="${{ vars.FIREBASE_DB_URL }}"
           [ -z "$DB_URL" ] && DB_URL="https://kronos-nifty-desk-default-rtdb.asia-southeast1.firebasedatabase.app"
-          printf 'window.KRONOS_CONFIG = { firebaseDbUrl: "%s" };\n' "$DB_URL" > site/config.js
+          CLIENT_ID="${{ vars.UPSTOX_CLIENT_ID }}"
+          MOBILE_REDIRECT="${{ vars.UPSTOX_MOBILE_REDIRECT_URI }}"
+          [ -z "$MOBILE_REDIRECT" ] && MOBILE_REDIRECT="https://vetukurisuresh.github.io/kronos-runner-public/"
+          printf 'window.KRONOS_CONFIG = { firebaseDbUrl: "%s", upstoxClientId: "%s", upstoxRedirectUri: "%s" };\n' \
+            "$DB_URL" "$CLIENT_ID" "$MOBILE_REDIRECT" > site/config.js
           ls -la site
 
       - name: Publish to gh-pages
