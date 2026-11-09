@@ -501,7 +501,8 @@ def main(argv: list[str] | None = None) -> int:
                                       target2=trade.get("target_2_p90", 0.0),
                                       risk=trade.get("risk_points", 0.0),
                                       paths_up=plan.get("paths_up"),
-                                      samples=plan.get("samples"), heavy=len(heavy), side=side)
+                                      samples=plan.get("samples"), heavy=len(heavy), side=side,
+                                      qty=int(trade.get("qty") or 0))
                     state["story_trade"] = True
                     story_gear[name] = int(trade.get("tsl_gear") or 1)
                     story_stop[name] = float(trade.get("current_trailing_sl") or 0.0)

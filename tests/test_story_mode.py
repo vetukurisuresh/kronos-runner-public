@@ -34,10 +34,11 @@ def test_trade_story_explains_why_in_two_sentences():
     teller = StoryTeller(clock=lambda: datetime(2026, 11, 9, 11, 5, tzinfo=IST))
     entry = teller.trade_taken(symbol="NIFTY 25000 CE", entry=58.55, stop=48.55,
                                target1=73.55, target2=88.55, risk=10.0,
-                               paths_up=5, samples=6, heavy=4, side="CE")
+                               paths_up=5, samples=6, heavy=4, side="CE", qty=300)
     assert "NIFTY 25000 CE" in entry["text"]
     assert "కొన్నాం" in entry["text"]
     assert "58.55" in entry["text"]
+    assert "300 Qty" in entry["text"]
     assert entry["text"].count(".") >= 2
     assert entry["kind"] == "trade"
 

@@ -284,6 +284,9 @@ main{position:relative;flex:1;min-height:0;display:flex;flex-direction:column;ov
 .story-item.fresh{animation:storyIn .45s ease-out}
 @keyframes storyIn{from{opacity:.2;transform:translateY(6px)}to{opacity:1;transform:none}}
 
+.story-phase{font:700 10px 'Inter',sans-serif;letter-spacing:.11em;color:var(--text-muted);
+  margin:3px 2px -2px;text-transform:uppercase}
+
 /* order-line settings */
 .line-panel{position:absolute;right:14px;top:52px;z-index:30;width:268px;padding:10px 12px;border-radius:12px;
   background:var(--panel-bg);border:1px solid var(--line);box-shadow:var(--shadow)}
@@ -957,15 +960,17 @@ function setOrderLines(o){
   }
   if(!tr) return;
   const width = Math.max(1, Math.min(4, Number(LINES.width)||2));
-  const mk = (price, cfg, dash, title)=>{
+  const mk = (price, cfg, dash, title, thick)=>{
     if(price == null || !Number.isFinite(Number(price))) return null;
     try{
       return SERIES.opt.candle.createPriceLine({price:Number(price), color:cfg.color,
-        lineWidth:width, lineStyle:dash ? LWC.LineStyle.Dashed : LWC.LineStyle.Solid,
+        lineWidth: Math.min(4, thick || width), lineStyle:dash ? LWC.LineStyle.Dashed : LWC.LineStyle.Solid,
         axisLabelVisible:true, title});
     }catch(e){ return null; }
   };
-  if(LINES.entry.on) PL.entry = mk(tr.entry_price, LINES.entry, false, `ENTRY ₹${fmt(tr.entry_price)}`);
+  // ENTRY is the thick dashed cyan anchor; SL stays solid so the step-up is obvious.
+  if(LINES.entry.on) PL.entry = mk(tr.entry_price, LINES.entry, true,
+    `ENTRY ₹${fmt(tr.entry_price)}`, width + 1);
   if(LINES.sl.on) PL.sl = mk(tr.current_trailing_sl, LINES.sl, false, `SL ₹${fmt(tr.current_trailing_sl)}`);
   if(LINES.t1.on) PL.t1 = mk(tr.target_1, LINES.t1, true, `T1 ₹${fmt(tr.target_1)}`);
   if(LINES.t2.on) PL.t2 = mk(tr.target_2_p90, LINES.t2, true, `T2 ₹${fmt(tr.target_2_p90)}`);
@@ -984,11 +989,13 @@ function paintBadge(){
   const pnl = Number(tr.live_pnl_rs||0);
   const pct = Number(tr.live_pnl_pct||0);
   badge.className = 'pnl-badge ' + (pnl >= 0 ? 'good' : 'bad');
+  const ltp = Number((LIVE.opt && LIVE.opt.ltp) || tr.entry_price);
   badge.innerHTML = `<span>${pnl>=0?'+':'-'}₹${fmt(Math.abs(pnl),0)}</span>` +
-    `<small>${pct>=0?'+':''}${fmt(pct,1)}% · ${tr.tsl_gear?('Gear-'+tr.tsl_gear):''}</small>`;
+    `<small>LTP ₹${fmt(ltp,2)} · ${pct>=0?'+':''}${fmt(pct,1)}% · Gear-${tr.tsl_gear||1}</small>`;
   let top = host.clientHeight/2;
   try{
-    const y = SERIES.opt.candle && SERIES.opt.candle.priceToCoordinate(Number(tr.entry_price));
+    // Pin the money badge to the live premium, not the static entry.
+    const y = SERIES.opt.candle && SERIES.opt.candle.priceToCoordinate(ltp);
     if(y != null) top = y;
   }catch(e){}
   const h = host.clientHeight || 0;
@@ -1067,12 +1074,17 @@ function renderStory(){
     host.innerHTML = '<div class="story-empty">🌅 ఉదయం 9:15 కి మార్కెట్ ఓపెన్ అవ్వగానే కథ మొదలవుతుంది — ఇక్కడ సింపుల్ తెలుగులో వివరిస్తాం.</div>';
     return;
   }
+  let lastPhase = '';
   host.innerHTML = entries.map((e, i)=>{
     const kind = e.kind || 'wait';
     const when = e.iso ? e.t : String(e.t||'').slice(11,16);
     const title = e.title ? `<div class="story-title">${e.title}</div>` : '';
-    return `<div class="story-item ${kind}${i===entries.length-1?' fresh':''}">` +
-      `<div class="story-meta"><span>${e.phase_label||'📜'}${e.phase_label?'':' SESSION'}</span>` +
+    const phase = e.phase || '';
+    const head = phase && phase !== lastPhase
+      ? `<div class="story-phase">${e.phase_label||''}</div>` : '';
+    lastPhase = phase || lastPhase;
+    return head + `<div class="story-item ${kind}${i===entries.length-1?' fresh':''}">` +
+      `<div class="story-meta"><span>${phase?'':(e.phase_label||'📜 SESSION')}</span>` +
       `<span>${when}</span></div>${title}<div class="story-text">${e.emoji?e.emoji+' ':''}${e.text}</div></div>`;
   }).join('');
   if(STORY_PIN) host.scrollTop = host.scrollHeight;

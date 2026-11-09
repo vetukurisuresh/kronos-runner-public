@@ -119,13 +119,14 @@ class StoryTeller:
     # -- 3. trade taken ----------------------------------------------------
     def trade_taken(self, *, symbol: str, entry: float, stop: float, target1: float,
                     target2: float, risk: float, paths_up: int | None, samples: int | None,
-                    heavy: int, side: str) -> dict:
+                    heavy: int, side: str, qty: int | None = None) -> dict:
         confidence = (
             f"మోడల్ {samples} భవిష్యత్తుల్లో {paths_up} పైకి చూపించింది"
             if paths_up is not None and samples else "ట్రెండ్ ఫిల్టర్ మరియు హెవీవెయిట్లు కలిసాయి"
         )
+        qty_text = f"{int(qty)} Qty " if qty else ""
         text = (
-            f"{symbol} ని {entry:,.2f} దగ్గర కొన్నాం — {confidence}, "
+            f"{symbol} ని {entry:,.2f} దగ్గర {qty_text}కొన్నాం — {confidence}, "
             f"టాప్-5 హెవీవెయిట్లలో {heavy}/5 మా దిశలో ఉన్నాయి. "
             f"స్టాప్ {stop:,.2f} (రిస్క్ ₹{risk:,.2f} పాయింట్లు), మొదటి టార్గెట్ {target1:,.2f}, "
             f"చివరి టార్గెట్ {target2:,.2f}. ఇది పేపర్ ట్రేడ్ — నిజమైన డబ్బు వెళ్లదు."

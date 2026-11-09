@@ -201,3 +201,8 @@ class TeluguNarrationLogger:
 
     def reset(self) -> None:
         self.events.clear()
+
+
+# The live terminal narrates with the Story-Mode teller in state/telugu_story.py.
+# Re-exported here so this module stays the single import point for Telugu logs.
+from state.telugu_story import StoryTeller  # noqa: E402,F401
