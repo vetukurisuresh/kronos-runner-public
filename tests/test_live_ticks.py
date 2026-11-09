@@ -52,10 +52,15 @@ def test_snapshot_reads_live_feed(tmp_path, monkeypatch) -> None:
                            "vwap": 24990.0, "atr": 18.0,
                            "current_candle": {"time": 1, "open": 25000, "high": 25010,
                                               "low": 24995, "close": 25005.5, "volume": 10},
+                           "current_candle_5m": {"time": 1794214200, "open": 24998,
+                                                 "high": 25004, "low": 24998,
+                                                 "close": 25001, "volume": 42},
                            "candles_1m": []}},
         "option": {"NIFTY": {"strike_symbol": "NIFTY 25000 CE", "ltp": 116.0, "atp_vwap": 110.0}},
         "trade": {"NIFTY": {"entry_price": 116.0, "current_trailing_sl": 108.0, "tsl_gear": 1}},
         "scanner": {"NIFTY": [{"key": "tick_speed", "pass": True, "value": "6.5 t/s"}]},
+        "hud": {"starting_capital": 100000.0, "realized_today": 8500.0,
+                "capital": 108500.0, "trades_today": 3},
     }
     path = tmp_path / "live_feed.json"
     path.write_text(json.dumps(feed), encoding="utf-8")
@@ -64,9 +69,16 @@ def test_snapshot_reads_live_feed(tmp_path, monkeypatch) -> None:
     snap = live_ticks.snapshot("NIFTY")
     assert snap["live"] is True
     assert snap["spot"]["ltp"] == 25005.5
+    # The forming 5m bucket is passed through with the live tick folded into H/L.
+    five = snap["spot"]["current_candle_5m"]
+    assert five["time"] == 1794214200
+    assert five["high"] == 25005.5 and five["low"] == 24998
+    assert five["close"] == 25005.5
     assert snap["option"]["strike_symbol"] == "NIFTY 25000 CE"
     assert snap["option"]["zone"] == "ABOVE"
     assert snap["active_trade"]["entry_price"] == 116.0
+    assert snap["hud"]["capital"] == 108500.0
+    assert snap["hud"]["trades_today"] == 3
     assert snap["scanner_xray"][0]["key"] == "tick_speed"
     assert 0 < snap["spot"]["countdown_sec"]["bar_5m"] <= 300
 

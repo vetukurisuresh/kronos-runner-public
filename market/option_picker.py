@@ -48,6 +48,13 @@ def new_trade(entry: float, risk: float, qty: int = 300) -> dict[str, Any]:
         "target_1": round(entry + 1.5 * risk, 2),
         "target_2_p90": round(entry + 3.0 * risk, 2),
         "qty": int(qty),
+        "initial_qty": int(qty),
+        "qty_open": int(qty),
+        "realized_pnl_rs": 0.0,
+        "booked_legs": [],
+        "t1_booked": False,
+        "t2_booked": False,
+        "exit_reason": None,
         "risk_points": round(risk, 2),
         "live_pnl_rs": 0.0,
         "live_pnl_pct": 0.0,
@@ -71,8 +78,13 @@ def gear_update(trade: dict, ltp: float, low_5m: float | None = None) -> dict:
 
     trade["current_trailing_sl"] = round(stop, 2)
     trade["tsl_gear"] = gear
-    trade["live_pnl_rs"] = round((float(ltp) - entry) * int(trade.get("qty", 0)), 0)
-    trade["live_pnl_pct"] = round((float(ltp) / entry - 1.0) * 100.0, 2)
+    # After T1 only the open quantity keeps marking; realised rupees stay banked.
+    open_qty = int(trade.get("qty_open", trade.get("qty", 0)) or 0)
+    initial_qty = int(trade.get("initial_qty", trade.get("qty", 1)) or 1)
+    realised = float(trade.get("realized_pnl_rs") or 0.0)
+    pnl = realised + (float(ltp) - entry) * open_qty
+    trade["live_pnl_rs"] = round(pnl, 0)
+    trade["live_pnl_pct"] = round(pnl / (entry * initial_qty) * 100.0, 2)
     if float(ltp) <= trade["current_trailing_sl"]:
         trade["status"] = "CLOSED"
     return trade

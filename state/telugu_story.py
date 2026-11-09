@@ -162,6 +162,21 @@ class StoryTeller:
         return self._say("\U0001F3AF", f"{name} టార్గెట్ దగ్గర", text, "win",
                          {"target": name, "price": price, "pnl": pnl})
 
+    def partial_booked(self, *, name: str, qty: int, price: float, pnl: float,
+                       remaining: int, stop: float) -> dict:
+        if remaining > 0:
+            tail = (f"మిగిలిన {remaining} Qty స్టాప్ ₹{stop:,.2f} (బ్రేక్‌ఈవెన్)తో "
+                    "పరుగెత్తుతుంది — రిస్క్ ఇప్పుడు జీరో.")
+        else:
+            tail = "పూర్తి పొజిషన్ బుక్ అయింది — లాభం మొత్తం ఖాతాలో లాక్ అయింది."
+        text = (
+            f"{name} టార్గెట్ ₹{price:,.2f} దగ్గర {qty} Qty బుక్ చేశాం — లాభం {rupees(pnl)} "
+            f"లాక్ అయింది. {tail}"
+        )
+        return self._say("\U0001F3AF", f"{name} బుక్ · {qty} Qty", text, "win",
+                         {"target": name, "qty": qty, "price": price, "pnl": pnl,
+                          "remaining": remaining, "stop": stop})
+
     def stop_hit(self, *, price: float, pnl: float) -> dict:
         text = (
             f"స్టాప్ ₹{price:,.2f} దగ్గర ట్రేడ్ ముగిసింది. నష్టం {rupees(pnl)} — "

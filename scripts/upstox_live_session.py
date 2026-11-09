@@ -37,6 +37,11 @@ import requests
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
+from execution.pro_money_manager import (  # noqa: E402
+    book_partials,
+    close_remaining,
+    init_partial_state,
+)
 from market.option_picker import choose_side, gear_update, new_trade, pick_atm  # noqa: E402
 from market.upstox_health import load_access_token  # noqa: E402
 from market.upstox_tick_engine import UpstoxTickEngine  # noqa: E402
@@ -223,6 +228,58 @@ def strike_step(rows: list[dict]) -> float:
     return min(gaps) if gaps else 50.0
 
 
+HUD_FILE = REPO_ROOT / "state" / "live_hud.json"
+DEFAULT_CAPITAL = 100_000.0
+
+
+def empty_hud() -> dict:
+    return {
+        "date": datetime.now(tz=IST).date().isoformat(),
+        "starting_capital": DEFAULT_CAPITAL,
+        "realized_today": 0.0,
+        "capital": DEFAULT_CAPITAL,
+        "trades_today": 0,
+        "t1_bookings": 0,
+        "t2_bookings": 0,
+    }
+
+
+def load_hud() -> dict:
+    """Today's realised ledger survives a session restart; a new day starts flat."""
+    today = datetime.now(tz=IST).date().isoformat()
+    try:
+        raw = json.loads(HUD_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return empty_hud()
+    if raw.get("date") != today:
+        return empty_hud()
+    hud = empty_hud()
+    hud.update({k: raw.get(k, hud[k]) for k in hud})
+    hud["date"] = today
+    hud["capital"] = round(float(hud["starting_capital"]) + float(hud["realized_today"]), 2)
+    return hud
+
+
+def save_hud(hud: dict) -> None:
+    try:
+        HUD_FILE.parent.mkdir(parents=True, exist_ok=True)
+        HUD_FILE.write_text(json.dumps(hud, indent=1), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def add_hud_leg(hud: dict, leg: dict) -> None:
+    """Roll a booked T1/T2/SL leg into the day HUD."""
+    hud["realized_today"] = round(float(hud.get("realized_today") or 0.0)
+                                  + float(leg.get("pnl") or 0.0), 2)
+    hud["capital"] = round(float(hud.get("starting_capital") or DEFAULT_CAPITAL)
+                           + hud["realized_today"], 2)
+    if leg.get("leg") == "T1":
+        hud["t1_bookings"] = int(hud.get("t1_bookings") or 0) + 1
+    elif leg.get("leg") == "T2":
+        hud["t2_bookings"] = int(hud.get("t2_bookings") or 0) + 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the live Upstox session")
     parser.add_argument("--minutes", type=float, default=300.0)
@@ -243,6 +300,7 @@ def main(argv: list[str] | None = None) -> int:
     engine = UpstoxTickEngine()
     publisher = Publisher()
     story = StoryTeller(limit=20)
+    hud = load_hud()
     story_started = False
     story_update_at = 0.0
     story_gear: dict[str, int] = {}
@@ -391,6 +449,7 @@ def main(argv: list[str] | None = None) -> int:
             if closed:
                 state["hist"].append(closed)
             hist = list(state["hist"])
+            legs: list[dict] = []
             ranges = [c["high"] - c["low"] for c in hist[-14:]] or [max(ltp * 0.01, 0.5)]
             atr_opt = round(sum(ranges) / len(ranges), 2)
             # A premium option needs a floor: a 0.8-point stop dies on the first tick.
@@ -398,7 +457,11 @@ def main(argv: list[str] | None = None) -> int:
             trade = state.get("trade")
             if not trade and len(hist) >= 5:
                 trade = new_trade(ltp, risk)
+                init_partial_state(trade)
                 state["trade"] = trade
+                if name == "NIFTY":
+                    hud["trades_today"] = int(hud.get("trades_today") or 0) + 1
+                    save_hud(hud)
             if not trade:
                 trade = {"status": "WATCHING", "entry_price": round(ltp, 2),
                          "initial_sl": round(ltp - risk, 2),
@@ -406,9 +469,25 @@ def main(argv: list[str] | None = None) -> int:
                          "target_1": round(ltp + 1.5 * risk, 2),
                          "target_2_p90": round(ltp + 3 * risk, 2), "qty": 300,
                          "risk_points": risk, "live_pnl_rs": 0.0, "live_pnl_pct": 0.0}
+                init_partial_state(trade)
             else:
                 low_5m = min((c["low"] for c in hist[-5:]), default=None)
-                gear_update(trade, ltp, low_5m)
+                legs = book_partials(trade, ltp)
+                if str(trade.get("status") or "").upper() == "OPEN":
+                    gear_update(trade, ltp, low_5m)
+                    if (str(trade.get("status") or "").upper() == "CLOSED"
+                            and int(trade.get("qty_open") or 0) > 0):
+                        stop_leg = close_remaining(
+                            trade,
+                            float(trade.get("current_trailing_sl") or ltp),
+                            reason="SL",
+                        )
+                        if stop_leg:
+                            legs.append(stop_leg)
+                if name == "NIFTY" and legs:
+                    for leg in legs:
+                        add_hud_leg(hud, leg)
+                    save_hud(hud)
             trade["option_symbol"] = symbol
 
             oi = float(market.get("oi") or 0.0)
@@ -494,6 +573,16 @@ def main(argv: list[str] | None = None) -> int:
                                       paths_up=plan.get("paths_up"),
                                       samples=plan.get("samples"), side=side)
                     story_update_at = now_story
+                for leg in legs:
+                    if leg.get("leg") in ("T1", "T2"):
+                        story.partial_booked(
+                            name=str(leg.get("leg")),
+                            qty=int(leg.get("qty") or 0),
+                            price=float(leg.get("price") or 0.0),
+                            pnl=float(leg.get("pnl") or 0.0),
+                            remaining=int(leg.get("remaining") or 0),
+                            stop=float(leg.get("stop") or 0.0),
+                        )
                 if trade.get("status") == "OPEN" and not state.get("story_trade"):
                     story.trade_taken(symbol=symbol, entry=ltp,
                                       stop=trade.get("current_trailing_sl", 0.0),
@@ -516,19 +605,12 @@ def main(argv: list[str] | None = None) -> int:
                                          pnl=trade.get("live_pnl_rs", 0.0))
                     story_gear[name] = gear_now
                     story_stop[name] = stop_now
-                    hits = state.setdefault("story_hits", set())
-                    if ltp >= float(trade.get("target_1") or 1e12) and "t1" not in hits:
-                        story.target_hit("T1", float(trade["target_1"]),
-                                         trade.get("live_pnl_rs", 0.0))
-                        hits.add("t1")
-                    if ltp >= float(trade.get("target_2_p90") or 1e12) and "t2" not in hits:
-                        story.target_hit("T2", float(trade["target_2_p90"]),
-                                         trade.get("live_pnl_rs", 0.0))
-                        hits.add("t2")
                 elif trade.get("status") == "CLOSED":
                     hits = state.setdefault("story_hits", set())
-                    if "sl" not in hits:
-                        story.stop_hit(price=ltp, pnl=trade.get("live_pnl_rs", 0.0))
+                    # A T2 winner must not be narrated as a stop-out.
+                    if "sl" not in hits and trade.get("exit_reason") != "T2":
+                        story.stop_hit(price=float(trade.get("exit_price") or ltp),
+                                       pnl=float(trade.get("realized_pnl_rs") or 0.0))
                         hits.add("sl")
 
         payload.update({
@@ -542,6 +624,7 @@ def main(argv: list[str] | None = None) -> int:
             "market_open": any(v["ltp"] > 0 for v in payload["spot"].values()),
             "story": story.snapshot(),
             "story_at": round(time.time(), 3),
+            "hud": hud,
         })
         last_option.update(payload["option"])
         last_trade.update(payload["trade"])
@@ -559,6 +642,7 @@ def main(argv: list[str] | None = None) -> int:
                 "trade": payload["trade"],
                 "scanner": payload["scanner"],
                 "story": payload["story"],
+                "hud": hud,
                 "socket": {"rate": payload["tick_rate"], "connected": socket.streaming()},
             })
 

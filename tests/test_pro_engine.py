@@ -10,7 +10,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 from config.settings import IST  # noqa: E402
-from execution.pro_money_manager import LimitChaser, MoneyManager  # noqa: E402
+from execution.pro_money_manager import (  # noqa: E402
+    LimitChaser,
+    MoneyManager,
+    book_partials,
+    close_remaining,
+)
+from market.option_picker import new_trade  # noqa: E402
 from strategy.market_regime_traffic import (  # noqa: E402
     FanRegimeInput,
     classify_fan,
@@ -119,6 +125,46 @@ def test_house_money_caps_later_risk() -> None:
     manager.close(30_000, 5_092, now=SESSION)
     assert manager.riskable("GREEN") == 1_527.6
     assert manager.riskable("RED") == 0.0
+
+
+def test_t1_books_half_and_moves_stop_to_breakeven() -> None:
+    trade = new_trade(100.0, 10.0, qty=300)          # T1 115, T2 130
+    legs = book_partials(trade, 115.0)
+    assert [leg["leg"] for leg in legs] == ["T1"]
+    assert legs[0]["qty"] == 150 and legs[0]["pnl"] == 2250.0
+    assert trade["qty_open"] == 150
+    assert trade["realized_pnl_rs"] == 2250.0
+    assert trade["current_trailing_sl"] == 100.0     # breakeven, not the old 90
+    assert trade["status"] == "OPEN"
+    assert trade["live_pnl_rs"] == 4500.0             # 2,250 booked + 2,250 open
+    # Nothing is booked twice on the next tick.
+    assert book_partials(trade, 116.0) == []
+    assert trade["realized_pnl_rs"] == 2250.0
+
+
+def test_t2_books_the_remaining_half_and_closes() -> None:
+    trade = new_trade(100.0, 10.0, qty=300)
+    book_partials(trade, 115.0)
+    legs = book_partials(trade, 130.0)
+    assert [leg["leg"] for leg in legs] == ["T2"]
+    assert legs[0]["qty"] == 150 and legs[0]["pnl"] == 4500.0
+    assert trade["qty_open"] == 0
+    assert trade["realized_pnl_rs"] == 6750.0
+    assert trade["live_pnl_rs"] == 6750.0
+    assert trade["status"] == "CLOSED" and trade["exit_reason"] == "T2"
+    assert trade["live_pnl_pct"] == 22.5
+
+
+def test_stop_after_t1_only_realises_the_open_half() -> None:
+    trade = new_trade(100.0, 10.0, qty=300)
+    book_partials(trade, 115.0)
+    leg = close_remaining(trade, 100.0, reason="SL")
+    assert leg is not None and leg["qty"] == 150
+    assert leg["pnl"] == 0.0                          # breakeven stop
+    assert trade["realized_pnl_rs"] == 2250.0         # T1 banked, T2 half flat
+    assert trade["status"] == "CLOSED" and trade["qty_open"] == 0
+    assert trade["exit_reason"] == "SL"
+    assert close_remaining(trade, 100.0) is None      # nothing left to book
 
 
 def test_limit_chaser_prices_and_reprices() -> None:

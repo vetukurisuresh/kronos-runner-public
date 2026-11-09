@@ -128,7 +128,20 @@ def snapshot(symbol: str = "NIFTY", now: float | None = None) -> dict[str, Any]:
         current = (spot_meta.get("current_candle") or {})
         if current:
             current = dict(current)
+            # The high/low must include the newest tick, not just the LTP: a candle
+            # whose OHLC only follows the close draws as a flat line.
+            current["high"] = max(float(current.get("high") or price), price)
+            current["low"] = min(float(current.get("low") or price), price)
             current["close"] = price
+        # The spot chart is a 5m book. The session rolls the forming 5m bucket;
+        # pass it through so the browser can update() that bar instead of falling
+        # back to the 1m series (which used to take over whenever it was fresher).
+        current5 = (spot_meta.get("current_candle_5m") or {})
+        if current5:
+            current5 = dict(current5)
+            current5["high"] = max(float(current5.get("high") or price), price)
+            current5["low"] = min(float(current5.get("low") or price), price)
+            current5["close"] = price
         spot_block.update(
             {
                 "symbol": symbol,
@@ -140,6 +153,7 @@ def snapshot(symbol: str = "NIFTY", now: float | None = None) -> dict[str, Any]:
                 "vwap": spot_meta.get("vwap") or spot_block["vwap"],
                 "atr": spot_meta.get("atr", 0.0),
                 "current_candle": current or spot_block["current_candle"],
+                "current_candle_5m": current5 or None,
                 "candles_1m": spot_meta.get("candles_1m") or [],
                 "countdown_sec": countdown(now),
                 "source": "upstox-v3" if feed.get("socket_connected") else "upstox-rest",
@@ -168,6 +182,10 @@ def snapshot(symbol: str = "NIFTY", now: float | None = None) -> dict[str, Any]:
         "scanner_xray": scanner,
         "story": feed.get("story") or [],
         "story_at": feed.get("story_at"),
+        "hud": feed.get("hud") or {
+            "starting_capital": 100_000.0, "realized_today": 0.0,
+            "capital": 100_000.0, "trades_today": 0,
+        },
         "stale": not live,
     }
 

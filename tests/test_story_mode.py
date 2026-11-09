@@ -43,6 +43,16 @@ def test_trade_story_explains_why_in_two_sentences():
     assert entry["kind"] == "trade"
 
 
+def test_partial_booking_story_names_the_quantity_and_lock():
+    teller = StoryTeller(clock=lambda: datetime(2026, 11, 9, 11, 30, tzinfo=IST))
+    entry = teller.partial_booked(name="T1", qty=150, price=73.55, pnl=2250,
+                                  remaining=150, stop=58.55)
+    assert "T1" in entry["text"] and "150 Qty" in entry["text"]
+    assert "2,250" in entry["text"]
+    assert "బ్రేక్‌ఈవెన్" in entry["text"]
+    assert entry["kind"] == "win"
+
+
 def test_story_keeps_only_the_last_twenty():
     teller = StoryTeller(limit=20, clock=lambda: datetime(2026, 11, 9, 12, 0, tzinfo=IST))
     for i in range(30):

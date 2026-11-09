@@ -262,6 +262,116 @@ class MoneyManager:
         }
 
 
+# --------------------------------------------------------------------------- #
+# T1 / T2 partial booking
+# --------------------------------------------------------------------------- #
+T1_BOOK_PCT = 0.5
+
+
+def init_partial_state(trade: dict[str, Any]) -> dict[str, Any]:
+    """Make an older trade payload safe for partial booking."""
+    initial = int(trade.get("initial_qty") or trade.get("qty") or 0)
+    trade.setdefault("initial_qty", initial)
+    trade.setdefault("qty_open", initial)
+    trade.setdefault("realized_pnl_rs", 0.0)
+    trade.setdefault("booked_legs", [])
+    trade.setdefault("t1_booked", False)
+    trade.setdefault("t2_booked", False)
+    trade.setdefault("exit_reason", None)
+    return trade
+
+
+def _mark_open(trade: dict[str, Any], ltp: float) -> None:
+    entry = float(trade.get("entry_price") or 0.0)
+    open_qty = int(trade.get("qty_open") or 0)
+    initial = int(trade.get("initial_qty") or trade.get("qty") or 0)
+    realised = float(trade.get("realized_pnl_rs") or 0.0)
+    pnl = realised + (float(ltp) - entry) * open_qty
+    trade["live_pnl_rs"] = round(pnl, 0)
+    trade["live_pnl_pct"] = round(pnl / (entry * initial) * 100.0, 2) if entry and initial else 0.0
+
+
+def book_partials(trade: dict[str, Any], ltp: float) -> list[dict[str, Any]]:
+    """T1 books 50% and moves the stop to breakeven; T2 books the rest.
+
+    Returns only the legs booked by this call, so the caller can add exactly
+    those rupees to the day HUD and narrate each one once.
+    """
+    init_partial_state(trade)
+    if str(trade.get("status") or "").upper() != "OPEN":
+        _mark_open(trade, ltp)
+        return []
+    entry = float(trade.get("entry_price") or 0.0)
+    target1 = float(trade.get("target_1") or 0.0)
+    target2 = float(trade.get("target_2_p90") or 0.0)
+    legs: list[dict[str, Any]] = []
+
+    if not trade.get("t1_booked") and target1 > entry and float(ltp) >= target1:
+        qty = min(int(trade.get("qty_open") or 0), max(1, int(trade.get("initial_qty") or 0) // 2))
+        if qty > 0:
+            pnl = round((target1 - entry) * qty, 2)
+            trade["qty_open"] = int(trade.get("qty_open") or 0) - qty
+            trade["realized_pnl_rs"] = round(float(trade.get("realized_pnl_rs") or 0.0) + pnl, 2)
+            # Breakeven after T1; never lower an already-trailed stop.
+            trade["current_trailing_sl"] = round(
+                max(float(trade.get("current_trailing_sl") or 0.0), entry), 2
+            )
+            trade["t1_booked"] = True
+            leg = {
+                "leg": "T1", "qty": qty, "price": round(target1, 2), "pnl": pnl,
+                "remaining": trade["qty_open"], "stop": trade["current_trailing_sl"],
+                "realized": trade["realized_pnl_rs"],
+            }
+            trade.setdefault("booked_legs", []).append(leg)
+            legs.append(leg)
+
+    if (not trade.get("t2_booked") and target2 > entry and float(ltp) >= target2
+            and int(trade.get("qty_open") or 0) > 0):
+        qty = int(trade["qty_open"])
+        pnl = round((target2 - entry) * qty, 2)
+        trade["qty_open"] = 0
+        trade["realized_pnl_rs"] = round(float(trade.get("realized_pnl_rs") or 0.0) + pnl, 2)
+        trade["t2_booked"] = True
+        trade["status"] = "CLOSED"
+        trade["exit_reason"] = "T2"
+        trade["exit_price"] = round(target2, 2)
+        leg = {
+            "leg": "T2", "qty": qty, "price": round(target2, 2), "pnl": pnl,
+            "remaining": 0, "stop": trade.get("current_trailing_sl"),
+            "realized": trade["realized_pnl_rs"],
+        }
+        trade.setdefault("booked_legs", []).append(leg)
+        legs.append(leg)
+
+    _mark_open(trade, ltp)
+    return legs
+
+
+def close_remaining(trade: dict[str, Any], price: float | None = None,
+                    reason: str = "SL") -> dict[str, Any] | None:
+    """Realise whatever is still open at the stop (or a supplied fill price)."""
+    init_partial_state(trade)
+    qty = int(trade.get("qty_open") or 0)
+    if qty <= 0:
+        return None
+    entry = float(trade.get("entry_price") or 0.0)
+    fill = float(price if price is not None else (trade.get("current_trailing_sl") or entry))
+    pnl = round((fill - entry) * qty, 2)
+    trade["qty_open"] = 0
+    trade["realized_pnl_rs"] = round(float(trade.get("realized_pnl_rs") or 0.0) + pnl, 2)
+    trade["status"] = "CLOSED"
+    trade["exit_reason"] = reason
+    trade["exit_price"] = round(fill, 2)
+    leg = {
+        "leg": reason, "qty": qty, "price": round(fill, 2), "pnl": pnl,
+        "remaining": 0, "stop": trade.get("current_trailing_sl"),
+        "realized": trade["realized_pnl_rs"],
+    }
+    trade.setdefault("booked_legs", []).append(leg)
+    _mark_open(trade, fill)
+    return leg
+
+
 @dataclass
 class LimitChaser:
     """Limit at best_ask + 1 tick, re-priced after 800 ms if unfilled."""
