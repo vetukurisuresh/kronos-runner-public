@@ -29,6 +29,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: kronos-nifty-forecast
@@ -109,6 +110,17 @@ jobs:
           git add dashboard/static/latest_cloud_state.json
           git commit -m "Update cloud state snapshot" || echo "state unchanged"
           git push origin HEAD:main || echo "push skipped"
+
+      # Pushes made with GITHUB_TOKEN do not trigger other workflows, so the
+      # Pages mirror must be asked explicitly after the snapshot commit.
+      - name: Refresh the Pages mirror
+        if: always()
+        run: |
+          curl -s -X POST \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/deploy-pages.yml/dispatches" \
+            -d '{"ref":"main"}' || echo "pages refresh skipped"
 
       - name: Upload forecast state
         if: always()
