@@ -154,6 +154,9 @@ LOCK = threading.Lock()
 
 
 class Handler(SimpleHTTPRequestHandler):
+    # SSE needs a persistent HTTP/1.1 connection with chunked framing; the
+    # stdlib default (HTTP/1.0) makes browsers abort the stream.
+    protocol_version = "HTTP/1.1"
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(STATIC), **kwargs)
 
@@ -221,6 +224,32 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception as exc:  # noqa: BLE001
                 self._html(f"<h2>Upstox connect failed</h2><p>{exc}</p>", status=502)
             return
+        if parsed.path == "/api/live-ticks":
+            from market.live_ticks import snapshot
+
+            symbol = (parse_qs(parsed.query).get("symbol") or ["NIFTY"])[0].upper()
+            self._json(snapshot(symbol))
+            return
+        if parsed.path == "/api/tick-stream":
+            import time as _time
+
+            from market.live_ticks import snapshot
+
+            symbol = (parse_qs(parsed.query).get("symbol") or ["NIFTY"])[0].upper()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache, no-transform")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+            try:
+                while True:
+                    body = f"data: {json.dumps(snapshot(symbol), separators=(',', ':'))}\n\n".encode("utf-8")
+                    self.wfile.write(f"{len(body):X}\r\n".encode("ascii") + body + b"\r\n")
+                    self.wfile.flush()
+                    _time.sleep(0.25)
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                return
         if parsed.path == "/api/health":
             self._json(self._health())
             return
@@ -291,6 +320,28 @@ class Handler(SimpleHTTPRequestHandler):
         valid = meta.get("verified") if token else None
         inputs = HealthInputs(token_present=bool(token), token_valid=valid)
         inputs.capital = PaperLedger.load().capital
+
+        # Live session heartbeat (scripts/upstox_live_session.py) drives the feed chip.
+        feed_path = REPO_ROOT / "state" / "live_feed.json"
+        if feed_path.is_file():
+            try:
+                feed = json.loads(feed_path.read_text(encoding="utf-8"))
+            except ValueError:
+                feed = {}
+            from time import time as _now
+
+            fresh = feed and _now() - float(feed.get("updated_epoch") or 0) < 25
+            if fresh:
+                rate = float(feed.get("tick_rate") or 0.0)
+                # A saved price with no socket traffic is not a live feed.
+                inputs.feed_connected = bool(feed.get("socket_connected")) and rate > 0.2
+                inputs.ticks_per_sec = rate if inputs.feed_connected else 0.0
+                inputs.latency_ms = float(feed.get("socket_last_frame_age") or 0) * 1000.0
+                inputs.buffer_1m = feed.get("buffer_1m") or {}
+                # Never shrink a warmed buffer: the live engine starts empty while
+                # the snapshot already carries 512 sealed bars.
+                for name, count in (feed.get("buffer_5m") or {}).items():
+                    inputs.buffer_5m[name] = max(int(count), int(inputs.buffer_5m.get(name, 0)))
         if STATE_FILE.is_file():
             try:
                 state = json.loads(STATE_FILE.read_text(encoding="utf-8"))

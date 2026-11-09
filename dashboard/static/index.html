@@ -42,8 +42,26 @@
   button.act:disabled{opacity:.55;cursor:progress}
   button.ghost{border-color:var(--line);background:#0b0f16;color:var(--muted);font-weight:500}
   button.ghost:hover{color:var(--text);border-color:#2a3444}
-  main{position:relative;flex:1;min-height:0}
-  #chart{display:block;width:100%;height:100%}
+  main{position:relative;flex:1;min-height:0;display:flex;flex-direction:column}
+  #panes{flex:1;min-height:0;display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line)}
+  #panes[data-layout="spot"],#panes[data-layout="option"]{grid-template-columns:1fr}
+  #panes[data-layout="spot"] .pane.opt{display:none}
+  #panes[data-layout="option"] .pane.spot{display:none}
+  .pane{position:relative;min-width:0;min-height:0;background:#080b11}
+  .pane canvas{display:block;width:100%;height:100%}
+  #chart,#chart2{display:block;width:100%;height:100%}
+  #xray{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;padding:6px 10px;
+    background:#0b1018;border-top:1px solid #1a2230;max-height:136px;overflow:auto}
+  #xray .xc{border:1px solid #1b2432;border-radius:6px;padding:5px 7px;background:#0f1620;
+    font:9.5px Consolas,monospace;color:#9fb0c3;min-width:0}
+  #xray .xc.ok{border-color:#1f5c42}
+  #xray .xc.no{border-color:#5c1f1f}
+  #xray .xk{color:#7d8ea3;font-size:9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #xray .xv{color:#dbe6f3;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #xray .xc.ok .xv{color:#8ff0c4}
+  #xray .xc.no .xv{color:#ffb3b3}
+  @media(max-width:560px){#panes{grid-template-columns:1fr;grid-template-rows:1fr 1fr}
+    #xray{grid-template-columns:repeat(2,minmax(0,1fr));max-height:118px}}
   #empty{position:absolute;inset:0;display:none;place-items:center;text-align:center;
     color:var(--muted);font-size:13px;line-height:1.7;padding:40px}
   #empty.show{display:grid}
@@ -130,6 +148,11 @@
     <div class="tab" data-sym="BANKNIFTY">BANK NIFTY (5m)</div>
     <div class="tab" data-sym="REPLAY">Walk-Forward Replay</div>
   </div>
+  <div class="tabs" style="margin-left:0">
+    <div class="tab ltab active" data-layout="split">Split</div>
+    <div class="tab ltab" data-layout="spot">Spot</div>
+    <div class="tab ltab" data-layout="option">Option</div>
+  </div>
   <div id="traffic" class="badge red">🔴 RED NO-TRADE</div>
   <div class="spacer"></div>
   <button class="act" id="runBtn">🔄 Run Fresh Cloud Forecast on 16GB Runner</button>
@@ -150,7 +173,11 @@
 <div class="ribbon" id="ribbon"></div>
 
 <main>
-  <canvas id="chart"></canvas>
+  <div id="panes" data-layout="split">
+    <div class="pane spot"><canvas id="chart"></canvas></div>
+    <div class="pane opt"><canvas id="chart2"></canvas></div>
+  </div>
+  <div id="xray"></div>
   <div id="empty">
     No cloud artifact yet.<br>
     Press <b>“Run Fresh Cloud Forecast on 16GB Runner”</b> — the models run on GitHub,<br>
@@ -565,12 +592,13 @@ async function pollForRun(){
 }
 
 /* ---------------- wiring ---------------- */
-document.querySelectorAll('.tab').forEach(tab=>{
+document.querySelectorAll('.tab[data-sym]').forEach(tab=>{
   tab.addEventListener('click',()=>{
     document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
     tab.classList.add('active');
     SYMBOL = tab.dataset.sym;
     REPLAY = -1;
+    if(typeof LIVE!=='undefined' && !HOSTED && LIVE.es){ LIVE.es.close(); LIVE.es=null; connectStream(); }
     $('#sliderWrap').classList.toggle('show', SYMBOL==='REPLAY');
     if(SYMBOL==='REPLAY') buildSlider();
     render();
@@ -605,7 +633,7 @@ document.querySelectorAll('.filters button').forEach(b=>{
     const block=active(); if(block) renderLogs(block);
   });
 });
-window.addEventListener('resize', draw);
+window.addEventListener('resize', ()=>{ draw(); drawOption(); });
 
 /* ---------------- live telemetry ribbon + money HUD ---------------- */
 async function loadLive(){
@@ -793,6 +821,196 @@ $('#resetLedger').addEventListener('click',async()=>{
   const r = await fetch('/api/ledger/reset',{method:'POST'});
   LEDGER = await r.json(); renderLedger(); toast('Ledger reset to ₹1,00,000 for Monday');
 });
+/* ---------------- real-time dual-chart terminal ---------------- */
+const LIVE = {tick:null, opt:null, trade:null, xray:[], es:null, lastTickAt:0, lastPaint:0};
+
+function liveSymbol(){ return SYMBOL==='REPLAY' ? 'NIFTY' : SYMBOL; }
+
+function applyTick(t){
+  if(!t) return;
+  LIVE.tick = t;
+  const block = STATE && STATE.symbols && STATE.symbols[liveSymbol()];
+  if(block && t.spot){
+    if(t.spot.ltp) block.spot = t.spot.ltp;
+    const cc = t.spot.current_candle;
+    if(cc && cc.time && Array.isArray(block.candles) && block.candles.length){
+      const last = block.candles[block.candles.length-1];
+      if(last.t === cc.time){ last.o=cc.open; last.h=cc.high; last.l=cc.low; last.c=cc.close; last.v=cc.volume; }
+      else if(cc.time > last.t){
+        block.candles.push({t:cc.time,o:cc.open,h:cc.high,l:cc.low,c:cc.close,v:cc.volume||0});
+        if(block.candles.length>512) block.candles.shift();
+      }
+    }
+  }
+  LIVE.opt = t.option || LIVE.opt;
+  LIVE.trade = t.active_trade || null;
+  LIVE.xray = t.scanner_xray || [];
+  paintXray(LIVE.xray);
+}
+
+let xrayAt = 0;
+function paintXray(rows){
+  const host = document.getElementById('xray');
+  if(!host || !rows || !rows.length) return;
+  const now = performance.now(); if(now - xrayAt < 350) return; xrayAt = now;
+  host.innerHTML = rows.slice(0,8).map(r=>
+    `<div class="xc ${r.pass?'ok':'no'}"><div class="xk">${r.label||r.key}</div>`+
+    `<div class="xv">${r.value||''}</div></div>`).join('');
+}
+
+function drawOption(){
+  const cv = document.getElementById('chart2');
+  if(!cv || !cv.parentElement) return;
+  const wrap = cv.parentElement;
+  const dpr = window.devicePixelRatio || 1;
+  const W = Math.min(wrap.clientWidth||0, document.documentElement.clientWidth), H = wrap.clientHeight;
+  if(W < 60 || H < 80) return;
+  cv.width = Math.max(1, W*dpr); cv.height = Math.max(1, H*dpr);
+  cv.style.width = W+'px'; cv.style.height = H+'px';
+  const c = cv.getContext('2d');
+  c.setTransform(dpr,0,0,dpr,0,0); c.clearRect(0,0,W,H);
+  c.fillStyle='#080b11'; c.fillRect(0,0,W,H);
+  const o = LIVE.opt, tr = LIVE.trade;
+  if(!o){
+    c.fillStyle='#5d6b7d'; c.font='12px Consolas,monospace'; c.textAlign='center';
+    c.fillText('Waiting for the live ATM option feed\u2026', W/2, H/2);
+    return;
+  }
+  const hist = (o.candles_1m||[]).slice(-48);
+  const cur = o.current_candle;
+  const all = cur ? hist.concat([{time:cur.time,open:cur.open,high:cur.high,low:cur.low,close:cur.close,volume:cur.volume}]) : hist;
+  if(!all.length) return;
+  const narrow = W < 420;
+  const L=8, R=narrow?56:72, T=52, B=20;
+  const plotW = Math.max(W-L-R, 20), plotH = Math.max(H-T-B, 20);
+  const vals = [];
+  all.forEach(x=>{ vals.push(x.low, x.high); });
+  if(tr) [tr.entry_price, tr.current_trailing_sl, tr.target_1, tr.target_2_p90].forEach(v=>{ if(v!=null) vals.push(Number(v)); });
+  if(o.atp_vwap) vals.push(Number(o.atp_vwap));
+  let lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals);
+  const pad = (hi-lo)*0.08 || 1; lo -= pad; hi += pad;
+  const y = pr => T + plotH - (pr-lo)/(hi-lo)*plotH;
+  const slot = plotW/Math.max(all.length,1);
+  const x = i => L + slot*(i+0.5);
+  c.textBaseline='middle'; c.font='9px Consolas,monospace';
+  for(let i=0;i<=4;i++){
+    const pr = lo + (hi-lo)*i/4, yy = y(pr);
+    c.strokeStyle='#161d29'; c.beginPath(); c.moveTo(L,yy); c.lineTo(W-R,yy); c.stroke();
+    c.fillStyle='#66788c'; c.fillText(fmt(pr,1), W-R+4, yy);
+  }
+  const cw = Math.max(slot*0.62, 1.2);
+  all.forEach((cd,i)=>{
+    const up = cd.close >= cd.open, col = up?'#26a69a':'#ef5350';
+    c.strokeStyle=col; c.lineWidth=1;
+    c.beginPath(); c.moveTo(x(i), y(cd.high)); c.lineTo(x(i), y(cd.low)); c.stroke();
+    c.fillStyle=col;
+    const top = y(Math.max(cd.open,cd.close)), hh = Math.max(Math.abs(y(cd.open)-y(cd.close)),1);
+    c.fillRect(x(i)-cw/2, top, cw, hh);
+  });
+  if(o.atp_vwap){
+    c.strokeStyle='rgba(74,163,255,.8)'; c.lineWidth=1.1;
+    c.beginPath(); c.moveTo(L,y(o.atp_vwap)); c.lineTo(W-R,y(o.atp_vwap)); c.stroke();
+    c.fillStyle='#4aa3ff'; c.fillText('ATP \u20b9'+fmt(o.atp_vwap), L+3, y(o.atp_vwap)-7);
+  }
+  const line=(price,color,label,dash)=>{
+    if(price==null || !isFinite(price)) return;
+    const yy = y(Number(price));
+    c.strokeStyle=color; c.lineWidth=1.3; c.setLineDash(dash||[]);
+    c.beginPath(); c.moveTo(L,yy); c.lineTo(W-R,yy); c.stroke(); c.setLineDash([]);
+    c.fillStyle=color; c.font='9.5px Consolas,monospace'; c.textAlign='left';
+    c.fillText(label, L+3, yy-6);
+  };
+  if(tr){
+    line(tr.target_2_p90,'#b57bff','T2 \u20b9'+fmt(tr.target_2_p90)+' \u00b7 Final Exit',[4,4]);
+    line(tr.target_1,'#3ddc97','T1 \u20b9'+fmt(tr.target_1)+' \u00b7 50% Book',[4,4]);
+    line(tr.entry_price,'#4aa3ff','ENTRY '+tr.qty+' Qty @ \u20b9'+fmt(tr.entry_price),[6,4]);
+    line(tr.current_trailing_sl,'#ff5c5c','SL \u20b9'+fmt(tr.current_trailing_sl)+' \u00b7 Gear '+tr.tsl_gear,[]);
+  }
+  const ly = y(o.ltp);
+  c.strokeStyle='#f0b429'; c.lineWidth=1.2; c.setLineDash([3,3]);
+  c.beginPath(); c.moveTo(L,ly); c.lineTo(W-R,ly); c.stroke(); c.setLineDash([]);
+  const rs = tr ? (tr.live_pnl_rs>=0?'+':'') + fmt(tr.live_pnl_rs,0) : '\u2014';
+  const pct = tr ? (tr.live_pnl_pct>=0?'+':'') + fmt(tr.live_pnl_pct,1) + '%' : '';
+  const badge = `LTP \u20b9${fmt(o.ltp)} | P&L ${rs} ${pct} | Gear-${tr?tr.tsl_gear:1}`;
+  c.font='bold 9.5px Consolas,monospace'; c.textAlign='left';
+  const bw = Math.min(c.measureText(badge).width + 12, plotW-10);
+  const by = Math.max(T+1, Math.min(H-B-22, ly-24));
+  c.fillStyle='rgba(12,18,27,.95)'; c.strokeStyle='#f0b429'; c.lineWidth=1;
+  c.fillRect(L+2, by, bw, 16); c.strokeRect(L+2, by, bw, 16);
+  c.fillStyle='#ffe08a'; c.fillText(badge, L+8, by+8);
+  const cd = LIVE.tick && LIVE.tick.spot && LIVE.tick.spot.countdown_sec ? LIVE.tick.spot.countdown_sec : null;
+  const cdTxt = cd ? `5m ${String(Math.floor(cd.bar_5m/60)).padStart(2,'0')}:${String(cd.bar_5m%60).padStart(2,'0')} \u00b7 1m 00:${String(cd.bar_1m).padStart(2,'0')}` : '';
+  c.font='bold 11px Consolas,monospace'; c.fillStyle='#e6edf3';
+  c.fillText(o.strike_symbol || 'ATM OPTION', L, 16);
+  c.font='9.5px Consolas,monospace'; c.fillStyle='#8b98a9';
+  c.fillText(`AUTO ATM \u00b7 ${o.option_type||''} \u00b7 exp ${o.expiry||'\u2014'} \u00b7 \u0394 ${o.delta==null?'\u2014':fmt(o.delta,2)} \u00b7 IV ${o.iv==null?'\u2014':fmt(o.iv,1)}%`, L, 30);
+  c.fillStyle='#f0b429'; c.fillText(cdTxt, L, 43);
+  const ty = Math.max(T+8, Math.min(H-B-8, ly));
+  c.fillStyle='#f0b429'; c.fillRect(W-R+2, ty-8, R-4, 16);
+  c.fillStyle='#060a0f'; c.font='bold 9px Consolas,monospace'; c.textAlign='left';
+  c.fillText(fmt(o.ltp), W-R+6, ty);
+}
+
+function setLayout(mode){
+  const panes = document.getElementById('panes');
+  if(panes) panes.dataset.layout = mode;
+  document.querySelectorAll('.ltab').forEach(b=>b.classList.toggle('active', b.dataset.layout===mode));
+  setTimeout(()=>{ draw(); drawOption(); }, 20);
+}
+document.querySelectorAll('.ltab').forEach(b=>b.addEventListener('click',()=>setLayout(b.dataset.layout)));
+
+function connectStream(){
+  try{
+    if(LIVE.es) LIVE.es.close();
+    const es = new EventSource('/api/tick-stream?symbol='+encodeURIComponent(liveSymbol()));
+    LIVE.es = es;
+    es.onmessage = ev => { try{ LIVE.lastTickAt=Date.now(); applyTick(JSON.parse(ev.data)); }catch(e){} };
+    es.onerror = () => { /* EventSource reconnects; polling covers the gap */ };
+  }catch(e){}
+}
+async function pollTicks(){
+  try{
+    const r = await fetch('/api/live-ticks?symbol='+encodeURIComponent(liveSymbol()),{cache:'no-store'});
+    if(r.ok){ LIVE.lastTickAt=Date.now(); applyTick(await r.json()); }
+  }catch(e){}
+}
+async function pollCloudTick(){
+  const db = (FIREBASE_DB||'').replace(/\/$/,'');
+  if(!db) return;
+  try{
+    const r = await fetch(`${db}/kronos_state/tick.json`,{cache:'no-store'});
+    if(!r.ok) return;
+    const j = await r.json();
+    const name = liveSymbol();
+    applyTick({live:true, ts:j.ts,
+      socket:{connected:!!(j.socket&&j.socket.connected), tick_rate:(j.socket&&j.socket.rate)||0},
+      spot: j.spot && Object.assign({symbol:name}, j.spot[name]||{}),
+      option: j.option && j.option[name],
+      active_trade: j.trade && j.trade[name],
+      scanner_xray: j.scanner && j.scanner[name]});
+  }catch(e){}
+}
+
+function startLive(){
+  if(HOSTED){ pollCloudTick(); setInterval(pollCloudTick, 800); return; }
+  connectStream();
+  // SSE is the fast path; this 1 Hz poll keeps the panes moving if a proxy
+  // buffers the stream (some corporate/mobile networks do).
+  setInterval(pollTicks, 1000);
+}
+
+function liveFrame(ts){
+  const budget = window.innerWidth < 560 ? 50 : 33;
+  if(ts - LIVE.lastPaint >= budget){
+    LIVE.lastPaint = ts;
+    if(document.visibilityState !== 'hidden'){ draw(); drawOption(); }
+  }
+  requestAnimationFrame(liveFrame);
+}
+
+requestAnimationFrame(liveFrame);
+startLive();
+
 // The runner streams to Firebase every cycle; poll it every 5s so a phone
 // updates the moment a new forecast lands.
 setInterval(()=>{ if(!RUN_ID) loadState(); }, FIREBASE_DB ? 5000 : 60000);
