@@ -803,7 +803,8 @@ function baseOptions(t){
 }
 function candleOptions(t){
   return {upColor:t.green, downColor:t.red, borderVisible:false,
-    wickUpColor:t.green, wickDownColor:t.red, priceLineVisible:false, lastValueVisible:true};
+    wickUpColor:t.green, wickDownColor:t.red, priceLineVisible:false, lastValueVisible:true,
+    priceFormat:{type:'price', precision:2, minMove:0.05}};
 }
 
 function resizeCharts(){
