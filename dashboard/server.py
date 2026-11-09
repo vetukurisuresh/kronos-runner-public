@@ -21,6 +21,7 @@ import json
 import os
 import sys
 import threading
+import time
 import zipfile
 from datetime import datetime, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -170,8 +171,21 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        # The GitHub Pages terminal reads this API through the runner tunnel.
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(body)
+
+    def do_OPTIONS(self) -> None:  # noqa: N802 - stdlib naming
+        if urlparse(self.path).path.startswith("/api/"):
+            self.send_response(204)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self._json({"ok": False, "reason": "unknown endpoint"}, status=404)
 
     # -- GET ---------------------------------------------------------------
     def do_GET(self) -> None:  # noqa: N802 - stdlib naming
@@ -224,6 +238,10 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception as exc:  # noqa: BLE001
                 self._html(f"<h2>Upstox connect failed</h2><p>{exc}</p>", status=502)
             return
+        if parsed.path == "/api/ping":
+            # Public liveness probe for the Cloudflare tunnel URL.
+            self._json({"ok": True, "server": "kronos-edge", "ts": round(time.time(), 3)})
+            return
         if parsed.path == "/api/live-ticks":
             from market.live_ticks import snapshot
 
@@ -231,8 +249,6 @@ class Handler(SimpleHTTPRequestHandler):
             self._json(snapshot(symbol))
             return
         if parsed.path == "/api/tick-stream":
-            import time as _time
-
             from market.live_ticks import snapshot
 
             symbol = (parse_qs(parsed.query).get("symbol") or ["NIFTY"])[0].upper()
@@ -241,13 +257,16 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_header("Cache-Control", "no-cache, no-transform")
             self.send_header("Connection", "keep-alive")
             self.send_header("Transfer-Encoding", "chunked")
+            # Cross-origin EventSource from GitHub Pages, and no edge buffering.
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("X-Accel-Buffering", "no")
             self.end_headers()
             try:
                 while True:
                     body = f"data: {json.dumps(snapshot(symbol), separators=(',', ':'))}\n\n".encode("utf-8")
                     self.wfile.write(f"{len(body):X}\r\n".encode("ascii") + body + b"\r\n")
                     self.wfile.flush()
-                    _time.sleep(0.25)
+                    time.sleep(0.25)
             except (BrokenPipeError, ConnectionResetError, OSError):
                 return
         if parsed.path == "/api/health":

@@ -159,6 +159,7 @@
     <div class="tab ltab" data-layout="spot">Spot</div>
     <div class="tab ltab" data-layout="option">Option</div>
   </div>
+  <div id="edgeChip" class="badge yellow" title="tick transport">☁️ CLOUD 0.8s</div>
   <div id="traffic" class="badge red">🔴 RED NO-TRADE</div>
   <div class="spacer"></div>
   <button class="act" id="runBtn">🔄 Run Fresh Cloud Forecast on 16GB Runner</button>
@@ -605,6 +606,7 @@ document.querySelectorAll('.tab[data-sym]').forEach(tab=>{
     SYMBOL = tab.dataset.sym;
     REPLAY = -1;
     if(typeof LIVE!=='undefined' && !HOSTED && LIVE.es){ LIVE.es.close(); LIVE.es=null; connectStream(); }
+    if(typeof LIVE!=='undefined' && HOSTED && LIVE.edge && LIVE.edge.url){ closeEdge(); refreshEdge(); }
     $('#sliderWrap').classList.toggle('show', SYMBOL==='REPLAY');
     if(SYMBOL==='REPLAY') buildSlider();
     render();
@@ -828,7 +830,8 @@ $('#resetLedger').addEventListener('click',async()=>{
   LEDGER = await r.json(); renderLedger(); toast('Ledger reset to ₹1,00,000 for Monday');
 });
 /* ---------------- real-time dual-chart terminal ---------------- */
-const LIVE = {tick:null, opt:null, trade:null, xray:[], es:null, lastTickAt:0, lastPaint:0};
+const LIVE = {tick:null, opt:null, trade:null, xray:[], es:null, lastTickAt:0, lastPaint:0,
+  edge:{es:null, url:'', open:false, last:0, retryAt:0}};
 
 function liveSymbol(){ return SYMBOL==='REPLAY' ? 'NIFTY' : SYMBOL; }
 
@@ -980,7 +983,72 @@ async function pollTicks(){
     if(r.ok){ LIVE.lastTickAt=Date.now(); applyTick(await r.json()); }
   }catch(e){}
 }
+/* ---- cloud edge: the runner publishes its tunnel URL to Firebase ---- */
+// One fast read at boot turns the static Pages page into a direct SSE client
+// of the 16 GB runner. A stale/absent/inactive record keeps the 800ms Firebase
+// poll as the fallback, so the phone always shows something.
+function edgeFresh(rec){
+  if(!rec || rec.active===false) return false;
+  const url = String(rec.url||'').replace(/\/+$/,'');
+  if(url.indexOf('https://')!==0) return false;
+  if(url.indexOf('.trycloudflare.com') < 0) return false;
+  const ts = Number(rec.ts)||0;
+  return ts > 0 && (Date.now()/1000 - ts) <= 900;   // runner heartbeats every 45s
+}
+async function readEdgeRecord(url){
+  try{
+    const r = await fetch(url,{cache:'no-store'});
+    return r.ok ? await r.json() : null;
+  }catch(e){ return null; }
+}
+async function discoverEdge(){
+  const db = (FIREBASE_DB||'').replace(/\/+$/,'');
+  if(!db) return null;
+  const primary = await readEdgeRecord(db+'/system/live_stream_url.json');
+  if(edgeFresh(primary)) return primary;
+  const mirror = await readEdgeRecord(db+'/kronos_state/live_stream_url.json');
+  return edgeFresh(mirror) ? mirror : null;
+}
+function edgeChip(text, cls){
+  const el = document.getElementById('edgeChip');
+  if(el){ el.textContent = text; el.className = 'badge ' + cls; }
+}
+function closeEdge(){
+  if(LIVE.edge.es){ try{ LIVE.edge.es.close(); }catch(e){} }
+  LIVE.edge.es = null; LIVE.edge.open = false;
+}
+async function connectEdge(rec){
+  if(!rec || !HOSTED) return false;
+  const url = String(rec.url).replace(/\/+$/,'');
+  if(LIVE.edge.es && LIVE.edge.url === url) return true;
+  closeEdge();
+  LIVE.edge.url = url;
+  try{
+    const es = new EventSource(url+'/api/tick-stream?symbol='+encodeURIComponent(liveSymbol()));
+    LIVE.edge.es = es;
+    es.onopen = () => { LIVE.edge.open = true; LIVE.edge.retryAt = 0; edgeChip('⚡ EDGE LIVE','green'); };
+    es.onmessage = ev => {
+      LIVE.edge.open = true; LIVE.edge.last = Date.now(); LIVE.lastTickAt = Date.now();
+      try{ applyTick(JSON.parse(ev.data)); }catch(e){}
+    };
+    es.onerror = () => {
+      // EventSource would retry a dead tunnel forever; drop to Firebase polling.
+      LIVE.edge.open = false; LIVE.edge.retryAt = Date.now()+5000;
+      edgeChip('☁️ CLOUD 0.8s','yellow');
+      try{ es.close(); }catch(e){}
+      if(LIVE.edge.es === es) LIVE.edge.es = null;
+    };
+    return true;
+  }catch(e){ return false; }
+}
+async function refreshEdge(){
+  const rec = await discoverEdge();
+  if(rec) return connectEdge(rec);
+  closeEdge(); edgeChip('☁️ CLOUD 0.8s','yellow'); return false;
+}
+
 async function pollCloudTick(){
+  if(LIVE.edge && LIVE.edge.open && Date.now()-(LIVE.edge.last||0) < 3000) return;
   const db = (FIREBASE_DB||'').replace(/\/$/,'');
   if(!db) return;
   try{
@@ -998,7 +1066,20 @@ async function pollCloudTick(){
 }
 
 function startLive(){
-  if(HOSTED){ pollCloudTick(); setInterval(pollCloudTick, 800); return; }
+  if(HOSTED){
+    // Fast path: discover the runner's Cloudflare tunnel with one Firebase read
+    // and connect the EventSource straight to it. Firebase 800ms polling stays
+    // on as the fallback for every stale/blocked case.
+    pollCloudTick(); setInterval(pollCloudTick, 800);
+    refreshEdge();
+    setInterval(()=>{
+      if(LIVE.edge.open) return;
+      if(Date.now() < (LIVE.edge.retryAt||0)) return;
+      refreshEdge();
+    }, 20000);
+    window.addEventListener('online', ()=>{ if(!LIVE.edge.open) refreshEdge(); });
+    return;
+  }
   connectStream();
   // SSE is the fast path; this 1 Hz poll keeps the panes moving if a proxy
   // buffers the stream (some corporate/mobile networks do).

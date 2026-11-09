@@ -41,6 +41,8 @@ PUBLIC_RULES = {
         ".read": False,
         ".write": False,
         "kronos_state": {".read": True, ".write": False},
+        # Auto-discovery record for the runner-hosted Cloudflare SSE tunnel.
+        "system": {"live_stream_url": {".read": True, ".write": False}},
         "upstox_auth": {
             "status": {".read": True, ".write": False},
             "token": {".read": False, ".write": False},

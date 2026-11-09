@@ -11,7 +11,13 @@ Every second this publishes ``state/live_feed.json`` with:
 Every third second the same payload is mirrored to Firebase
 ``/kronos_state/tick.json`` so the phone terminal updates while this runs.
 
+With ``--edge`` (used by the GitHub runner) it also hosts ``dashboard/server.py``
+on 127.0.0.1:8080 and a Cloudflare quick tunnel, then publishes the public URL
+to Firebase ``/system/live_stream_url.json`` so the static Pages terminal can
+find the runner without a laptop keeping a tunnel alive.
+
     python scripts/upstox_live_session.py --minutes 300
+    python scripts/upstox_live_session.py --minutes 200 --edge
 """
 
 from __future__ import annotations
@@ -154,14 +160,20 @@ class Publisher:
         self.url, self.token = admin()
         self.refreshed = time.time()
 
-    def push(self, payload: dict) -> None:
+    def put(self, path: str, body: dict, timeout: float = 12.0) -> int:
+        """PUT any path; returns the HTTP status (0 when publishing failed)."""
         try:
             if not self.token or time.time() - self.refreshed > 2700:
                 self._refresh()
-            requests.put(f"{self.url}/kronos_state/tick.json",
-                         params={"access_token": self.token}, json=payload, timeout=12)
+            response = requests.put(f"{self.url}{path}", params={"access_token": self.token},
+                                    json=body, timeout=timeout)
+            return response.status_code
         except Exception:  # noqa: BLE001 - publishing must never stop the feed
             self.token = ""
+            return 0
+
+    def push(self, payload: dict) -> None:
+        self.put("/kronos_state/tick.json", payload)
 
 
 def load_plan(symbol: str) -> dict:
@@ -214,6 +226,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the live Upstox session")
     parser.add_argument("--minutes", type=float, default=300.0)
     parser.add_argument("--no-firebase", action="store_true")
+    parser.add_argument("--edge", action="store_true",
+                        help="host the SSE server + a Cloudflare quick tunnel (GitHub runner)")
+    parser.add_argument("--edge-port", type=int, default=8080)
     args = parser.parse_args(argv)
 
     token = load_access_token()
@@ -226,6 +241,12 @@ def main(argv: list[str] | None = None) -> int:
     socket.start()
     engine = UpstoxTickEngine()
     publisher = Publisher()
+    edge = None
+    if args.edge:
+        from market.cloud_edge import CloudEdge
+
+        edge = CloudEdge(publisher, port=args.edge_port)
+        print(f"edge bridge: {edge.start()}", flush=True)
 
     expiries: dict[str, str] = {}
     option_state: dict[str, dict] = {}
@@ -453,6 +474,8 @@ def main(argv: list[str] | None = None) -> int:
         last_trade.update(payload["trade"])
         last_scanner.update(payload["scanner"])
         HEARTBEAT.write_text(json.dumps(payload, indent=1), encoding="utf-8")
+        if edge:
+            edge.tick()
 
         if not args.no_firebase and cycle - published > 3:
             published = cycle
@@ -468,6 +491,8 @@ def main(argv: list[str] | None = None) -> int:
         time.sleep(max(0.0, 1.0 - (time.time() - cycle)))
 
     socket.stop.set()
+    if edge:
+        edge.stop()
     print("live session finished")
     return 0
 

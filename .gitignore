@@ -8,3 +8,10 @@ mobile/build/
 mobile/.dart_tool/
 mobile/.flutter-plugins
 mobile/.flutter-plugins-dependencies
+
+# runtime edge bridge
+state/bin/
+state/logs/
+__pycache__/
+*.py[cod]
+.pytest_cache/
