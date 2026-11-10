@@ -100,6 +100,7 @@
 
   function fitCharts() {
     if (typeof CHARTS === 'undefined') return;
+    try { if (CHARTS.spot) CHARTS.spot.__userPanned = false; if (CHARTS.opt) CHARTS.opt.__userPanned = false; } catch (_) {}
     try { CHARTS.spot && CHARTS.spot.timeScale().fitContent(); } catch (_) {}
     try { CHARTS.opt && CHARTS.opt.timeScale().fitContent(); } catch (_) {}
     try { if (typeof updateDateAxis === 'function') { updateDateAxis('spot'); updateDateAxis('opt'); } } catch (_) {}
@@ -154,20 +155,21 @@
 
   function updateLevels(t) {
     const lv = (t && t.chart_levels) || {};
-    const put = (id, v, suffix) => {
+    const put = (id, v, key) => {
       const el = $(id); if (!el) return;
-      el.textContent = v == null || !Number.isFinite(Number(v)) ? '—' : n(v, 2) + (suffix || '');
+      const ov = (window.__kronosLevelOverrides || {})[key];
+      if (el.tagName === 'INPUT') {
+        if (document.activeElement !== el && (ov == null || ov === '')) {
+          el.value = v == null || !Number.isFinite(Number(v)) ? '' : String(Number(v));
+        }
+        return;
+      }
+      el.textContent = v == null || !Number.isFinite(Number(v)) ? '—' : n(v, 2);
     };
-    put('proLevelEntry', lv.entry);
-    put('proLevelSl', lv.sl);
-    put('proLevelT1', lv.t1);
-    put('proLevelT2', lv.t2);
-    put('proLevelAtp', lv.atp);
-    const legend = $('proLevelsLegend');
-    if (legend) {
-      const tr = (t && t.active_trade) || {};
-      legend.classList.toggle('closed', String(tr.status || '').toUpperCase() === 'CLOSED');
-    }
+    put('optLevelEntry', lv.entry, 'entry');
+    put('optLevelSl', lv.sl, 'sl');
+    put('optLevelT1', lv.t1, 't1');
+    put('optLevelT2', lv.t2, 't2');
   }
 
   const META = {
@@ -177,6 +179,7 @@
     hero: ['🔥 CORE TRADING ENGINE · PRIORITY 1', '💥 Expiry Zero-to-Hero', 'Gamma blast scanner, HeroScore ranker, trapped-writer fuel and AUTO / FORCE ON / OFF controls.'],
     brain: ['🧠 AI BRAIN & TELEMETRY · PRIORITY 2', '🎚️ Bull/Bear Oscillator & 3 Models', '78% institutional confirmation border plus the three Telugu KRONOS models (102M / 25M / 4M).'],
     speed: ['🧠 AI BRAIN & TELEMETRY · PRIORITY 2', '📜 Millisecond Brain Log & Speed', 'Live ticks/s, wire latency, scan Hz, six data-pipe health rows and the pausable Telugu narration terminal.'],
+    ai: ['🧠 AI SCANNER & FORECAST · LIVE', '🧠 AI Scanner & 12-Candle Forecast', 'Three model probabilities, six Upstox pipes, SMC structure and the live Telugu decision feed.'],
     health: ['📡 UPSTOX SYNC & DATA AUDIT · PRIORITY 3', '✅ 08:40 AM Health Checks', 'Six-point green-check readiness: token, runner, Cloudflare edge, V3 socket, 512 bars and three models.'],
     audit: ['📡 UPSTOX SYNC & DATA AUDIT · PRIORITY 3', '🔬 Full-Spectrum & 8/8 Model Audit', 'Eleven-strike PCR/max-pain, option Greeks, five-level OBI and the complete 8/8 model input matrix.'],
     ledger: ['📊 JOURNAL & REPORTS · PRIORITY 4', '📒 Trade Ledger & Calendar', 'Interactive trade history and the P&L calendar.'],
@@ -190,6 +193,7 @@
     hero: ['heroStrip'],
     brain: [],
     speed: [],
+    ai: [],
     health: ['autopilotBar'],
     audit: ['fullSpectrum', 'brainAudit'],
   };
@@ -398,6 +402,7 @@
     if (key === 'scalp') return scalpDetails(t);
     if (key === 'brain') return brainMeter(t);
     if (key === 'speed') return speedDetails(t);
+    if (key === 'ai') return '';
     if (key === 'health') return healthDetails(t);
     if (key === 'audit') return auditDetails(t);
     if (key === 'parallel') return `<div class="pro-card"><h3>Five Independent Quant Engines</h3><p>Parity discount, 3-second lead-lag, 5/5 heavyweight tsunami, coiled spring and index rotator scan simultaneously. The arbitrator ranks only validated outputs.</p><div class="te">ఐదు క్వాంట్ ఇంజిన్‌లు ఒకేసారి పరిశీలిస్తాయి. ధృవీకరించిన ఫలితాలను మాత్రమే ఆర్బిట్రేటర్ ర్యాంక్ చేస్తుంది.</div></div>`;
@@ -440,8 +445,12 @@
     const call = t.chart_call || {};
     const callout = $('proAiCallout');
     if (callout) {
-      callout.textContent = call.text || '🟡 KRONOS AI: WAITING FOR LIVE 3-MODEL FUSION';
-      callout.className = 'pro-ai-callout ' + (String(call.direction || '').toLowerCase() === 'bull' ? 'bull' : String(call.direction || '').toLowerCase() === 'bear' ? 'bear' : 'chop');
+      const full = call.text || '🟡 KRONOS AI: WAITING FOR LIVE 3-MODEL FUSION';
+      const dir = String(call.direction || '').toLowerCase();
+      const short = dir === 'bull' ? '🟢 BULLISH' : dir === 'bear' ? '🔴 BEARISH' : '🟡 SIDEWAYS';
+      callout.textContent = full.length > 30 ? `${short}${call.range ? ' · ' + call.range : ' · WAIT'}` : full;
+      callout.title = full;
+      callout.className = 'dock-model ' + (dir === 'bull' ? 'bull' : dir === 'bear' ? 'bear' : 'chop');
     }
     const oc = t.option_chart || {};
     const set = (id, v) => { const el = $(id); if (el) el.textContent = v == null || v === '' ? '—' : v; };
@@ -544,7 +553,7 @@
       if (key === 'scalp') window.renderScalper && window.renderScalper();
       if (key === 'parallel') window.paintParallelRadar && window.paintParallelRadar();
       if (key === 'hero') window.renderHero && window.renderHero();
-      if (key === 'brain' || key === 'speed' || key === 'audit') window.paintXray && window.paintXray(t);
+      if (key === 'brain' || key === 'speed' || key === 'audit' || key === 'ai') window.paintXray && window.paintXray(t);
     } catch (err) { console.warn('KRONOS modal refresh failed', err); }
   }
 
@@ -564,6 +573,7 @@
     updateModalStats(pending || {});
     if (key === 'brain') mountXray(['#xray .td-zone-osc', '#xray .td-zone-models']);
     else if (key === 'speed') mountXray(['#xray .td-zone-speed', '#xray .td-zone-log']);
+    else if (key === 'ai') mountXray(['#xray .td-zone-speed', '#xray .td-zone-osc', '#xray .td-zone-models', '#xray .td-zone-log']);
     else (NODES[key] || []).forEach((id) => mountNode($(id)));
     modal.hidden = false;
     document.body.classList.add('pro-modal-open');
@@ -735,6 +745,7 @@
       if (!active) return false;
       if (group === 'full') return active === 'sniper' || active === 'audit' || active === 'health';
       if (group === 'brain') return active === 'brain' || active === 'speed' || active === 'audit';
+      if (group === 'ai') return active === 'ai';
       return active === group;
     },
     isOpen,

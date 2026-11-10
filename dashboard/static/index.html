@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -1084,35 +1084,36 @@ body.tl-open{overflow:hidden!important}
   @media(max-width:980px){.pro-pnl{display:none}.pro-sidebar{left:-270px;transition:left .22s ease}.pro-sidebar.open{left:0}.pro-side-title button{display:block}#proSidebarScrim.show{display:block}main{left:0!important}.pro-menu{display:inline-flex!important}#tradePill{left:-14px!important}.pro-brand small{display:none}.pro-head-right .trade-mode .mode-status{display:none}}
   @media(max-width:760px){.pro-tickers{display:none}.pro-head-right{gap:3px}.pro-conn{font-size:6.5px;padding:5px 6px}.pro-topbar .pro-mode .mode-btn{padding:4px 5px!important;font-size:7px!important}.pro-brand{font-size:14px}.pro-ai-callout{font-size:8.5px;top:44px}.pro-modal-body{padding:10px}.pro-grid,.pro-grid.three{grid-template-columns:1fr}.pro-modal-head h2{font-size:19px}.pro-levels-legend{display:none}}
   </style>
+  <link rel="stylesheet" href="pro_enterprise.css">
 </head>
 <body>
 
 <header class="topbar pro-topbar" id="proTopbar">
-  <button id="menuBtn" class="icon-btn pro-menu" title="Open navigation" aria-label="Open navigation">☰</button>
+  <button id="pro-nav-toggle" class="icon-btn pro-menu" title="Collapse or expand navigation" aria-label="Collapse or expand navigation" aria-controls="proSidebar" aria-expanded="true">☰</button>
   <div class="brand pro-brand">KRONOS<small>QUANT DESK</small></div>
   <div class="pro-tickers" aria-label="Index tickers">
     <div class="pro-ticker" id="proNiftyTicker"><span>NIFTY 50</span><b id="bigSpot">—</b><em id="bigSpotDelta">—</em></div>
     <div class="pro-ticker" id="proBankTicker"><span>BANKNIFTY</span><b id="proBankLtp">—</b><em id="proBankDelta">—</em></div>
   </div>
-  <div class="pro-index-switch" aria-label="Index switcher">
-    <button type="button" data-pro-index="NIFTY" class="on">NIFTY</button>
-    <button type="button" data-pro-index="BANKNIFTY">BANKNIFTY</button>
-  </div>
   <div class="pro-pnl" aria-label="Live profit summary">
     <button type="button" class="pro-pill scalp" data-pro-modal="scalp"><span>⚡ ₹35K SCALP P&amp;L</span><b id="proScalpPnl">₹0</b><em id="proScalpState">WAITING</em></button>
     <button type="button" class="pro-pill sniper" data-pro-modal="sniper"><span>🎯 ₹65K SNIPER P&amp;L</span><b id="proSniperPnl">₹0</b><em id="proSniperState">T1/T2 · WAITING</em></button>
-    <button type="button" class="pro-pill total" data-pro-modal="total"><span>🏆 GRAND TOTAL &amp; 🔒 VAULT</span><b id="proTotalPnl">₹0</b><em id="proVaultState">VAULT ₹0</em></button>
+    <button type="button" class="pro-pill total" data-pro-modal="total"><span>🏆 GRAND TOTAL &amp; VAULT</span><b id="proTotalPnl">₹0</b><em id="proVaultState">VAULT ₹0</em></button>
+  </div>
+  <div class="active-trade-pod" id="activeTradePod" data-stage="IDLE" aria-label="Active trade lifecycle">
+    <div class="trade-pod-copy"><span>ACTIVE TRADE</span><b id="tradeStage">IDLE</b><small id="tradeQty">NO POSITION</small></div>
+    <div class="trade-pod-money"><b id="tradePnl">+₹0</b><small id="tradeSub">WAITING FOR ENTRY</small></div>
+    <button id="topCloseBtn" class="top-close-btn" type="button" title="Close the active position at the live price" hidden>🔴 Close Position</button>
   </div>
   <div class="pro-head-right">
-    <button type="button" id="proConnPill" class="pro-conn offline" data-pro-modal="health">🔴 STALE / OFFLINE</button>
-    <span class="badge red cutoff-badge" id="cutoffBadge" hidden></span>
+    <button type="button" id="proConnPill" class="pro-conn offline" data-pro-modal="health">🔴 Offline · Blocked</button>
+    <span class="badge red cutoff-badge" id="cutoffBadge" title="🛑 3:00 PM ORDER CUTOFF ACTIVE — Today's Net P&L Locked" hidden></span>
     <div class="trade-mode pro-mode" id="tradeModeDock" data-mode="PAPER">
       <button class="mode-btn active" id="paperModeBtn" type="button">PAPER</button>
       <button class="mode-btn real" id="realModeBtn" type="button">REAL</button>
-      <button class="submit-mode" id="submitModeBtn" type="button" title="Arm the selected mode">✅</button>
-      <span class="mode-status" id="modeStatus">📝 PAPER</span>
+      <button class="submit-mode" id="submitModeBtn" type="button" title="Arm the selected mode">ARM</button>
     </div>
-    <div class="top-actions"><button id="journalQuickBtn" class="icon-btn journal-quick" type="button" title="Open 8K Pro Journal PDF export" aria-label="Open 8K Pro Journal PDF export"><span aria-hidden="true">📄</span></button><button id="themeBtn" class="icon-btn" title="Toggle light / dark">☀️</button></div>
+    <div class="top-actions"><button id="journalQuickBtn" class="icon-btn journal-quick" type="button" title="Open 8K Pro Journal PDF export" aria-label="Open 8K Pro Journal PDF export"><span aria-hidden="true">📄</span></button><button id="themeBtn" class="icon-btn" title="Light theme active">☀️</button></div>
   </div>
   <div id="proLegacyHud" hidden aria-hidden="true">
     <span id="hudCapital">₹1,00,000</span><span id="hudRealized">₹0</span><span id="hudTrades">0</span><span id="hudVault">₹0</span>
@@ -1331,43 +1332,68 @@ body.tl-open{overflow:hidden!important}
 </aside>
 <div id="sidebarScrim"></div>
 
-<main>
+<main class="pro-main">
   <div id="panes" data-layout="split">
     <section class="pane spot">
-      <div class="pane-head"><b>NIFTY 50 · SPOT &amp; SMC</b><span id="spotMeta">5m</span>
-        <span class="tf-btns" id="spotTf"><button data-tf="1">1m</button><button data-tf="5" class="on">5m</button><button data-tf="15">15m</button></span>
-        <button class="chart-cfg-btn" type="button" data-chart-studio title="Chart Studio — colours, timeline, follow mode">🎨</button>
-        <button class="chart-cfg-btn" type="button" data-chart-fit title="Fit visible candles">⛶</button>
+      <div class="chart-dock">
+        <div class="chart-dock-left">
+          <div class="chart-symbol-switch" aria-label="Spot symbol">
+            <button type="button" data-pro-index="NIFTY" class="on">NIFTY 50</button>
+            <button type="button" data-pro-index="BANKNIFTY">BANKNIFTY</button>
+          </div>
+          <div class="dock-title"><span id="spotMeta">—</span></div>
+          <span class="tf-btns" id="spotTf"><button type="button" data-tf="1">1m</button><button type="button" data-tf="5" class="on">5m</button><button type="button" data-tf="15">15m</button></span>
+          <button class="chart-cfg-btn" type="button" data-chart-fit title="Fit visible candles">⛶</button>
+          <button class="chart-cfg-btn" type="button" data-chart-studio title="Chart Studio">🎨</button>
+          <button id="aiDrawerBtn" class="ai-drawer-btn" type="button" title="AI Scanner &amp; 12-Candle Forecast" aria-label="AI Scanner and 12-Candle Forecast">🧠 AI</button>
+        </div>
+        <div class="chart-dock-right">
+          <div id="proAiCallout" class="pro-ai-callout dock-model">🟡 WAITING FOR LIVE 3-MODEL FUSION</div>
+        </div>
       </div>
-      <div id="proAiCallout" class="pro-ai-callout">🟡 KRONOS AI: WAITING FOR LIVE 3-MODEL FUSION</div>
-      <div id="proCorridorLegend" class="pro-corridor-legend"><span class="p10">p10 floor</span><span class="med">median</span><span class="p90">p90 ceiling</span></div>
-      <div id="chart" class="chart-host"></div>
-      <canvas id="overlaySpot" class="chart-overlay" aria-hidden="true"></canvas>
-      <div id="spotDateAxis" class="chart-date-axis" aria-live="polite"><b>—</b><span>—</span></div>
-      <div class="mtf-pill" id="mtfPill">MTF SYNC: [1m: —] [5m: —] [15m: —]</div>
+      <div class="chart-canvas-wrap">
+        <div id="chart" class="chart-host"></div>
+        <canvas id="overlaySpot" class="chart-overlay" aria-hidden="true"></canvas>
+        <canvas id="forecastRange" class="chart-overlay" aria-hidden="true"></canvas>
+      </div>
+      <div class="chart-statusbar">
+        <div id="spotDateAxis" class="chart-date-axis" aria-live="polite"><b>—</b><span>—</span></div>
+        <div class="mtf-pill" id="mtfPill">MTF SYNC: [1m: —] [5m: —] [15m: —]</div>
+      </div>
     </section>
-    <div id="splitter" title="Drag to resize the panes"></div>
     <section class="pane opt">
-      <div class="pane-head"><b id="optTitle">ATM OPTION</b><span id="optMeta">1m</span>
-        <span class="tf-btns" id="optTf"><button data-tf="1" class="on">1m</button><button data-tf="5">5m</button><button data-tf="15">15m</button></span>
-        <button class="chart-cfg-btn" type="button" data-chart-studio title="Chart Studio — colours, timeline, follow mode">🎨</button>
-        <button class="chart-cfg-btn" type="button" data-chart-fit title="Fit visible candles">⛶</button>
-        <span class="opt-quote"><span id="bigOpt">—</span><small id="bigOptPnl">—</small></span></div>
-      <div id="chart2" class="chart-host"></div>
-      <canvas id="overlayOpt" class="chart-overlay" aria-hidden="true"></canvas>
-      <div id="optDateAxis" class="chart-date-axis" aria-live="polite"><b>—</b><span>—</span></div>
-      <div class="oi-badge" id="oiBadge">OI — · ΔOI —</div>
-      <button id="closeNowBtn" class="close-live" type="button" hidden>⚡ Close Position @ Live Price</button>
-      <div id="pnlBadge" class="pnl-badge">—</div>
-      <div id="proOptionStrip" class="pro-option-strip"><span>OPTION LTP <b id="proOptLtp">—</b></span><span>Δ <b id="proOptDelta">—</b></span><span>Γ <b id="proOptGamma">—</b></span><span>IV <b id="proOptIv">—</b></span><span>OBI <b id="proOptObi">—</b></span></div>
-      <div id="proLevelsLegend" class="pro-levels-legend">
-        <div class="lv entry"><span>ENTRY</span><b id="proLevelEntry">—</b></div>
-        <div class="lv sl"><span>SL</span><b id="proLevelSl">—</b></div>
-        <div class="lv t1"><span>T1 · p65</span><b id="proLevelT1">—</b></div>
-        <div class="lv t2"><span>T2 · p90</span><b id="proLevelT2">—</b></div>
-        <div class="lv atp"><span>ATP</span><b id="proLevelAtp">—</b></div>
+      <div class="chart-dock">
+        <div class="chart-dock-left">
+          <div class="dock-title"><b id="optTitle">ATM OPTION</b><span id="optMeta">1m</span></div>
+          <div id="proOptionStrip" class="opt-greek-strip"><span>LTP <b id="proOptLtp">—</b></span><span>Δ <b id="proOptDelta">—</b></span><span>Γ <b id="proOptGamma">—</b></span><span>IV <b id="proOptIv">—</b></span><span>OBI <b id="proOptObi">—</b></span></div>
+          <div id="oiBadge" class="oi-badge">OI — · ΔOI —</div>
+        </div>
+        <div class="chart-dock-right">
+          <div class="opt-quote"><span id="bigOpt">—</span><small id="bigOptPnl">—</small></div>
+          <span class="tf-btns" id="optTf"><button type="button" data-tf="1" class="on">1m</button><button type="button" data-tf="5">5m</button><button type="button" data-tf="15">15m</button></span>
+          <button class="chart-cfg-btn" type="button" data-chart-fit title="Fit visible candles">⛶</button>
+          <button class="chart-cfg-btn" type="button" data-chart-studio title="Chart Studio">🎨</button>
+        </div>
       </div>
-      <button id="gearBtn" class="gear-btn" title="Order line settings">⚙️</button>
+      <div class="opt-level-strip" id="proLevelControls">
+        <label class="level-field"><span class="entry">ENTRY</span><button type="button" class="level-step" data-level-step="entry" data-dir="-1">−</button><input id="optLevelEntry" type="number" step="0.05" inputmode="decimal" aria-label="Entry price"><button type="button" class="level-step" data-level-step="entry" data-dir="1">+</button></label>
+        <label class="level-field"><span class="sl">SL</span><button type="button" class="level-step" data-level-step="sl" data-dir="-1">−</button><input id="optLevelSl" type="number" step="0.05" inputmode="decimal" aria-label="Stop loss price"><button type="button" class="level-step" data-level-step="sl" data-dir="1">+</button></label>
+        <label class="level-field"><span class="t1">T1</span><button type="button" class="level-step" data-level-step="t1" data-dir="-1">−</button><input id="optLevelT1" type="number" step="0.05" inputmode="decimal" aria-label="T1 target"><button type="button" class="level-step" data-level-step="t1" data-dir="1">+</button></label>
+        <label class="level-field"><span class="t2">T2</span><button type="button" class="level-step" data-level-step="t2" data-dir="-1">−</button><input id="optLevelT2" type="number" step="0.05" inputmode="decimal" aria-label="T2 target"><button type="button" class="level-step" data-level-step="t2" data-dir="1">+</button></label>
+        <label class="qty-field"><span>QTY</span><input id="optQty" type="number" min="0" step="1" inputmode="numeric" aria-label="Planned quantity"></label>
+        <div class="font-control" aria-label="Order label font size"><button id="optFontMinus" type="button" aria-label="Smaller labels">A−</button><b id="optFontSize">14px</b><button id="optFontPlus" type="button" aria-label="Larger labels">A+</button></div>
+        <div class="level-stage"><b id="levelStageTitle">Stage 1 · Waiting</b><small id="levelStageSub">No position · bracket ready</small></div>
+        <button class="level-reset" id="optLevelReset" type="button">Reset</button>
+      </div>
+      <div class="chart-canvas-wrap">
+        <div id="chart2" class="chart-host"></div>
+        <canvas id="overlayOpt" class="chart-overlay" aria-hidden="true"></canvas>
+        <canvas id="optLevelLabels" class="chart-overlay" aria-hidden="true"></canvas>
+      </div>
+      <div class="chart-statusbar">
+        <div id="optDateAxis" class="chart-date-axis" aria-live="polite"><b>—</b><span>—</span></div>
+        <span id="optStripStatus">TARGET LINES SYNCED · CANONICAL OPTION PAYLOAD</span>
+      </div>
     </section>
   </div>
 
@@ -1933,6 +1959,12 @@ function createCharts(){
     new ResizeObserver(()=>resizeCharts()).observe(spotEl);
     new ResizeObserver(()=>resizeCharts()).observe(optEl);
   }
+  [['spot', spotEl], ['opt', optEl]].forEach(([key, el])=>{
+    const mark=()=>{ if(CHARTS[key]) CHARTS[key].__userPanned=true; };
+    el.addEventListener('pointerdown', mark, {passive:true});
+    el.addEventListener('wheel', mark, {passive:true});
+    el.addEventListener('touchstart', mark, {passive:true});
+  });
   return true;
 }
 
@@ -2178,7 +2210,7 @@ function renderSpot(){
   }
   renderCone(block, data);
   const autoFollow = !!(window.kronosPro && window.kronosPro.autoFollowOn && window.kronosPro.autoFollowOn());
-  if(data.length && (!SERIES.spot.candle.__focused || autoFollow)){
+  if(data.length && (!SERIES.spot.candle.__focused || (autoFollow && !CHARTS.spot.__userPanned))){
     const first=SERIES.spot.candle.__focused;
     SERIES.spot.candle.__focused = true;
     try{
@@ -2359,12 +2391,14 @@ function setTF(tf, pane='spot'){
     OPT_TF=tf;
     document.querySelectorAll('#optTf button').forEach(b=>b.classList.toggle('on', b.dataset.tf+'m'===tf));
     if(SERIES.opt.candle) SERIES.opt.candle.__focused=false;
+    if(CHARTS.opt) CHARTS.opt.__userPanned=false;
     renderOption();
     return;
   }
   TF=tf;
   document.querySelectorAll('#spotTf button').forEach(b=>b.classList.toggle('on', b.dataset.tf+'m'===tf));
   CONE.sig=''; if(SERIES.spot.candle) SERIES.spot.candle.__focused=false;
+  if(CHARTS.spot) CHARTS.spot.__userPanned=false;
   renderSpot();
 }
 
@@ -2448,7 +2482,7 @@ function renderOption(){
   applyCandles(SERIES.opt.candle, data, (o.strike_symbol || 'opt') + '|' + OPT_TF);
   applyVolumes(SERIES.opt.volume, data);
   const optAutoFollow = !!(window.kronosPro && window.kronosPro.autoFollowOn && window.kronosPro.autoFollowOn());
-  if(data.length && (!SERIES.opt.candle.__focused || optAutoFollow)){
+  if(data.length && (!SERIES.opt.candle.__focused || (optAutoFollow && !CHARTS.opt.__userPanned))){
     const first=SERIES.opt.candle.__focused;
     SERIES.opt.candle.__focused = true;
     try{
@@ -2488,10 +2522,12 @@ function setOrderLines(o){
   const tr = LIVE.trade || {};
   const lv = (LIVE.tick && LIVE.tick.chart_levels) || {};
   const num = (v)=>Number.isFinite(Number(v)) && Number(v)>0 ? Number(v) : null;
-  const entry = num(tr.entry_price) || num(lv.entry);
-  const sl = num(tr.current_trailing_sl) || num(lv.sl);
-  const t1 = num(tr.target_1) || num(lv.t1);
-  const t2 = num(tr.target_2_p90) || num(lv.t2);
+  const ov = window.__kronosLevelOverrides || {};
+  const pick = (key, fallback)=>{ const x=Number(ov[key]); return Number.isFinite(x) && x>0 ? x : fallback; };
+  const entry = pick('entry', num(tr.entry_price) || num(lv.entry));
+  const sl = pick('sl', num(tr.current_trailing_sl) || num(lv.sl));
+  const t1 = pick('t1', num(tr.target_1) || num(lv.t1));
+  const t2 = pick('t2', num(tr.target_2_p90) || num(lv.t2));
   const atp = num(o && o.atp_vwap) || num(lv.atp);
   const sig = JSON.stringify({entry,sl,t1,t2,atp,lines:LINES});
   if(sig === PL_SIG.v) return;
@@ -2592,12 +2628,13 @@ function paintPill(){
 }
 
 function paintCloseControls(){
-  const btn=$('#closeNowBtn');
-  if(!btn) return;
   const open=!!LIVE.trade && String(LIVE.trade.status||'').toUpperCase()==='OPEN';
-  btn.hidden=!open;
-  btn.textContent=MODE.real?'⚡ REAL SELL @ LIVE':'⚡ Close Position @ Live Price';
-  btn.title=MODE.real?'Send a live Upstox SELL for the remaining quantity':'Close the paper position at the live premium';
+  ['topCloseBtn','closeNowBtn'].forEach(id=>{
+    const btn=$('#'+id); if(!btn) return;
+    btn.hidden=!open;
+    btn.textContent=MODE.real?'🔴 REAL SELL @ LIVE':'🔴 Close Position';
+    btn.title=MODE.real?'Send a live Upstox SELL for the remaining quantity':'Close the paper position at the live premium';
+  });
 }
 
 function setBig(sel, value, digits){
@@ -3042,6 +3079,7 @@ document.querySelectorAll('.tab[data-sym]').forEach(tab=>{
     CONE.sig=''; PL_SIG.v='';
     if(SERIES.spot.candle) SERIES.spot.candle.__focused=false;
     if(SERIES.opt.candle) SERIES.opt.candle.__focused=false;
+    if(CHARTS.opt) CHARTS.opt.__userPanned=false;
     if(typeof LIVE!=='undefined' && !HOSTED && LIVE.es){ LIVE.es.close(); LIVE.es=null; connectStream(); }
     if(typeof LIVE!=='undefined' && HOSTED && LIVE.edge && LIVE.edge.url){ closeEdge(); refreshEdge(); }
     $('#sliderWrap').classList.toggle('show', SYMBOL==='REPLAY');
@@ -3251,7 +3289,7 @@ function updateCutoffBadge(){
   if(!badge) return;
   const active = istClockSeconds() >= 15*3600;
   badge.hidden = !active;
-  if(active) badge.textContent = '🛑 3:00 PM ORDER CUTOFF ACTIVE — కొత్త ఆర్డర్లు నిలిపివేయబడ్డాయి (Today\'s Net P&L Locked)';
+  if(active){ badge.textContent = '🛑 3:00 PM CUTOFF'; badge.title = '3:00 PM order cutoff active — new orders halted; today\'s net P&L locked'; }
 }
 updateCutoffBadge();
 setInterval(updateCutoffBadge, 1000);
@@ -3718,7 +3756,7 @@ function applyTick(t){
   LIVE.smart = t.smart_entry || LIVE.smart || {};
   LIVE.xray = t.scanner_xray || [];
   if(t.story && t.story.length) LIVE.story = t.story;
-  if(!pro || pro.shouldRender('brain')) paintXray(t);
+  if(!pro || pro.shouldRender('brain') || pro.shouldRender('ai')) paintXray(t);
   bigPrices();
   paintHud();
   paintPill();
@@ -3901,7 +3939,7 @@ document.querySelectorAll('[data-chart-fit]').forEach(b=>b.addEventListener('cli
 $('#paperModeBtn').addEventListener('click',selectPaperMode);
 $('#realModeBtn').addEventListener('click',selectRealMode);
 $('#submitModeBtn').addEventListener('click',submitMode);
-$('#closeNowBtn').addEventListener('click',closePosition);
+const closeNowBtn=$('#closeNowBtn'); if(closeNowBtn) closeNowBtn.addEventListener('click',closePosition);
 loadTradeMode();
 setInterval(loadTradeMode,15000);
 
@@ -4504,5 +4542,6 @@ setInterval(()=>{
 </script>
 <script src="model_audit.js"></script>
 <script src="pro_workspace.js"></script>
+<script src="pro_enterprise.js"></script>
 </body>
 </html>
