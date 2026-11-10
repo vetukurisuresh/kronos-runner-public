@@ -39,12 +39,24 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-auth.txt
 
       - name: Install Playwright, pyotp and Firebase deps
         run: |
           python -m pip install --upgrade pip
-          python -m pip install requests google-auth pynacl pyotp playwright
+          python -m pip install -r requirements-auth.txt
           python -m playwright install --with-deps chromium
+
+      - name: Ensure public readiness read rule
+        run: |
+          python - <<'PY'
+          import json
+          from state.firebase_sync import ensure_public_read_rules
+          result = ensure_public_read_rules()
+          print(json.dumps({"ok": result.get("ok"), "status": result.get("status")}))
+          raise SystemExit(0 if result.get("ok") else 1)
+          PY
 
       - name: Mint today's token headlessly
         run: python scripts/auto_upstox_morning_login.py --push-secret

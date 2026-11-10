@@ -1,0 +1,8 @@
+# Headless Upstox auth dependencies for the public runner repo.
+requests==2.34.2
+google-auth>=2.30,<3
+google-auth-httplib2>=0.2,<1
+pynacl>=1.5,<2
+pyotp>=2.9,<3
+playwright>=1.50,<2
+python-dotenv>=1.0,<2

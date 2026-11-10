@@ -1,0 +1,48 @@
+name: Apply Firebase read rules
+
+# Applies the public-read rules used by the Pages dashboard and the 08:40
+# readiness smoke. This is manual-only so it cannot race a trading session.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kronos-firebase-rules
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    name: Apply public readiness rules
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      FIREBASE_CREDENTIALS_JSON: ${{ secrets.FIREBASE_CREDENTIALS_JSON }}
+      FIREBASE_DB_URL: ${{ secrets.FIREBASE_DB_URL }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-edge.txt
+
+      - name: Install Firebase deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-edge.txt
+
+      - name: Apply public read rules
+        run: |
+          python - <<'PY'
+          import json
+          from state.firebase_sync import ensure_public_read_rules
+          result = ensure_public_read_rules()
+          print(json.dumps({"ok": result.get("ok"), "status": result.get("status")}))
+          raise SystemExit(0 if result.get("ok") else 1)
+          PY

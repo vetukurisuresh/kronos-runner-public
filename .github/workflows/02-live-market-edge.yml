@@ -4,12 +4,21 @@ name: "02 - Live market edge (08:45 IST)"
 # before the 09:15 open. Two shifts stay under the ~6 h job cap: 08:45 and the
 # 12:45 handoff. The token is read from Firebase first (freshly minted at 08:30)
 # and the repository secret is the fallback.
+#
+# Manual dispatch supports dry_run=true: dependencies, Firebase token hydration
+# and token sanity are exercised, but the long-running stream/tunnel is skipped.
 
 on:
   schedule:
     - cron: "15 3 * * 1-5"   # 08:45 IST
     - cron: "15 7 * * 1-5"   # 12:45 IST second shift
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Validate setup and token without starting the stream
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -40,13 +49,15 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
+          cache-dependency-path: requirements-edge.txt
 
       - name: Install the streaming-only deps
         run: |
           python -m pip install --upgrade pip
-          python -m pip install requests websocket-client protobuf google-auth
+          python -m pip install -r requirements-edge.txt
 
       - name: Install cloudflared (quick tunnel client)
+        if: ${{ inputs.dry_run != true }}
         run: |
           mkdir -p "$HOME/.local/bin"
           curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 \
@@ -91,7 +102,14 @@ jobs:
           fi
           echo "token present (${#UPSTOX_ACCESS_TOKEN} chars)"
 
+      - name: Dry-run validation
+        if: ${{ inputs.dry_run == true }}
+        run: |
+          echo "Dry run passed: dependencies, Firebase hydration and token presence are wired."
+          echo "The streaming edge and Cloudflare tunnel were intentionally not started."
+
       - name: Start the cloud edge bridge
+        if: ${{ inputs.dry_run != true }}
         run: |
           mkdir -p state/logs
           nohup python -u scripts/upstox_live_session.py --minutes 240 --edge \
@@ -102,6 +120,7 @@ jobs:
           curl -fsS http://127.0.0.1:8080/api/ping && echo
 
       - name: Keep the shift alive
+        if: ${{ inputs.dry_run != true }}
         run: |
           pid=$(cat state/logs/edge_session.pid)
           while kill -0 "$pid" 2>/dev/null; do sleep 30; done
