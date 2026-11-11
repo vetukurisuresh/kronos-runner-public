@@ -46,7 +46,7 @@ html, body {
   background: var(--pro-bg) !important;
   color: var(--pro-text) !important;
 }
-body { font-family: 'Inter', 'Segoe UI', system-ui, sans-serif; }
+body { font-family: 'Inter', 'Inter', system-ui, sans-serif; }
 button, input { font-family: inherit; }
 button:focus-visible, input:focus-visible {
   outline: 2px solid var(--pro-purple);
@@ -72,7 +72,7 @@ button:focus-visible, input:focus-visible {
   flex: 0 0 auto;
 }
 .pro-topbar .pro-brand small {
-  font: 700 8px/1 'Roboto Mono', monospace !important;
+  font: 700 8px/1 'JetBrains Mono', monospace !important;
   color: var(--pro-purple) !important;
   letter-spacing: .16em !important;
 }
@@ -100,9 +100,9 @@ button:focus-visible, input:focus-visible {
   grid-template-rows: auto auto;
   gap: 0 7px;
 }
-.pro-ticker span { grid-column: 1/-1; font: 700 8px 'Roboto Mono', monospace; letter-spacing: .09em; color: var(--pro-muted); }
-.pro-ticker b { font: 800 15px/1.2 'Roboto Mono', monospace; color: var(--pro-text); font-variant-numeric: tabular-nums; }
-.pro-ticker em { font: 700 9px 'Roboto Mono', monospace; font-style: normal; color: var(--pro-muted); align-self: end; }
+.pro-ticker span { grid-column: 1/-1; font: 700 8px 'JetBrains Mono', monospace; letter-spacing: .09em; color: var(--pro-muted); }
+.pro-ticker b { font: 800 15px/1.2 'JetBrains Mono', monospace; color: var(--pro-text); font-variant-numeric: tabular-nums; }
+.pro-ticker em { font: 700 9px 'JetBrains Mono', monospace; font-style: normal; color: var(--pro-muted); align-self: end; }
 .pro-ticker em.up { color: var(--pro-emerald); }
 .pro-ticker em.down { color: var(--pro-coral); }
 
@@ -146,7 +146,7 @@ button:focus-visible, input:focus-visible {
   overflow: visible;
   text-overflow: clip;
   white-space: nowrap;
-  font: 800 17px/1.2 'Roboto Mono', monospace;
+  font: 800 17px/1.2 'JetBrains Mono', monospace;
   color: var(--pro-text);
   font-variant-numeric: tabular-nums;
 }
@@ -156,7 +156,7 @@ button:focus-visible, input:focus-visible {
   overflow: visible;
   text-overflow: clip;
   white-space: nowrap;
-  font: 600 8px 'Roboto Mono', monospace;
+  font: 600 8px 'JetBrains Mono', monospace;
   font-style: normal;
   color: var(--pro-faint);
 }
@@ -171,7 +171,7 @@ button:focus-visible, input:focus-visible {
   border-radius: 999px;
   background: var(--pro-coral-soft);
   color: #b91c1c;
-  font: 700 9px 'Roboto Mono', monospace;
+  font: 700 9px 'JetBrains Mono', monospace;
   padding: 7px 10px;
   cursor: pointer;
   white-space: nowrap;
@@ -253,7 +253,7 @@ button:focus-visible, input:focus-visible {
 .trade-pod-copy { min-width: 0; flex: 1 1 auto; }
 .trade-pod-copy > span {
   display: block;
-  font: 800 7px 'Roboto Mono', monospace;
+  font: 800 7px 'JetBrains Mono', monospace;
   letter-spacing: .13em;
   color: var(--pro-faint);
 }
@@ -267,14 +267,14 @@ button:focus-visible, input:focus-visible {
 .trade-pod-copy small {
   display: block;
   margin-top: 2px;
-  font: 600 8.5px 'Roboto Mono', monospace;
+  font: 600 8.5px 'JetBrains Mono', monospace;
   color: var(--pro-muted);
   white-space: nowrap;
 }
 .trade-pod-money { text-align: right; flex: 0 0 auto; }
 .trade-pod-money b {
   display: block;
-  font: 800 14px/1.2 'Roboto Mono', monospace;
+  font: 800 14px/1.2 'JetBrains Mono', monospace;
   color: var(--pro-emerald);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -282,7 +282,7 @@ button:focus-visible, input:focus-visible {
 .trade-pod-money b.neg { color: var(--pro-coral); }
 .trade-pod-money small {
   display: block;
-  font: 600 7.5px 'Roboto Mono', monospace;
+  font: 600 7.5px 'JetBrains Mono', monospace;
   color: var(--pro-muted);
   white-space: nowrap;
 }
@@ -320,7 +320,7 @@ button:focus-visible, input:focus-visible {
 .pro-side-title {
   display: flex; align-items: center; justify-content: space-between;
   padding: 13px 14px 8px;
-  font: 800 9px 'Roboto Mono', monospace;
+  font: 800 9px 'JetBrains Mono', monospace;
   letter-spacing: .15em;
   color: var(--pro-faint);
 }
@@ -337,11 +337,11 @@ button:focus-visible, input:focus-visible {
 .pro-cat {
   display: flex; justify-content: space-between; align-items: center;
   padding: 13px 6px 5px;
-  font: 800 8px 'Roboto Mono', monospace;
+  font: 800 8px 'JetBrains Mono', monospace;
   letter-spacing: .07em;
   color: var(--pro-faint);
 }
-.pro-cat small { font: 700 6.5px 'Roboto Mono', monospace; color: #94a3b8; }
+.pro-cat small { font: 700 6.5px 'JetBrains Mono', monospace; color: #94a3b8; }
 .pro-nav-item {
   width: 100%;
   border: 1px solid transparent;
@@ -368,7 +368,7 @@ button:focus-visible, input:focus-visible {
   text-overflow: ellipsis;
 }
 .pro-nav-item .lbl small {
-  font: 600 8px 'Roboto Mono', monospace;
+  font: 600 8px 'JetBrains Mono', monospace;
   color: var(--pro-faint);
   white-space: nowrap;
   overflow: hidden;
@@ -382,7 +382,7 @@ button:focus-visible, input:focus-visible {
   padding: 9px 13px 11px;
   border-top: 1px solid var(--pro-line);
   display: flex; flex-direction: column; gap: 3px;
-  font: 600 8px 'Roboto Mono', monospace;
+  font: 600 8px 'JetBrains Mono', monospace;
   color: var(--pro-muted);
   background: #ffffff;
 }
@@ -468,22 +468,22 @@ main.pro-main #panes {
   letter-spacing: .04em; white-space: nowrap;
 }
 .dock-title span {
-  font: 700 9.5px 'Roboto Mono', monospace; color: var(--pro-muted);
+  font: 700 9.5px 'JetBrains Mono', monospace; color: var(--pro-muted);
   white-space: nowrap;
 }
 .dock-price {
   display: flex; align-items: baseline; gap: 5px;
-  font: 800 13px 'Roboto Mono', monospace; color: var(--pro-text);
+  font: 800 13px 'JetBrains Mono', monospace; color: var(--pro-text);
   font-variant-numeric: tabular-nums; white-space: nowrap;
 }
-.dock-price small { font: 700 8px 'Roboto Mono', monospace; color: var(--pro-emerald); }
+.dock-price small { font: 700 8px 'JetBrains Mono', monospace; color: var(--pro-emerald); }
 .dock-price small.down { color: var(--pro-coral); }
 .tf-btns { display: inline-flex; gap: 2px; margin-left: 0; flex: 0 0 auto; }
 .tf-btns button {
   padding: 4px 6px; border-radius: 5px;
   border: 1px solid var(--pro-line);
   background: #ffffff; color: var(--pro-muted);
-  font: 700 8px 'Roboto Mono', monospace; cursor: pointer;
+  font: 700 8px 'JetBrains Mono', monospace; cursor: pointer;
 }
 .tf-btns button.on { border-color: var(--pro-purple); color: var(--pro-purple); background: var(--pro-purple-soft); }
 .chart-cfg-btn {
@@ -515,7 +515,7 @@ main.pro-main #panes {
   border-radius: 6px;
   background: var(--pro-soft) !important;
   color: var(--pro-muted) !important;
-  font: 700 8px 'Roboto Mono', monospace;
+  font: 700 8px 'JetBrains Mono', monospace;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -539,7 +539,7 @@ main.pro-main #panes {
   border-top: 1px solid var(--pro-line);
   background: #ffffff;
   color: var(--pro-faint);
-  font: 600 8.5px 'Roboto Mono', monospace;
+  font: 600 8.5px 'JetBrains Mono', monospace;
   overflow: hidden;
 }
 .chart-date-axis {
@@ -549,12 +549,12 @@ main.pro-main #panes {
   padding: 0; border: 0; background: transparent;
   white-space: nowrap; overflow: hidden;
 }
-.chart-date-axis b { font: 800 9.5px 'Roboto Mono', monospace; color: var(--pro-text); }
-.chart-date-axis span { font: 600 8px 'Roboto Mono', monospace; color: var(--pro-faint); }
+.chart-date-axis b { font: 800 9.5px 'JetBrains Mono', monospace; color: var(--pro-text); }
+.chart-date-axis span { font: 600 8px 'JetBrains Mono', monospace; color: var(--pro-faint); }
 .mtf-pill {
   position: static !important;
   padding: 0; border: 0; background: transparent;
-  color: var(--pro-muted); font: 700 8px 'Roboto Mono', monospace;
+  color: var(--pro-muted); font: 700 8px 'JetBrains Mono', monospace;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .mtf-pill.bull { color: var(--pro-emerald); }
@@ -562,13 +562,13 @@ main.pro-main #panes {
 
 /* Option quote/Greek row and interactive order strip */
 .opt-quote { display: inline-flex; align-items: baseline; gap: 5px; margin-left: auto; flex: 0 0 auto; }
-.opt-quote #bigOpt { font: 800 15px 'Roboto Mono', monospace; color: var(--pro-text); font-variant-numeric: tabular-nums; }
-.opt-quote #bigOptPnl { font: 700 8px 'Roboto Mono', monospace; color: var(--pro-muted); }
+.opt-quote #bigOpt { font: 800 15px 'JetBrains Mono', monospace; color: var(--pro-text); font-variant-numeric: tabular-nums; }
+.opt-quote #bigOptPnl { font: 700 8px 'JetBrains Mono', monospace; color: var(--pro-muted); }
 .opt-greek-strip {
   display: flex; align-items: center; gap: 7px;
   position: static !important;
   padding: 0; border: 0; background: transparent;
-  color: var(--pro-muted); font: 700 8px 'Roboto Mono', monospace;
+  color: var(--pro-muted); font: 700 8px 'JetBrains Mono', monospace;
   white-space: nowrap; overflow: hidden;
 }
 .opt-greek-strip b { color: var(--pro-text); font-size: 9px; }
@@ -576,7 +576,7 @@ main.pro-main #panes {
   position: static !important;
   padding: 4px 6px; border: 1px solid var(--pro-line);
   border-radius: 5px; background: var(--pro-soft);
-  color: var(--pro-muted); font: 700 7.5px 'Roboto Mono', monospace;
+  color: var(--pro-muted); font: 700 7.5px 'JetBrains Mono', monospace;
   white-space: nowrap; pointer-events: none;
 }
 .oi-badge.unwind { border-color: #a7f3d0; background: var(--pro-emerald-soft); color: #047857; }
@@ -604,7 +604,7 @@ main.pro-main #panes {
   flex: 0 0 auto;
 }
 .level-field > span {
-  font: 800 7px 'Roboto Mono', monospace;
+  font: 800 7px 'JetBrains Mono', monospace;
   letter-spacing: .06em;
   color: var(--pro-muted);
   white-space: nowrap;
@@ -620,7 +620,7 @@ main.pro-main #panes {
   border-radius: 4px;
   background: #ffffff;
   color: var(--pro-text);
-  font: 800 9px 'Roboto Mono', monospace;
+  font: 800 9px 'JetBrains Mono', monospace;
   padding: 4px 3px;
   text-align: right;
   font-variant-numeric: tabular-nums;
@@ -631,28 +631,28 @@ main.pro-main #panes {
   border-radius: 4px;
   background: var(--pro-soft);
   color: var(--pro-muted);
-  font: 800 11px/1 'Roboto Mono', monospace;
+  font: 800 11px/1 'JetBrains Mono', monospace;
   padding: 0; cursor: pointer;
 }
 .level-step:hover { border-color: var(--pro-purple); color: var(--pro-purple); background: var(--pro-purple-soft); }
 .qty-field { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; }
-.qty-field span { font: 800 7px 'Roboto Mono', monospace; color: var(--pro-muted); }
+.qty-field span { font: 800 7px 'JetBrains Mono', monospace; color: var(--pro-muted); }
 .qty-field input {
   width: 48px; border: 1px solid var(--pro-line); border-radius: 4px;
   background: #ffffff; color: var(--pro-text);
-  font: 800 9px 'Roboto Mono', monospace; padding: 4px 3px; text-align: right;
+  font: 800 9px 'JetBrains Mono', monospace; padding: 4px 3px; text-align: right;
 }
 .font-control { display: flex; align-items: center; gap: 3px; flex: 0 0 auto; }
 .font-control button {
   width: 20px; height: 22px; border: 1px solid var(--pro-line); border-radius: 4px;
   background: var(--pro-soft); color: var(--pro-muted);
-  font: 800 9px 'Roboto Mono', monospace; cursor: pointer;
+  font: 800 9px 'JetBrains Mono', monospace; cursor: pointer;
 }
 .font-control button:hover { border-color: var(--pro-purple); color: var(--pro-purple); }
-.font-control b { min-width: 30px; text-align: center; font: 800 8px 'Roboto Mono', monospace; color: var(--pro-text); }
+.font-control b { min-width: 30px; text-align: center; font: 800 8px 'JetBrains Mono', monospace; color: var(--pro-text); }
 .level-reset {
   border: 1px solid var(--pro-line); border-radius: 4px; background: #ffffff;
-  color: var(--pro-muted); font: 700 9px 'Roboto Mono', monospace;
+  color: var(--pro-muted); font: 700 9px 'JetBrains Mono', monospace;
   padding: 4px 6px; cursor: pointer; flex: 0 0 auto;
 }
 .level-reset:hover { border-color: var(--pro-purple); color: var(--pro-purple); }
@@ -661,7 +661,7 @@ main.pro-main #panes {
   border-left: 1px solid var(--pro-line); flex: 0 0 auto;
 }
 .level-stage b { font: 800 8px 'Inter', sans-serif; color: var(--pro-text); white-space: nowrap; }
-.level-stage small { font: 600 7px 'Roboto Mono', monospace; color: var(--pro-faint); white-space: nowrap; }
+.level-stage small { font: 600 7px 'JetBrains Mono', monospace; color: var(--pro-faint); white-space: nowrap; }
 .level-gear {
   border: 1px solid var(--pro-line); border-radius: 4px; background: #ffffff;
   color: var(--pro-muted); font-size: 11px; padding: 4px 6px; cursor: pointer; flex: 0 0 auto;
@@ -702,13 +702,13 @@ main.pro-main #panes {
   border-bottom: 1px solid var(--pro-line) !important;
   background: #ffffff !important;
 }
-.pro-modal-head span { font: 800 8px 'Roboto Mono', monospace !important; letter-spacing: .13em !important; color: var(--pro-purple) !important; }
+.pro-modal-head span { font: 800 8px 'JetBrains Mono', monospace !important; letter-spacing: .13em !important; color: var(--pro-purple) !important; }
 .pro-modal-head h2 { margin: 3px 0 3px !important; font: 800 21px/1.15 'Inter', sans-serif !important; color: var(--pro-text) !important; letter-spacing: -.02em; }
 .pro-modal-head p { margin: 0 !important; font: 500 11.5px/1.45 'Inter', sans-serif !important; color: var(--pro-muted) !important; max-width: 760px; }
 .pro-modal-stats { display: flex; align-items: stretch; gap: 16px; margin-top: 9px; padding-top: 8px; border-top: 1px solid var(--pro-line) !important; }
 .pro-modal-stats > div { display: flex; flex-direction: column; gap: 1px; min-width: 82px; }
-.pro-modal-stats span { font: 700 7px 'Roboto Mono', monospace !important; letter-spacing: .1em !important; color: var(--pro-faint) !important; }
-.pro-modal-stats b { font: 800 13px/1.1 'Roboto Mono', monospace !important; color: var(--pro-text) !important; font-variant-numeric: tabular-nums; }
+.pro-modal-stats span { font: 700 7px 'JetBrains Mono', monospace !important; letter-spacing: .1em !important; color: var(--pro-faint) !important; }
+.pro-modal-stats b { font: 800 13px/1.1 'JetBrains Mono', monospace !important; color: var(--pro-text) !important; font-variant-numeric: tabular-nums; }
 .pro-modal-stats b.ok { color: var(--pro-emerald) !important; }
 .pro-modal-stats b.no { color: var(--pro-coral) !important; }
 .pro-modal-head button {
@@ -818,7 +818,7 @@ main.pro-main #panes {
 }
 .pro-card h3 {
   margin: 0 0 8px !important;
-  font: 800 9.5px 'Roboto Mono', monospace !important;
+  font: 800 9.5px 'JetBrains Mono', monospace !important;
   letter-spacing: .07em; color: var(--pro-purple) !important; text-transform: uppercase;
 }
 .pro-card p {
@@ -830,13 +830,13 @@ main.pro-main #panes {
 .pro-card .te,
 .pro-telugu {
   margin-top: 4px !important;
-  font: 500 10.5px/1.4 'Noto Sans Telugu', sans-serif !important;
+  font: 500 10.5px/1.4 'Inter', sans-serif !important;
   color: var(--pro-faint) !important;
   border-left: 0 !important; padding-left: 0 !important;
   display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden;
 }
 .pro-english { font: 500 11px/1.5 'Inter', sans-serif !important; color: var(--pro-muted) !important; display: none !important; }
-.pro-big { font: 800 25px/1.1 'Roboto Mono', monospace !important; color: var(--pro-text) !important; font-variant-numeric: tabular-nums; }
+.pro-big { font: 800 25px/1.1 'JetBrains Mono', monospace !important; color: var(--pro-text) !important; font-variant-numeric: tabular-nums; }
 .pro-good { color: var(--pro-emerald) !important; }
 .pro-bad { color: var(--pro-coral) !important; }
 .pro-warn { color: var(--pro-amber) !important; }
@@ -844,27 +844,27 @@ main.pro-main #panes {
 .pro-kv {
   display: grid; grid-template-columns: 1fr auto; gap: 8px;
   padding: 5px 0; border-bottom: 1px solid #f1f5f9 !important;
-  font: 600 11px 'Roboto Mono', monospace; color: var(--pro-muted) !important;
+  font: 600 11px 'JetBrains Mono', monospace; color: var(--pro-muted) !important;
 }
 .pro-kv:last-child { border-bottom: 0; }
 .pro-kv b { color: var(--pro-text) !important; font-weight: 800; font-size: 11.5px; text-align: right; }
 .pro-badge {
   display: inline-flex; align-items: center; gap: 4px;
   border: 1px solid #c4b5fd !important; border-radius: 999px;
-  padding: 3px 7px; font: 700 7.5px 'Roboto Mono', monospace;
+  padding: 3px 7px; font: 700 7.5px 'JetBrains Mono', monospace;
   color: var(--pro-purple) !important; background: var(--pro-purple-soft) !important; white-space: nowrap;
 }
 .pro-badge.ok { color: #047857 !important; border-color: #a7f3d0 !important; background: var(--pro-emerald-soft) !important; }
 .pro-badge.no { color: #b91c1c !important; border-color: #fecaca !important; background: var(--pro-coral-soft) !important; }
 .pro-score-track { height: 10px; border-radius: 6px; background: #f1f5f9 !important; border: 1px solid var(--pro-line) !important; overflow: hidden; margin: 7px 0 3px; }
 .pro-score-fill { height: 100%; background: linear-gradient(90deg, #6d28d9, #8b5cf6) !important; transition: width .3s; }
-.pro-flow { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; font: 700 8px 'Roboto Mono', monospace; color: var(--pro-muted) !important; }
+.pro-flow { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; font: 700 8px 'JetBrains Mono', monospace; color: var(--pro-muted) !important; }
 .pro-flow span { border: 1px solid var(--pro-line) !important; background: var(--pro-soft) !important; border-radius: 5px; padding: 4px 6px; }
 .pro-flow i { color: var(--pro-purple) !important; font-style: normal; }
 .pro-modal-foot {
   display: flex; justify-content: space-between; gap: 10px;
   padding: 8px 18px !important; border-top: 1px solid var(--pro-line) !important;
-  background: #ffffff !important; font: 600 8px 'Roboto Mono', monospace; color: var(--pro-faint) !important;
+  background: #ffffff !important; font: 600 8px 'JetBrains Mono', monospace; color: var(--pro-faint) !important;
 }
 body.pro-modal-open { overflow: hidden !important; }
 

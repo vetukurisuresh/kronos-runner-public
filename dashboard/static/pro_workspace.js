@@ -694,7 +694,7 @@
         ctx.strokeStyle = color; ctx.lineWidth = 1.6;
         ctx.strokeRect(x - body / 2, top, body, height); ctx.restore();
         const y = r.reversal === 'BULL' ? yL + 8 : yH - 8;
-        ctx.fillStyle = color; ctx.font = '700 8px "Roboto Mono",monospace';
+        ctx.fillStyle = color; ctx.font = '700 8px "JetBrains Mono",monospace';
         ctx.textAlign = 'center';
         ctx.fillText(r.reversal === 'BULL' ? '▲ BUY CE' : '▼ EXIT / PE', x, y);
       }

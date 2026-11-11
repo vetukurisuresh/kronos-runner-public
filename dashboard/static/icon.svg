@@ -6,5 +6,5 @@
   <polyline points="256,352 300,330 344,346 392,286"
             fill="none" stroke="#e6edf3" stroke-width="10" stroke-dasharray="14 12" stroke-linecap="round"/>
   <circle cx="416" cy="152" r="18" fill="#26a69a"/>
-  <text x="96" y="150" fill="#4aa3ff" font-family="Segoe UI, sans-serif" font-size="74" font-weight="700">K</text>
+  <text x="96" y="150" fill="#4aa3ff" font-family="Inter, sans-serif" font-size="74" font-weight="700">K</text>
 </svg>

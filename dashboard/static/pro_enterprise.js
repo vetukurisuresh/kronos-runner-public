@@ -370,7 +370,7 @@
     });
     ctx.setLineDash([]);
     const tag = (text, y, align) => {
-      ctx.font = "700 10px 'Roboto Mono', monospace";
+      ctx.font = "700 10px 'JetBrains Mono', monospace";
       const tw = ctx.measureText(text).width + 10;
       const tx = w - tw - 4;
       const ty = Math.max(2, Math.min(h - 18, y - 9));
@@ -388,7 +388,7 @@
     tag(`p90 ${compact(p90)}`, top, 'right');
     tag(`p10 ${compact(p10)}`, bottom, 'right');
     ctx.fillStyle = edge;
-    ctx.font = "700 9px 'Roboto Mono', monospace";
+    ctx.font = "700 9px 'JetBrains Mono', monospace";
     ctx.fillText('KRONOS 12-CANDLE RANGE', left + 5, Math.max(12, top - 6));
     ctx.restore();
   }
@@ -427,7 +427,7 @@
       try { y = series.priceToCoordinate(v); } catch (_) { y = null; }
       if (y == null || y < -10 || y > h + 10) return;
       const text = `${labels[key]} ${fmt(v, 2)}`;
-      ctx.font = `800 ${labelSize}px 'Roboto Mono', monospace`;
+      ctx.font = `800 ${labelSize}px 'JetBrains Mono', monospace`;
       const tw = ctx.measureText(text).width + 12;
       const tx = w - tw - 8;
       const ty = Math.max(1, Math.min(h - (labelSize + 8), y - (labelSize / 2) - 4));
