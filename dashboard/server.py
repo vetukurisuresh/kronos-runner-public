@@ -396,7 +396,7 @@ class Handler(SimpleHTTPRequestHandler):
                 "kronos_inputs": (payload.get("kronos_inputs") or {}).get(symbol),
             })
             return
-        if parsed.path == "/api/autopilot/health":
+        if parsed.path in {"/api/autopilot/health", "/api/readiness"}:
             from market.autopilot_readiness import build_from_runtime, load_readiness
             from market.upstox_health import load_access_token, load_token_meta
 

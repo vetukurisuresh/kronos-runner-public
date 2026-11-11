@@ -459,6 +459,45 @@ def bar_range(bar: dict) -> float | None:
     return high_f - low_f
 
 
+def normalize_bars(rows: list | tuple | None) -> list[dict]:
+    """Normalize mixed short/long OHLC history into one stable shape.
+
+    ``ui_bars`` publishes t/o/h/l/c while the REST seed uses
+    time/open/high/low/close.  The live loop must never see a mixed history
+    because downstream SMC, ATR and parallel-alpha code indexes the long keys.
+    """
+    out: list[dict] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        def pick(*names: str) -> float:
+            for name in names:
+                raw = row.get(name)
+                try:
+                    value = float(raw)
+                except (TypeError, ValueError):
+                    continue
+                if value > 0:
+                    return value
+            return 0.0
+        open_ = pick("open", "o")
+        high = pick("high", "h")
+        low = pick("low", "l")
+        close = pick("close", "c")
+        if not all((open_, high, low, close)):
+            continue
+        stamp = row.get("time", row.get("t", 0))
+        try:
+            stamp = int(stamp)
+        except (TypeError, ValueError):
+            stamp = 0
+        out.append({
+            "time": stamp, "open": open_, "high": high, "low": low,
+            "close": close, "volume": pick("volume", "v"),
+        })
+    return out
+
+
 def fused_ui_bars(
     engine: UpstoxTickEngine, key: str, minutes: int, futures_key: str = ""
 ) -> list[dict]:
@@ -1265,7 +1304,7 @@ def main(argv: list[str] | None = None) -> int:
                 state["cur"], closed = roll(state["cur"], ltp, cycle, 1, delta_vol)
                 if closed:
                     state["hist"].append(closed)
-            hist = list(state["hist"])
+            hist = normalize_bars(state.get("hist"))
             legs: list[dict] = []
             ranges = [value for bar in hist[-14:] if (value := bar_range(bar)) is not None]
             ranges = ranges or [max(ltp * 0.01, 0.5)]
@@ -2360,8 +2399,21 @@ def main(argv: list[str] | None = None) -> int:
                 kronos_bearish=kronos_bearish,
             )
             box_rows = hist[-30:]
-            box_high = max((row["high"] for row in box_rows), default=0.0)
-            box_low = min((row["low"] for row in box_rows), default=0.0)
+            # Option history may use the short OHLC aliases (h/l) while spot
+            # history uses high/low.  Never let one shape crash the live loop.
+            box_bounds: list[tuple[float, float]] = []
+            for row in box_rows:
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    row_high = float(row.get("high", row.get("h", 0.0)) or 0.0)
+                    row_low = float(row.get("low", row.get("l", 0.0)) or 0.0)
+                except (TypeError, ValueError):
+                    continue
+                if row_high > 0 and row_low > 0:
+                    box_bounds.append((row_high, row_low))
+            box_high = max((high for high, _ in box_bounds), default=0.0)
+            box_low = min((low for _, low in box_bounds), default=0.0)
             straddle_now = ce_ltp + pe_ltp
             straddle_low = min(parallel_straddle_low.get(name, straddle_now),
                                straddle_now)
@@ -2428,7 +2480,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             payload["smart_entry"][name] = smart
             side_ok = side == "CE"
-            ups = sum(1 for c in hist[-10:] if c["close"] >= c["open"])
+            ups = sum(1 for c in hist[-10:] if c.get("close", 0.0) >= c.get("open", 0.0))
             mini_paths = round(ups / max(len(hist[-10:]), 1) * 100)
             heavy = [k for k, v in HEAVYWEIGHTS.items()
                      if float((quotes.get(v.replace("|", ":")) or quotes.get(v) or {}).get("net_change") or 0) * (1 if side_ok else -1) > 0]

@@ -142,8 +142,27 @@ def load_readiness(path: Path = READINESS_FILE) -> dict[str, Any]:
 def write_readiness(payload: dict[str, Any], path: Path = READINESS_FILE) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_suffix(path.suffix + ".tmp")
-    temp.write_text(json.dumps(payload, indent=1), encoding="utf-8")
-    temp.replace(path)
+    body = json.dumps(payload, indent=1)
+    # Windows can briefly deny rename while the dashboard is reading the file.
+    # Keep the heartbeat alive with bounded retries and a direct-write fallback.
+    for attempt in range(4):
+        try:
+            temp.write_text(body, encoding="utf-8")
+            temp.replace(path)
+            return path
+        except PermissionError:
+            time.sleep(0.05 * (attempt + 1))
+        except OSError:
+            break
+    try:
+        path.write_text(body, encoding="utf-8")
+    except OSError:
+        pass
+    finally:
+        try:
+            temp.unlink(missing_ok=True)
+        except OSError:
+            pass
     return path
 
 
