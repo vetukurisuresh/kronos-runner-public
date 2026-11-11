@@ -4,7 +4,7 @@
  */
 :root,
 html[data-theme="light"] {
-  --pro-header: 76px;
+  --pro-header: 58px;
   --pro-side: 250px;
   --pro-bg: #f8fafc;
   --pro-panel: #ffffff;
@@ -898,6 +898,53 @@ body.pro-modal-open { overflow: hidden !important; }
   .active-trade-pod { flex-basis: 288px; min-width: 230px; }
   .dock-model { max-width: 190px; }
 }
+/* ---------- Modal legibility: light cards, full-width Telugu log ---------- */
+.pro-modal-body { padding-top: 18px !important; }
+.pro-modal-body .pro-card { overflow: visible !important; }
+.pro-modal-body .pro-grid { align-items: start; }
+.pro-modal-body .pro-card > .pro-grid.three { padding-top: 6px !important; }
+.pro-modal-body .pro-card .pro-big { line-height: 1.28 !important; margin-top: 2px; }
+.pro-modal-body .pro-card h3 { line-height: 1.35 !important; }
+.pro-modal-body .td-zone-log { min-height: 320px !important; max-height: 520px !important; }
+.pro-modal-body .td-log { width: 100% !important; max-width: none !important; padding: 8px 10px !important; }
+.pro-modal-body .td-log-row { grid-template-columns: 76px 66px minmax(0, 1fr) !important; gap: 6px !important; }
+.pro-modal-body .td-log-time { font-size: 11px !important; color: #475569 !important; }
+.pro-modal-body .td-log-tag { font-size: 10px !important; color: #6d28d9 !important; }
+.pro-modal-body .td-log-msg { grid-column: 1 / -1 !important; font-size: 12.5px !important; line-height: 1.55 !important; color: #0f172a !important; }
+.pro-modal-body .td-speed-read b { font-size: 30px !important; font-weight: 800 !important; color: #0f172a !important; }
+.pro-modal-body .td-speed-read span,
+.pro-modal-body .td-speed-read small { color: #475569 !important; font-weight: 600 !important; }
+.pro-modal-body .td-speed-grid b { color: #0f172a !important; font-weight: 800 !important; }
+.pro-modal-body .td-speed-grid span { color: #475569 !important; }
+.pro-modal-body .td-pipe-name { color: #0f172a !important; font-weight: 700 !important; }
+.pro-modal-body .td-pipe-read,
+.pro-modal-body .td-pipe-sample { color: #334155 !important; }
+
+html[data-theme="light"] .pro-modal-body .scalper-card,
+html[data-theme="light"] .pro-modal-body .hero-card,
+html[data-theme="light"] .pro-modal-body .pa-item {
+  background: #f8fafc !important;
+  border-color: #cbd5e1 !important;
+  box-shadow: none !important;
+}
+html[data-theme="light"] .pro-modal-body .scalper-card > b,
+html[data-theme="light"] .pro-modal-body .hero-card > b,
+html[data-theme="light"] .pro-modal-body .pa-item span {
+  color: #334155 !important; font-weight: 800 !important; font-size: 11px !important;
+}
+html[data-theme="light"] .pro-modal-body .scalper-card span,
+html[data-theme="light"] .pro-modal-body .hero-card span {
+  color: #0f172a !important; font-weight: 800 !important; font-size: 16px !important;
+}
+html[data-theme="light"] .pro-modal-body .pa-item b {
+  color: #0f172a !important; font-weight: 800 !important; font-size: 13px !important;
+}
+html[data-theme="light"] .pro-modal-body .scalper-card small,
+html[data-theme="light"] .pro-modal-body .hero-card small,
+html[data-theme="light"] .pro-modal-body .pa-item small {
+  color: #475569 !important; font-weight: 600 !important; font-size: 12px !important;
+}
+
 @media (max-width: 1280px) {
   .pro-pill { min-width: 104px; padding: 4px 8px; }
   .pro-pill span { font-size: 7.5px; }

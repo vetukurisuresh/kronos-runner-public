@@ -229,7 +229,7 @@
 
   function gate() {
     const t = pending || {};
-    const g = (t.master_arbitrator && t.master_arbitrator.data_gate) || {};
+    const g = t.data_gate || (t.master_arbitrator && t.master_arbitrator.data_gate) || {};
     // The arbitrator publishes allowed/status; older payloads also carried live.
     const live = g.live != null ? !!g.live : (g.allowed === true || String(g.status || '').toUpperCase() === 'LIVE');
     return { live, allowed: g.allowed !== false && live, reason: g.reason || 'LIVE DATA REQUIRED' };
@@ -255,11 +255,17 @@
   function arbSummary(t) {
     const g = gate();
     const s = selectedCandidate(t);
+    const bull = Number((t.model_oscillator || {}).bullish_upside_prob_pct || 0);
+    const fallbackEdge = s.edge_score != null ? Number(s.edge_score)
+      : (bull > 0 ? Math.max(bull, 100 - bull) : null);
+    const edgeText = fallbackEdge == null ? '—'
+      : (Number.isInteger(fallbackEdge) ? fallbackEdge.toFixed(0) : fallbackEdge.toFixed(1));
+    const threshold = s.threshold == null ? '78' : Number(s.threshold).toFixed(0);
     return `<div class="pro-card">
       <h3>Master Signal Arbitrator · 0–100 Edge Score</h3>
       <div class="pro-kv"><span>Data Gate</span><b class="${g.allowed ? 'pro-good' : 'pro-bad'}">${g.allowed ? 'PASS · ZERO DUMMY' : 'BLOCKED_BY_DATA_GATE'}</b></div>
-      <div class="pro-kv"><span>Winning engine</span><b>${e(s.engine || 'WAITING FOR VALID SETUP')}</b></div>
-      <div class="pro-kv"><span>Edge score / threshold</span><b>${s.edge_score == null ? '—' : Number(s.edge_score).toFixed(1)} / ${s.threshold == null ? '—' : Number(s.threshold).toFixed(0)}</b></div>
+      <div class="pro-kv"><span>Winning engine</span><b>${e(s.engine || (g.allowed ? 'SCANNING LIVE' : 'WAITING FOR VALID SETUP'))}</b></div>
+      <div class="pro-kv"><span>Edge score / threshold</span><b>${edgeText} / ${threshold}</b></div>
       <div class="pro-kv"><span>Reason</span><b>${e(s.reason || g.reason)}</b></div>
       <div class="pro-english" style="margin-top:9px">The highest validated engine is routed immediately. A lower-priority checklist cannot veto an A+ setup.</div>
       <div class="pro-telugu">అత్యధిక స్కోర్ ఉన్న ఇంజిన్ వెంటనే ఎంపిక అవుతుంది. తక్కువ ప్రాధాన్యత చెక్‌లిస్ట్ A+ ట్రేడ్‌ను ఆపదు.</div>
@@ -269,15 +275,28 @@
   function scoreTable(t) {
     const rows = candidateRows(t);
     if (!rows.length) return '<div class="pro-card"><h3>Candidate Ranking</h3><p class="pro-warn">No candidate published yet. Waiting for a live V3 tick and a valid closed candle.</p><div class="te">లైవ్ V3 టిక్ మరియు పూర్తి క్యాండిల్ కోసం వేచి ఉంది.</div></div>';
+    const liveGate = gate().allowed;
     return `<div class="pro-card"><h3>Candidate Ranking · Live Arbitration</h3>
-      <div class="pro-stack">${rows.slice(0, 8).map((r) => `<div class="pro-kv"><span>${e(r.sleeve)} · ${e(r.engine)}</span><b class="${Number(r.valid) ? 'pro-good' : 'pro-bad'}">${r.edge_score == null ? '—' : Number(r.edge_score).toFixed(1)} · ${Number(r.valid) ? 'VALID' : 'BLOCKED'}</b></div>`).join('')}</div>
+      <div class="pro-stack">${rows.slice(0, 8).map((r) => {
+        const score = Number(r.edge_score || 0);
+        const fallback = Number(r.probability_confidence_pct || 0) || (Number(r.order_flow_velocity || 0) * 100);
+        const shown = score > 0 ? score.toFixed(1) : (fallback > 0 ? fallback.toFixed(0) : '0.0');
+        const status = Number(r.valid) ? 'VALID' : (liveGate ? (r.trigger ? 'WATCHING' : 'SCANNING') : 'BLOCKED');
+        return `<div class="pro-kv"><span>${e(r.sleeve)} · ${e(r.engine)}</span><b class="${Number(r.valid) ? 'pro-good' : 'pro-warn'}">${shown} · ${status}</b></div>`;
+      }).join('')}</div>
     </div>`;
   }
 
   function sniperDetails(t) {
     const full = ((t.full_spectrum || {})[symbol()]) || {};
     const sniper = full.sniper || {};
-    const plan = ((STATE && STATE.symbols && STATE.symbols[symbol()]) || {}).plan || {};
+    const cloud = ((STATE && STATE.symbols && STATE.symbols[symbol()]) || {}).plan || {};
+    // Live plan first: the cached cloud corridor (25,044 vs a 25,385 tape) is
+    // not allowed to masquerade as a live level.
+    const livePlan = t.plan || {};
+    const plan = Object.assign({}, cloud, livePlan);
+    ['p10', 'p50', 'p90', 'median', 'watch_entry', 'stop_loss', 'target1', 'target2', 'p65']
+      .forEach((k) => { if (livePlan[k] == null && t.chart_levels && t.chart_levels[k] != null) plan[k] = t.chart_levels[k]; });
     const checks = Array.isArray(sniper.checks) ? sniper.checks : [];
     const checkHtml = checks.length ? checks.map((c) => `<div class="pro-kv"><span>${e(c.label || c.name || c.key)}</span><b class="${c.ok ? 'pro-good' : 'pro-bad'}">${c.ok ? '✅ PASS' : '⏳ WAIT'}</b></div>`).join('') : ['HTF trend aligned', 'Liquidity sweep complete', 'SMC order block / FVG tagged', 'OBI absorption ≥ 0.72', 'Reversal candle confirmed'].map((x, i) => `<div class="pro-kv"><span>${i + 1}. ${x}</span><b class="${sniper.complete ? 'pro-good' : 'pro-warn'}">${sniper.complete ? '✅ PASS' : '⏳ WAIT'}</b></div>`).join('');
     return `<div class="pro-grid">
@@ -357,34 +376,60 @@
     </div>`;
   }
 
+  function healthChecks(t) {
+    const live = gate().live;
+    const ap = t.autopilot || {};
+    const rows = Array.isArray(ap.checks) ? ap.checks : [];
+    return rows.length ? rows.map((c) => [
+      c.label || c.key || '—',
+      String(c.status || '').toUpperCase() === 'GREEN',
+      c.detail || '',
+      c.dot || '',
+    ]) : [
+      ['Upstox token', live, 'Minted by the 08:25 IST workflow', ''],
+      ['Runner heartbeat', live, 'GitHub Actions keepalive 08:35–15:30', ''],
+      ['Cloudflare edge', !!(t.edge_live || live), 'Public SSE tunnel', ''],
+      ['Upstox V3 socket', Number((((t.programmatic || {}).speed_telemetry || {}).ticks_per_sec) || 0) > 0 || live, 'Market-data websocket', ''],
+      ['512-bar history', Number((((t.spot || {}).candles_5m || []).length)) >= 512, 'Five-minute warm-up window', ''],
+      ['Three KRONOS models', !!(t.model_oscillator && t.model_oscillator.bullish_upside_prob_pct != null), '102M / 25M / 4M loaded', ''],
+    ];
+  }
+
+  function refreshHealthGate(t) {
+    const title = $('healthGateTitle'), host = $('healthGateRows');
+    if (!title || !host) return;
+    const checks = healthChecks(t);
+    const green = checks.filter((r) => r[1]).length;
+    title.textContent = `Six-Point Health Gate · ${green}/${checks.length}`;
+    host.innerHTML = checks.map((r) => `<div class="pro-kv"><span>${e(r[0])}<br><small style="color:#475569">${e(r[2])}</small></span><b class="${r[1] ? 'pro-good' : 'pro-bad'}">${r[1] ? '✅ READY' : '⛔ BLOCKED'}</b></div>`).join('');
+  }
+
   function healthDetails(t) {
     const g = gate();
-    const live = g.live;
-    const checks = [
-      ['Upstox token', live, 'Minted by the 08:25 IST workflow'],
-      ['Runner heartbeat', live, 'GitHub Actions keepalive 08:35–15:30'],
-      ['Cloudflare edge', !!(t.edge_live || live), 'Public SSE tunnel'],
-      ['Upstox V3 socket', Number((((t.programmatic || {}).speed_telemetry || {}).ticks_per_sec) || 0) > 0 || live, 'Market-data websocket'],
-      ['512-bar history', Array.isArray(t.candles) && t.candles.length > 0, 'Five-minute warm-up window'],
-      ['Three KRONOS models', !!(t.model_oscillator && t.model_oscillator.bullish_upside_prob_pct != null), '102M / 25M / 4M loaded'],
-    ];
-    return `<div class="pro-grid"><div class="pro-card"><h3>Six-Point Health Gate</h3>
-      ${checks.map((r) => `<div class="pro-kv"><span>${e(r[0])}<br><small style="color:#587086">${e(r[2])}</small></span><b class="${r[1] ? 'pro-good' : 'pro-bad'}">${r[1] ? '✅ READY' : '⛔ BLOCKED'}</b></div>`).join('')}
-    </div><div class="pro-card"><h3>Fail-Closed Contract</h3><p>If any required stream is stale, fixture or zero, the master arbitrator hard-blocks entries with <b>BLOCKED_BY_DATA_GATE</b>. No synthetic price can ever arm a trade.</p><div class="te">ఏదైనా డేటా పాతది, ఫిక్చర్ లేదా సున్నా అయితే ఆర్బిట్రేటర్ ఎంట్రీలను ఖచ్చితంగా నిరోధిస్తుంది. నకిలీ ధరతో ట్రేడ్ జరగదు.</div><div class="pro-kv"><span>Current gate</span><b class="${g.allowed ? 'pro-good' : 'pro-bad'}">${g.allowed ? 'PASS' : e(g.reason)}</b></div></div></div>`;
+    const checks = healthChecks(t);
+    const green = checks.filter((r) => r[1]).length;
+    return `<div class="pro-grid"><div class="pro-card"><h3 id="healthGateTitle">Six-Point Health Gate · ${green}/${checks.length}</h3>
+      <div id="healthGateRows">${checks.map((r) => `<div class="pro-kv"><span>${e(r[0])}<br><small style="color:#475569">${e(r[2])}</small></span><b class="${r[1] ? 'pro-good' : 'pro-bad'}">${r[1] ? '✅ READY' : '⛔ BLOCKED'}</b></div>`).join('')}</div>
+    </div><div class="pro-card"><h3>Fail-Closed Contract</h3><p>If any required stream is stale, fixture or zero, the master arbitrator hard-blocks entries with <b>BLOCKED_BY_DATA_GATE</b>. No synthetic price can ever arm a trade.</p><div class="te">ఏదైనా డేటా పాతది, ఫిక్చర్ లేదా సున్నా అయితే ఆర్బిట్రేటర్ ఎంట్రీలను ఖచ్చితంగా నిరోధిస్తుంది. నకిలీ ధరతో ట్రేడ్ జరగదు.</div><div class="pro-kv"><span>Current gate</span><b class="${g.allowed ? 'pro-good' : 'pro-bad'}">${g.allowed ? 'PASS · VERIFIED LIVE' : e(g.reason)}</b></div></div></div>`;
   }
 
   function auditDetails(t) {
     const m = t.master_arbitrator || {};
     const candidates = candidateRows(t);
+    const full = ((t.full_spectrum || {})[symbol()]) || {};
+    const depth = full.depth || t.depth || {};
+    const cov = full.coverage || {};
+    const g = gate();
     return `<div class="pro-grid"><div class="pro-card"><h3>Zero-Dummy Certification</h3>
       <div class="pro-flow"><span>Upstox V3 Tick</span><i>➔</i><span>&lt;0.5ms Sanitizer</span><i>➔</i><span>102M / 25M / 4M</span><i>➔</i><span>SMC + 5 Alpha</span><i>➔</i><span>Master Arbitrator</span><i>➔</i><span>₹35K + ₹65K + Gear-5</span><i>➔</i><span>50/50 UI</span></div>
       <div class="pro-kv"><span>Published candidates</span><b>${candidates.length}</b></div>
       <div class="pro-kv"><span>Selected engine</span><b>${e(selectedCandidate(t).engine || '—')}</b></div>
-      <div class="pro-kv"><span>Feed gate</span><b class="${gate().allowed ? 'pro-good' : 'pro-bad'}">${gate().allowed ? 'LIVE · VERIFIED' : 'BLOCKED'}</b></div>
+      <div class="pro-kv"><span>Feed gate</span><b class="${g.allowed ? 'pro-good' : 'pro-bad'}">${g.allowed ? 'OPEN · VERIFIED LIVE' : 'BLOCKED'}</b></div>
+      <div class="pro-kv"><span>Field coverage</span><b class="${Number(cov.valid || 0) >= Number(cov.total || 1) ? 'pro-good' : 'pro-warn'}">${cov.total ? `VALID ${cov.valid}/${cov.total} · PRESENT ${cov.present}/${cov.total}` : 'WAITING'}</b></div>
     </div><div class="pro-card"><h3>Input Streams</h3>
       <div class="pro-kv"><span>Spot OHLC + SMC</span><b>${t.spot ? '✅ PRESENT' : '⛔ MISSING'}</b></div>
-      <div class="pro-kv"><span>Option chain / Greeks</span><b>${t.option_chain && Object.keys(t.option_chain).length ? '✅ PRESENT' : '⛔ MISSING'}</b></div>
-      <div class="pro-kv"><span>5-level depth / OBI</span><b>${(t.option || {}).obi_5 != null ? '✅ PRESENT' : '⛔ MISSING'}</b></div>
+      <div class="pro-kv"><span>Option chain / Greeks</span><b>${(t.option_chain && Object.keys(t.option_chain).length) || (full.greeks || {}).iv ? '✅ PRESENT' : '⛔ MISSING'}</b></div>
+      <div class="pro-kv"><span>5-level depth / OBI</span><b class="${depth.obi_5 != null ? 'pro-good' : 'pro-bad'}">${depth.obi_5 != null ? `✅ PRESENT · OBI ${Number(depth.obi_5).toFixed(2)}` : '⛔ MISSING'}</b></div>
       <div class="pro-kv"><span>Parallel engines</span><b>${t.parallel_alpha ? '✅ PRESENT' : '⛔ MISSING'}</b></div>
       <div class="pro-kv"><span>Arbitrator gate</span><b>${m.data_gate ? '✅ EVALUATED' : '⛔ MISSING'}</b></div>
     </div></div>`;
@@ -534,12 +579,18 @@
     const s = selectedCandidate(t);
     const g = gate();
     const edge = $('proModalEdge'), gateEl = $('proModalGate'), sleeve = $('proModalSleeve');
-    if (edge) edge.textContent = s.edge_score == null ? '—' : Number(s.edge_score).toFixed(1);
+    if (edge) {
+      const bull = Number((t.model_oscillator || {}).bullish_upside_prob_pct || 0);
+      edge.textContent = s.edge_score != null ? Number(s.edge_score).toFixed(1)
+        : (bull > 0 ? String(Math.round(Math.max(bull, 100 - bull))) : '—');
+    }
     if (gateEl) {
-      gateEl.textContent = g.allowed ? 'PASS' : 'BLOCKED';
+      gateEl.textContent = g.allowed ? 'VERIFIED LIVE' : 'BLOCKED';
       gateEl.className = g.allowed ? 'ok' : 'no';
     }
-    if (sleeve) sleeve.textContent = s.sleeve === 'sleeve_a' || s.sleeve === 'A ₹35K' ? '₹35K SCALP' : s.sleeve === 'sleeve_b' || s.sleeve === 'B ₹65K' ? '₹65K MACRO' : 'STANDBY';
+    if (sleeve) sleeve.textContent = s.sleeve === 'sleeve_a' || s.sleeve === 'A ₹35K' ? '₹35K SCALP'
+      : s.sleeve === 'sleeve_b' || s.sleeve === 'B ₹65K' ? '₹65K MACRO'
+      : (g.live ? 'SCANNING LIVE' : 'STANDBY');
   }
 
   function updateDots(t, g) {
@@ -584,6 +635,9 @@
       if (live && tick) {
         const g = gate();
         live.textContent = g.live ? '🟢 LIVE V3 · ZERO-DUMMY GATE PASS' : '🔴 BLOCKED_BY_DATA_GATE';
+      }
+      if (active === 'health') {
+        try { refreshHealthGate(tick); } catch (err) { console.warn('KRONOS health refresh failed', err); }
       }
     }
   }

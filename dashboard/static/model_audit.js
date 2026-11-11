@@ -126,7 +126,9 @@
     if (refresh) refresh.addEventListener("click", load);
     if (timer) clearInterval(timer);
     timer = setInterval(() => { if (isVisible() && !document.hidden) load(); }, 1800);
-    if (isVisible()) load();
+    // Prime the panel even while it is docked/hidden: opening the audit modal
+    // must never show an empty "Loading live audit…" card.
+    load();
   }
 
   if (document.readyState === "loading") {
