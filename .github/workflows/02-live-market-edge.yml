@@ -1,38 +1,50 @@
-name: "02 - Live market edge (08:45 IST)"
+name: 02 Live Market Edge (08:32 IST + 12:35 overlap handoff)
 
-# Starts the Upstox V3 socket, SSE server and an ephemeral Cloudflare tunnel
-# before the 09:15 open. Two shifts stay under the ~6 h job cap: 08:45 and the
-# 12:45 handoff. The token is read from Firebase first (freshly minted at 08:30)
-# and the repository secret is the fallback.
-#
-# Manual dispatch supports dry_run=true: dependencies, Firebase token hydration
-# and token sanity are exercised, but the long-running stream/tunnel is skipped.
-
+# 08:32 IST = 03:02 UTC.  The second schedule is 12:40 IST = 07:10 UTC.
+# The runner owns the SSE server and Cloudflare Quick Tunnel, so the user's PC
+# never has to be awake.  Shift 1 runs 248 minutes; shift 2 takes the close.
 on:
   schedule:
-    - cron: "15 3 * * 1-5"   # 08:45 IST
-    - cron: "15 7 * * 1-5"   # 12:45 IST second shift
+    - cron: "02 3 * * 1-5"
+    - cron: "05 7 * * 1-5"
   workflow_dispatch:
     inputs:
+      shift:
+        description: "Relay shift"
+        required: true
+        default: "shift-1"
+        type: choice
+        options: [shift-1, shift-2]
       dry_run:
-        description: Validate setup and token without starting the stream
+        description: "Validate dependencies and token without starting the stream"
         required: false
         default: false
         type: boolean
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: kronos-live-edge-${{ github.event.schedule || 'manual' }}
+  # Shift 2 must start while Shift 1 is still streaming. A shared group would
+  # queue it until Shift 1 exits and destroy the zero-gap overlap.
+  group: kronos-live-edge-${{ github.event.schedule || github.event.inputs.shift || 'manual' }}
   cancel-in-progress: false
 
 env:
-  PYTHONUNBUFFERED: "1"
   TZ: Asia/Kolkata
+  PYTHONUNBUFFERED: "1"
+  KRONOS_MODE: paper
+  UPSTOX_ACCESS_TOKEN: ${{ secrets.UPSTOX_ACCESS_TOKEN }}
+  UPSTOX_API_KEY: ${{ secrets.UPSTOX_API_KEY }}
+  UPSTOX_API_SECRET: ${{ secrets.UPSTOX_API_SECRET }}
+  UPSTOX_MOBILE: ${{ secrets.UPSTOX_MOBILE }}
+  UPSTOX_PIN: ${{ secrets.UPSTOX_PIN }}
+  UPSTOX_TOTP_SECRET: ${{ secrets.UPSTOX_TOTP_SECRET }}
+  UPSTOX_MOBILE_REDIRECT_URI: ${{ vars.UPSTOX_MOBILE_REDIRECT_URI }}
+  SECRET_PAT: ${{ secrets.SECRET_PAT }}
   FIREBASE_CREDENTIALS_JSON: ${{ secrets.FIREBASE_CREDENTIALS_JSON }}
   FIREBASE_DB_URL: ${{ secrets.FIREBASE_DB_URL }}
-  UPSTOX_ACCESS_TOKEN: ${{ secrets.UPSTOX_ACCESS_TOKEN }}
+  GITHUB_REPOSITORY: ${{ github.repository }}
 
 jobs:
   guard:
@@ -70,113 +82,121 @@ jobs:
           PY
 
   edge:
-    name: SSE + Cloudflare tunnel
+    name: Zero-lag edge relay
     needs: guard
     if: needs.guard.outputs.run == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 270
-
+    timeout-minutes: 300
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
           cache: pip
-          cache-dependency-path: requirements-edge.txt
 
-      - name: Install the streaming-only deps
+      - name: Install runtime dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements-edge.txt
+          pip install requests websocket-client protobuf numpy pandas google-auth google-auth-httplib2 pyotp playwright pynacl python-dotenv
+          python -m playwright install --with-deps chromium
 
-      - name: Install cloudflared (quick tunnel client)
+      - name: Install cloudflared
         if: ${{ inputs.dry_run != true }}
         run: |
-          mkdir -p "$HOME/.local/bin"
-          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 \
-            -o "$HOME/.local/bin/cloudflared" \
-            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
-          chmod +x "$HOME/.local/bin/cloudflared"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          "$HOME/.local/bin/cloudflared" --version
+          set -euo pipefail
+          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+            -o /usr/local/bin/cloudflared
+          chmod +x /usr/local/bin/cloudflared
+          cloudflared --version
 
-      - name: Hydrate today's token from Firebase
+      - name: Verify or refresh morning token
+        run: |
+          set -euo pipefail
+          if python - <<'PY'
+          import os, sys
+          sys.path.insert(0, ".")
+          from market.upstox_health import verify_token
+          token = os.environ.get("UPSTOX_ACCESS_TOKEN", "")
+          probe = verify_token(token) if token else {"ok": False, "status": None}
+          print(f"token profile HTTP {probe.get('status')} ok={probe.get('ok')}")
+          raise SystemExit(0 if probe.get("ok") else 1)
+          PY
+          then
+            echo "morning token verified"
+          else
+            echo "token unavailable/expired; running headless fallback login"
+            python scripts/auto_upstox_morning_login.py --require --push-secret
+          fi
+
+      - name: Publish WARMING readiness
         run: |
           python - <<'PY'
-          import json
-          import os
+          import json, time
+          from datetime import datetime, timedelta, timezone
           from pathlib import Path
-
-          try:
-              from state.firebase_sync import admin, rt_get
-              url, token = admin()
-              record = rt_get(url, token, "/upstox_auth/token.json") or {}
-          except Exception as exc:  # noqa: BLE001 - secret fallback below
-              print(f"Firebase token unavailable ({type(exc).__name__}); using repository secret")
-              raise SystemExit(0)
-
-          access = str(record.get("access_token") or "").strip()
-          if not access:
-              print("Firebase has no token yet; using repository secret")
-              raise SystemExit(0)
-
-          print(f"::add-mask::{access}", flush=True)
-          Path("state/upstox_token.json").write_text(json.dumps(record), encoding="utf-8")
-          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as handle:
-              handle.write(f"UPSTOX_ACCESS_TOKEN={access}\n")
-          print(f"hydrated token ({len(access)} chars, expires {record.get('expires_at')})")
+          IST = timezone(timedelta(hours=5, minutes=30))
+          p = Path("state/autopilot_readiness.json")
+          p.parent.mkdir(parents=True, exist_ok=True)
+          p.write_text(json.dumps({
+              "status": "WARMING_0840",
+              "runner": {"online": True, "heartbeat_epoch": time.time(), "host": "github-actions"},
+              "target_ist": "08:40:00",
+              "started_at_ist": datetime.now(tz=IST).isoformat(timespec="seconds"),
+              "updated_epoch": time.time(),
+          }, indent=1), encoding="utf-8")
+          print(p.read_text())
           PY
 
-      - name: Token sanity
+      - name: Run runner-hosted Upstox edge
+        if: ${{ inputs.dry_run != true }}
         run: |
-          if [ -z "$UPSTOX_ACCESS_TOKEN" ]; then
-            echo "::error::UPSTOX_ACCESS_TOKEN is empty - run the 01 morning auth first."
-            exit 1
+          set -euo pipefail
+          MINUTES=250
+          if [ "${{ github.event.schedule }}" = "05 7 * * 1-5" ] || [ "${{ github.event.inputs.shift }}" = "shift-2" ]; then
+            MINUTES=170
+            export KRONOS_SHIFT="shift-2"
+          else
+            export KRONOS_SHIFT="shift-1"
           fi
-          echo "token present (${#UPSTOX_ACCESS_TOKEN} chars)"
+          echo "edge shift minutes=${MINUTES}"
+          # Keepalive guard: a transient websocket/tunnel crash must not leave a
+          # gap until the next scheduled shift. Restart only while this shift's
+          # own deadline has time left, never beyond the job timeout.
+          START_EPOCH=$(date +%s)
+          DEADLINE_EPOCH=$((START_EPOCH + MINUTES * 60))
+          ATTEMPT=0
+          while [ "$(date +%s)" -lt "${DEADLINE_EPOCH}" ]; do
+            ATTEMPT=$((ATTEMPT + 1))
+            REMAIN_MINUTES=$(( (DEADLINE_EPOCH - $(date +%s)) / 60 ))
+            if [ "${REMAIN_MINUTES}" -lt 1 ]; then REMAIN_MINUTES=1; fi
+            echo "edge attempt=${ATTEMPT} remaining_minutes=${REMAIN_MINUTES}"
+            if python scripts/upstox_live_session.py --edge --minutes "${REMAIN_MINUTES}"; then
+              echo "edge stream completed cleanly on attempt ${ATTEMPT}"
+              exit 0
+            fi
+            echo "edge stream exited non-zero; watchdog restarting in 1s" >&2
+            sleep 1
+          done
+          echo "edge stream exhausted its shift without a clean exit" >&2
+          exit 1
 
       - name: Dry-run validation
         if: ${{ inputs.dry_run == true }}
         run: |
-          echo "Dry run passed: dependencies, Firebase hydration and token presence are wired."
-          echo "The streaming edge and Cloudflare tunnel were intentionally not started."
+          echo "Dry run passed: dependencies and the verified access token are wired."
+          echo "The edge stream and Cloudflare tunnel were intentionally not started."
 
-      - name: Start the cloud edge bridge
-        if: ${{ inputs.dry_run != true }}
-        run: |
-          mkdir -p state/logs
-          nohup sh -c 'python -u scripts/upstox_live_session.py --minutes 240 --edge; rc=$?; echo $rc > state/logs/edge_session.exit; exit $rc' \
-            > state/logs/edge_session.log 2>&1 &
-          echo $! > state/logs/edge_session.pid
-          sleep 15
-          tail -40 state/logs/edge_session.log
-          curl -fsS http://127.0.0.1:8080/api/ping && echo
-
-      - name: Keep the shift alive
-        if: ${{ inputs.dry_run != true }}
-        run: |
-          set +e
-          pid=$(cat state/logs/edge_session.pid)
-          while kill -0 "$pid" 2>/dev/null; do sleep 30; done
-          rc=$(cat state/logs/edge_session.exit 2>/dev/null || echo 1)
-          echo "session exited with code ${rc}"
-          tail -60 state/logs/edge_session.log
-          if [ "${rc}" -ne 0 ]; then
-            echo "::error::edge session failed with code ${rc}"
-            exit "${rc}"
-          fi
-
-      - name: Upload edge logs
+      - name: Upload edge evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: kronos-edge-logs-${{ github.run_id }}
+          name: kronos-edge-${{ github.run_id }}
           path: |
-            state/logs/edge_session.log
-            state/logs/edge_server.log
-            state/logs/edge_tunnel.log
+            state/autopilot_readiness.json
+            state/logs/
+            state/live_feed.json
           if-no-files-found: ignore
           retention-days: 7

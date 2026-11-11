@@ -2994,6 +2994,10 @@ def main(argv: list[str] | None = None) -> int:
         last_option.update(payload["option"])
         last_trade.update(payload["trade"])
         last_scanner.update(payload["scanner"])
+        # Stamp the heartbeat at the actual atomic write, not at the start of a
+        # heavy opening-burst cycle.  The socket frame age remains independent.
+        payload["updated_epoch"] = time.time()
+        payload["updated_at"] = datetime.now(tz=IST).isoformat(timespec="seconds")
         HEARTBEAT.write_text(json.dumps(payload, indent=1), encoding="utf-8")
         if edge:
             edge.notify_tick()

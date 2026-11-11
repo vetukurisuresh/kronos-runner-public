@@ -101,8 +101,15 @@ def _rows(rows: Any) -> list[Any]:
     return list(rows or []) if isinstance(rows, (list, tuple)) else []
 
 
-def _bar_ok(row: Mapping[str, Any]) -> bool:
-    values = [_finite(row.get(name)) for name in FEATURE_NAMES]
+def _bar_ok(row: Mapping[str, Any] | list | tuple) -> bool:
+    # ``last_5m`` is serialized as tensor rows (lists), while older artifacts
+    # carried named mappings.  Accept both without inventing missing values.
+    if isinstance(row, Mapping):
+        values = [_finite(row.get(name)) for name in FEATURE_NAMES]
+    elif isinstance(row, (list, tuple)):
+        values = [_finite(value) for value in row[:len(FEATURE_NAMES)]]
+    else:
+        return False
     return all(value is not None and value > 0 for value in values)
 
 
