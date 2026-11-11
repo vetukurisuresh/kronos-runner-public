@@ -108,17 +108,24 @@ def create_autonomous_trade(
         "auto_stage": 1,
         "auto_stage_label": _stage_name(1),
         "entry_context": dict(order.get("entry_context") or {}),
+        "book_plan": dict(order.get("book_plan") or {}),
+        "regime_mode": str(order.get("regime_mode") or ""),
     })
     trade["stage_pills"] = _stage_pills(trade)
     _mark_open(trade, entry)
     return trade
 
 
-def _book_t2(trade: dict[str, Any], ltp: float) -> dict[str, Any] | None:
-    """Book 25% of the original quantity at T2, keeping a 25% runner."""
+def _book_t2(
+    trade: dict[str, Any], ltp: float, *,
+    fraction: float = T2_BOOK_FRACTION, keep_runner: bool = True,
+) -> dict[str, Any] | None:
+    """Book the regime-specific T2 quantity and optionally keep a runner."""
     initial = int(trade.get("initial_qty") or trade.get("qty") or 0)
     open_qty = int(trade.get("qty_open") or 0)
-    qty = min(open_qty, max(1, int(round(initial * T2_BOOK_FRACTION))))
+    qty = min(open_qty, max(1, int(round(initial * max(0.0, float(fraction))))))
+    if not keep_runner:
+        qty = open_qty
     if qty <= 0:
         return None
     entry = _f(trade.get("entry_price"))
@@ -128,12 +135,17 @@ def _book_t2(trade: dict[str, Any], ltp: float) -> dict[str, Any] | None:
     trade["qty_open"] = open_qty - qty
     trade["realized_pnl_rs"] = round(_f(trade.get("realized_pnl_rs")) + pnl, 2)
     trade["t2_booked"] = True
-    trade["runner_active"] = True
-    trade["gear_runner"] = 5
-    trade["tsl_gear"] = 5
+    trade["runner_active"] = bool(keep_runner and trade["qty_open"] > 0)
+    trade["gear_runner"] = 5 if keep_runner else 0
+    trade["tsl_gear"] = 5 if keep_runner else 0
     trade["current_trailing_sl"] = round(
         max(_f(trade.get("current_trailing_sl")), entry + 1.50), 2
     )
+    if not keep_runner or trade["qty_open"] <= 0:
+        trade["status"] = "CLOSED"
+        trade["exit_reason"] = "T2_SCALP_COMPLETE"
+        trade["exit_price"] = round(fill, 2)
+        trade["runner_active"] = False
     leg = {
         "leg": "T2_RUNNER",
         "qty": qty,
@@ -142,7 +154,7 @@ def _book_t2(trade: dict[str, Any], ltp: float) -> dict[str, Any] | None:
         "remaining": trade["qty_open"],
         "stop": trade["current_trailing_sl"],
         "realized": trade["realized_pnl_rs"],
-        "booked_fraction": T2_BOOK_FRACTION,
+        "booked_fraction": fraction if keep_runner else 1.0,
     }
     trade.setdefault("booked_legs", []).append(leg)
     return leg
@@ -225,26 +237,60 @@ def manage_autonomous_trade(
         result["stage"] = 2
         result["stage_label"] = _stage_name(2)
 
-    # Stage 3: reuse the canonical T1 booking (50%, stop Entry+₹1.50).  The
-    # ride_wave flag stops it from also dumping the remaining quantity at T2.
+    # Stage 3: regime-specific T1.  Trend mode banks 40% and trails to
+    # Entry+1.50; scalping books 70% at the first option pop and moves to cost.
+    plan = trade.get("book_plan") or {}
+    t1_fraction = _f(plan.get("t1_book_fraction"), T1_BOOK_FRACTION)
     if not trade.get("t1_booked") and t1 > entry and price >= t1:
-        legs = book_partials(trade, price, ride_wave=True)
+        if plan:
+            initial = max(int(trade.get("initial_qty") or trade.get("qty") or 0), 0)
+            open_now = int(trade.get("qty_open") or 0)
+            qty = min(open_now, max(1, int(round(initial * t1_fraction)))) if initial else 0
+            legs = []
+            if qty > 0:
+                pnl = round((min(price, t1) - entry) * qty, 2)
+                trade["qty_open"] = open_now - qty
+                trade["realized_pnl_rs"] = round(_f(trade.get("realized_pnl_rs")) + pnl, 2)
+                if str(plan.get("stop_to") or "").startswith("ENTRY_PLUS"):
+                    stop_to = entry + 1.50
+                else:
+                    stop_to = entry
+                trade["current_trailing_sl"] = round(max(_f(trade.get("current_trailing_sl")), stop_to), 2)
+                trade["t1_booked"] = True
+                leg = {
+                    "leg": "T1", "qty": qty, "price": round(min(price, t1), 2),
+                    "pnl": pnl, "remaining": trade["qty_open"],
+                    "stop": trade["current_trailing_sl"], "realized": trade["realized_pnl_rs"],
+                    "booked_fraction": t1_fraction,
+                }
+                trade.setdefault("booked_legs", []).append(leg)
+                legs.append(leg)
+        else:
+            legs = book_partials(trade, price, ride_wave=True)
         result["legs"].extend(legs)
         if legs:
             trade["micro_shield_armed"] = True
-            trade["runner_active"] = True
+            trade["runner_active"] = bool(_f(plan.get("runner_fraction"), 0.25) > 0)
             trade["auto_stage"] = 3
             trade["auto_stage_label"] = _stage_name(3)
-            result["events"].append("T1_50PCT_BOOKED")
+            result["events"].append(f"T1_{int(round(t1_fraction * 100))}PCT_BOOKED")
             result["stage"] = 3
             result["stage_label"] = trade["auto_stage_label"]
 
-    # Stage 4a: harvest 25% at T2, leave the final 25% to the Gear-5 runner.
+    # Stage 4a: harvest the regime's T2 slice; scalping closes the remainder,
+    # trend mode deliberately leaves the final 30% runner alive.
     if trade.get("t1_booked") and not trade.get("t2_booked") and t2 > entry and price >= t2:
-        leg = _book_t2(trade, price)
+        keep_runner = _f(plan.get("runner_fraction"), RUNNER_FRACTION) > 0
+        leg = _book_t2(
+            trade, price,
+            fraction=_f(plan.get("t2_book_fraction"), T2_BOOK_FRACTION),
+            keep_runner=keep_runner,
+        )
         if leg:
             result["legs"].append(leg)
-            result["events"].append("T2_25PCT_BOOKED")
+            result["events"].append(
+                "T2_RUNNER_30PCT_BOOKED" if keep_runner else "T2_SCALP_30PCT_BOOKED"
+            )
             trade["auto_stage"] = 4
             trade["auto_stage_label"] = _stage_name(4)
             result["stage"] = 4
@@ -255,7 +301,9 @@ def manage_autonomous_trade(
     # of the prior 1m low.  Before T1 the same exit can protect a stalled entry.
     runner_now = bool(trade.get("runner_active")) or trade.get("t2_booked")
     low_break = prior_low > 0 and price < prior_low
-    of_exit = obi < RUNNER_EXIT_OBI or low_break
+    hold_obi = _f(plan.get("runner_hold_obi"), RUNNER_HOLD_OBI)
+    exit_obi = hold_obi if plan else RUNNER_EXIT_OBI
+    of_exit = obi < exit_obi or low_break
     if runner_now and of_exit and int(trade.get("qty_open") or 0) > 0:
         leg = close_remaining(trade, price, reason="ORDER_FLOW_RUNNER_EXIT")
         if leg:
@@ -268,7 +316,7 @@ def manage_autonomous_trade(
     elif trade.get("t2_booked"):
         # Publish the exact hold/exit evidence for the UI.  This is not a
         # synthetic indicator: it is the same OBI and EMA the decision used.
-        trade["runner_hold"] = bool(obi >= RUNNER_HOLD_OBI and (ema <= 0 or price >= ema))
+        trade["runner_hold"] = bool(obi >= hold_obi and (ema <= 0 or price >= ema))
         trade["runner_obi"] = round(obi, 3)
         trade["runner_ema5"] = round(ema, 2)
         trade["runner_prior_low"] = round(prior_low, 2)

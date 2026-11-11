@@ -87,6 +87,9 @@ from market.data_sanitizer import feed_state, is_market_open  # noqa: E402
 from market.programmatic_telemetry import ProgrammaticTelemetry  # noqa: E402
 from state.telugu_narration_logger import ProgrammaticBrainLogger  # noqa: E402
 from strategy.multi_angle_playbook_engine import evaluate_playbooks  # noqa: E402
+from model.tri_model_orchestrator import build_model_quorum  # noqa: E402
+from strategy.intra_candle_sniper import IntraCandleEarlyDetector  # noqa: E402
+from strategy.regime_auto_switcher import evaluate_market_regime  # noqa: E402
 from strategy.model_oscillator import build_oscillator_from_feed  # noqa: E402
 from market.upstox_full_decoder import (  # noqa: E402
     FullSpectrumBook,
@@ -893,6 +896,7 @@ def strike_step(rows: list[dict]) -> float:
 HUD_FILE = REPO_ROOT / "state" / "live_hud.json"
 RISK_FILE = REPO_ROOT / "state" / "sniper_risk_guard.json"
 DEFAULT_CAPITAL = 100_000.0
+early_entry_detector = IntraCandleEarlyDetector()
 
 
 def empty_hud() -> dict:
@@ -2216,6 +2220,18 @@ def main(argv: list[str] | None = None) -> int:
             playbook_feed["liveness_epoch"] = cycle
             playbook_now = evaluate_playbooks(playbook_feed, symbol=name)
             payload.setdefault("playbooks", {})[name] = playbook_now
+            quorum_now = build_model_quorum(playbook_feed, symbol=name)
+            payload.setdefault("quorum", {})[name] = quorum_now
+            regime_now = evaluate_market_regime(
+                playbook_feed, symbol=name, quorum=quorum_now,
+            )
+            payload.setdefault("regime", {})[name] = regime_now
+            if name == "NIFTY":
+                payload["auto_regime"] = regime_now
+            intra_now = early_entry_detector.update(
+                playbook_feed, symbol=name, quorum=quorum_now,
+            )
+            payload.setdefault("intra_candle", {})[name] = intra_now
             if name == "NIFTY":
                 payload["auto_pick"] = playbook_now
 
@@ -2262,6 +2278,64 @@ def main(argv: list[str] | None = None) -> int:
                                 f"[{trade['playbook_id']} {trade['playbook_score']:.1f}]",
                                 flush=True,
                             )
+
+            # 2-of-3 quorum is the second executable route.  It deliberately
+            # bypasses the legacy 78% all-model gate and the 1.15x futures-volume
+            # veto; two independent models at 62%+ are sufficient.
+            if (not trade and quorum_now.get("auto_execute")
+                    and cutoff["new_entries_allowed"] and not feed_stale
+                    and not payload.get("entries_suspended")):
+                quorum_side = str(quorum_now.get("side") or "").upper()
+                if quorum_side in {"CE", "PE"} and quorum_side != side:
+                    sniper_pending[name] = quorum_side
+                elif quorum_side in {"CE", "PE"}:
+                    risk_check = guard.can_open("A+")
+                    if risk_check.get("ok"):
+                        try:
+                            trade = create_autonomous_trade(
+                                quorum_now,
+                                entry_at=datetime.now(tz=IST).isoformat(timespec="seconds"),
+                            )
+                        except (TypeError, ValueError) as exc:
+                            print(f"quorum entry skipped for {name}: {exc}", flush=True)
+                            trade = None
+                        if trade:
+                            trade["instrument_key"] = instrument_key
+                            trade["mfe_price"] = round(ltp, 2)
+                            trade["mae_price"] = round(ltp, 2)
+                            trade["sl_points"] = float(quorum_now["entry"].get("risk_points") or 0.0)
+                            trade["auto_stage"] = 1
+                            trade["auto_stage_label"] = "ENTRY_FILLED"
+                            trade["quorum_count"] = quorum_now.get("quorum_count")
+                            trade["quorum_confidence"] = quorum_now.get("confidence")
+                            trade["confirmed_models"] = quorum_now.get("confirmed_models")
+                            state["trade"] = trade
+                            state["risk_recorded"] = False
+                            state["story_trade"] = False
+                            state["ledger_sig"] = None
+                            guard.register_entry("A+")
+                            hud["trades_today"] = int(hud.get("trades_today") or 0) + 1
+                            hud["sniper_trades"] = guard.trades
+                            save_hud(hud)
+                            guard.save(RISK_FILE)
+                            print(
+                                f"AUTO QUORUM FILL {trade['option_symbol']} @ Rs{ltp:.2f} "
+                                f"[{quorum_now['quorum_count']} {quorum_now['confidence']:.1f}%]",
+                                flush=True,
+                            )
+
+            if trade:
+                trade.setdefault("quorum", {
+                    key: quorum_now.get(key) for key in (
+                        "side", "confidence", "quorum_count", "confirmed_models",
+                        "status", "reason_te", "reason_en",
+                    )
+                })
+                trade.setdefault("auto_regime", regime_now)
+                trade.setdefault("book_plan", regime_now.get("book_plan") or {})
+                trade.setdefault("regime_mode", regime_now.get("mode"))
+                trade.setdefault("intra_candle", intra_now)
+                early_entry_detector.apply_lifecycle(trade)
 
             plan_strike = str(plan.get("strike") or symbol)
             setup_id = f"{today_ist()}|{name}|{plan_strike}|{side}"
@@ -2688,12 +2762,21 @@ def main(argv: list[str] | None = None) -> int:
                     option_ema5 = ema_value([
                         float(bar.get("close") or 0.0) for bar in hist[-30:]
                     ], 5)
+                    spot_5m_bars = engine.windows(key, 5)[-40:]
+                    spot_ema9 = ema_value([
+                        float(bar.close) for bar in spot_5m_bars
+                    ], 9) if spot_5m_bars else 0.0
                     prior_1m_low = (float(hist[-2].get("low") or 0.0)
                                     if len(hist) >= 2 else 0.0)
+                    runner_ema = (
+                        spot_ema9
+                        if str(trade.get("regime_mode") or "") == "TRENDY_DIRECTIONAL_HOLD"
+                        and spot_ema9 > 0 else option_ema5
+                    )
                     auto_update = manage_autonomous_trade(
                         trade, ltp,
                         obi_5=(option_obi if option_obi > 0 else 1.0),
-                        ema5=option_ema5,
+                        ema5=runner_ema,
                         prior_1m_low=prior_1m_low,
                     )
                     legs = list(auto_update.get("legs") or [])
@@ -3542,6 +3625,7 @@ def main(argv: list[str] | None = None) -> int:
         payload["model_oscillator"] = oscillator_now
         payload["model_thoughts_te"] = narration_now["thoughts"]
         payload["brain_log_te"] = narration_now["log"]
+        payload["proof_ledger"] = early_entry_detector.snapshot()
         payload["programmatic"] = telemetry.snapshot(
             payload, now=cycle, scan_latency_ms=latest_scan_ms.get("NIFTY")
         )

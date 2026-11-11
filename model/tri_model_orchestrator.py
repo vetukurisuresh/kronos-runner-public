@@ -24,6 +24,7 @@ from strategy.smc_engine import (
     detect_liquidity_sweeps,
 )
 from strategy.full_spectrum_alpha import chain_metrics
+from strategy.quant_math_formulas import greek_ev_ratio
 
 IST = timezone(timedelta(hours=5, minutes=30), name="IST")
 AUDIT_STALE_MS = 8_000
@@ -509,3 +510,392 @@ def build_audit_snapshot(
         "sanitizer": feed.get("sanitizer") or {},
         "input": brain.get("input") or {},
     }
+
+
+# ---------------------------------------------------------------------------
+# 2-of-3 directional quorum
+# ---------------------------------------------------------------------------
+
+QUORUM_INDIVIDUAL_FLOOR = 62.0
+QUORUM_COMBINED_FLOOR = 60.0
+QUORUM_MIN_MODELS = 2
+QUORUM_GREEK_EV_FLOOR = 1.50
+
+
+def _q_map(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _q_side(value: Any) -> str:
+    text = str(value or "").upper()
+    if "CE" in text or "BULL" in text or "UP" in text:
+        return "CE"
+    if "PE" in text or "BEAR" in text or "DOWN" in text:
+        return "PE"
+    return "NEUTRAL"
+
+
+def _q_bar(raw: Any) -> dict[str, float]:
+    row = _q_map(raw)
+    return {
+        "t": _finite(row.get("t") if row.get("t") is not None else row.get("time")) or 0.0,
+        "o": _finite(row.get("o") if row.get("o") is not None else row.get("open")) or 0.0,
+        "h": _finite(row.get("h") if row.get("h") is not None else row.get("high")) or 0.0,
+        "l": _finite(row.get("l") if row.get("l") is not None else row.get("low")) or 0.0,
+        "c": _finite(row.get("c") if row.get("c") is not None else row.get("close")) or 0.0,
+    }
+
+
+def _q_chain(
+    feed: Mapping[str, Any], symbol: str, side: str, spot: float,
+    *, preferred_strike: float = 0.0,
+) -> dict[str, Any]:
+    chains = feed.get("option_chain") or {}
+    rows = chains.get(symbol) if isinstance(chains, Mapping) else []
+    rows = rows if isinstance(rows, list) else []
+    best: tuple[float, Mapping[str, Any]] | None = None
+    for raw in rows:
+        row = _q_map(raw)
+        strike = _finite(row.get("strike_price") or row.get("strike")) or 0.0
+        if strike <= 0:
+            continue
+        distance = (
+            abs(strike - preferred_strike) if preferred_strike > 0
+            else abs(strike - spot) if spot > 0 else 0.0
+        )
+        if best is None or distance < best[0]:
+            best = (distance, row)
+    if best is None:
+        return {}
+    row = best[1]
+    leg = _q_map(row.get("call_options" if side == "CE" else "put_options"))
+    market = _q_map(leg.get("market_data"))
+    greeks = _q_map(leg.get("option_greeks"))
+    strike = _finite(row.get("strike_price") or row.get("strike")) or 0.0
+    return {
+        "strike": strike,
+        "contract": f"{symbol} {strike:.0f} {side}" if strike else f"{symbol} {side}",
+        "ltp": _finite(market.get("ltp")) or 0.0,
+        "bid": _finite(market.get("bid_price")) or 0.0,
+        "ask": _finite(market.get("ask_price")) or 0.0,
+        "delta": _finite(greeks.get("delta")) or 0.0,
+        "gamma": _finite(greeks.get("gamma")) or 0.0,
+        "theta": _finite(greeks.get("theta")) or 0.0,
+        "iv": _finite(greeks.get("iv")) or 0.0,
+    }
+
+
+def _q_vote(
+    role: str,
+    name: str,
+    short: str,
+    *,
+    side: str,
+    confidence: float,
+    reason_te: str,
+    reason_en: str,
+    trigger: str,
+    evidence: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    confidence = round(max(0.0, min(100.0, float(confidence))), 1)
+    confirmed = bool(side in {"CE", "PE"} and confidence >= QUORUM_INDIVIDUAL_FLOOR)
+    return {
+        "role": role,
+        "name": name,
+        "short": short,
+        "side": side if confirmed else "NEUTRAL",
+        "raw_side": side,
+        "confidence": confidence,
+        "confirmed": confirmed,
+        "status": "🟢 CONFIRMED" if confirmed else "🟡 WATCHING",
+        "trigger": trigger,
+        "reason_te": reason_te,
+        "reason_en": reason_en,
+        "evidence": dict(evidence or {}),
+    }
+
+
+def build_model_quorum(
+    feed: Mapping[str, Any],
+    *,
+    symbol: str = "NIFTY",
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Evaluate the three models independently and apply the 2-of-3 rule.
+
+    The third model being neutral, or futures volume being 1.15x instead of
+    3.0x, must not veto two independently confirmed models.  The function
+    returns the exact model cards the dashboard renders, plus a playbook-shaped
+    executable order so the live session can route it without a second gate.
+    """
+    feed = feed or {}
+    spots = feed.get("spot") or {}
+    spot_block = _q_map(spots.get(symbol) if isinstance(spots, Mapping) else {})
+    spot = _finite(spot_block.get("ltp")) or 0.0
+    vwap = _finite(spot_block.get("vwap") or spot_block.get("atp")) or 0.0
+    spectrum = _q_map((feed.get("full_spectrum") or {}).get(symbol))
+    oscillator = _q_map(feed.get("model_oscillator") or {})
+    plan = _q_map((feed.get("model_brain") or {}).get(symbol))
+    option = _q_map((feed.get("option") or {}).get(symbol))
+    depth = _q_map(option.get("depth"))
+    current = _q_bar(spot_block.get("current_candle_5m"))
+    bars = [_q_bar(row) for row in (spot_block.get("candles_5m") or []) if isinstance(row, Mapping)]
+    prior = next((row for row in reversed(bars) if row["t"] < current["t"]), {})
+    one_min = [_q_bar(row) for row in (spot_block.get("candles_1m") or []) if isinstance(row, Mapping)]
+    micro = [row["c"] for row in one_min[-4:] if row["c"] > 0]
+    micro_down = len(micro) >= 2 and micro[-1] < micro[0]
+    micro_up = len(micro) >= 2 and micro[-1] > micro[0]
+    smc = _q_map((feed.get("smc") or {}).get(symbol))
+    five = _q_map((smc.get("structures") or {}).get("5m")) or _q_map(smc.get("structure"))
+    bos = str(five.get("active_bos") or "")
+    choch = str(five.get("active_choch") or "")
+    bullish_structure = "BULLISH" in bos or "BULLISH" in choch
+    bearish_structure = "BEARISH" in bos or "BEARISH" in choch
+
+    # Model 1 - 102M trajectory / 5m-15m structure.
+    bull = _finite(oscillator.get("bullish_upside_prob_pct"))
+    bear = _finite(oscillator.get("bearish_downside_prob_pct"))
+    if bull is None or bear is None:
+        paths_up = _finite(plan.get("paths_up")) or 0.0
+        samples = max(1.0, _finite(plan.get("samples")) or 1.0)
+        bull = paths_up / samples * 100.0
+        bear = 100.0 - bull
+    if bull >= 50.0:
+        base_side, base_conf = "CE", bull
+    else:
+        base_side, base_conf = "PE", bear
+    if base_side == "PE" and bearish_structure:
+        base_conf = min(99.0, base_conf + 2.0)
+    if base_side == "CE" and bullish_structure:
+        base_conf = min(99.0, base_conf + 2.0)
+    base_reason_te = (
+        f"100-దారుల ట్రాజెక్టరీలో {base_side} దిశ {base_conf:.1f}% బలంగా ఉంది; "
+        f"5m స్ట్రక్చర్ {'బేరిష్' if bearish_structure else 'బుల్లిష్' if bullish_structure else 'న్యూట్రల్'}."
+    )
+    base_reason_en = (
+        f"100-way trajectory favours {base_side} at {base_conf:.1f}% with "
+        f"5m structure {'bearish' if bearish_structure else 'bullish' if bullish_structure else 'neutral'}."
+    )
+    base_vote = _q_vote(
+        "base", "Kronos-base (102M)", "🧠 KRONOS-102M",
+        side=base_side, confidence=base_conf, reason_te=base_reason_te,
+        reason_en=base_reason_en,
+        trigger=f"5m BOS {bos or '—'} · downside {bear:.1f}% · upside {bull:.1f}%",
+        evidence={"upside_pct": round(bull, 2), "downside_pct": round(bear, 2), "bos": bos, "choch": choch},
+    )
+
+    # Model 2 - 25M option chain, PCR/Delta-OI and Greek EV.
+    pcr_block = _q_map(spectrum.get("pcr"))
+    pcr = _finite(pcr_block.get("pcr") or oscillator.get("input_snapshot", {}).get("pcr")) or 0.0
+    doi_pcr = _finite(pcr_block.get("doi_pcr")) or 0.0
+    chain_rows = (feed.get("option_chain") or {}).get(symbol) or [] if isinstance(feed.get("option_chain"), Mapping) else []
+    metrics = chain_metrics(chain_rows)
+    if pcr <= 0:
+        pcr = _finite(metrics.get("pcr")) or 0.0
+    if doi_pcr == 0:
+        doi_pcr = _finite(metrics.get("doi_pcr")) or 0.0
+    expected_move = abs((_finite(plan.get("p90")) or 0.0) - (_finite(plan.get("p10")) or 0.0)) / 2.0
+    preferred_strike = _finite(option.get("strike_price") or option.get("strike")) or 0.0
+    quote = _q_chain(
+        feed, symbol, "PE" if (pcr < 1.0 or doi_pcr < 0) else "CE", spot,
+        preferred_strike=preferred_strike,
+    )
+    spread = max(
+        0.0,
+        (_finite(quote.get("ask")) or 0.0) - (_finite(quote.get("bid")) or 0.0),
+    )
+    ev = greek_ev_ratio(
+        delta=abs(_finite(quote.get("delta")) or 0.0),
+        gamma=_finite(quote.get("gamma")) or 0.0,
+        expected_abs_move=expected_move,
+        theta_15m=_finite(quote.get("theta")) or 0.0,
+        spread_inr=spread,
+    )
+    ev_ratio = _finite(ev.get("ev_ratio")) or 0.0
+    if pcr < 0.98 and doi_pcr <= 0:
+        small_side, small_conf = "PE", 50.0 + min(18.0, abs(1.0 - pcr) * 100.0) + 8.0
+    elif pcr > 1.02 and doi_pcr > 0:
+        small_side, small_conf = "CE", 50.0 + min(18.0, abs(pcr - 1.0) * 100.0) + 8.0
+    elif pcr < 0.98:
+        small_side, small_conf = "PE", 54.0 + min(10.0, abs(1.0 - pcr) * 100.0)
+    elif pcr > 1.02:
+        small_side, small_conf = "CE", 54.0 + min(10.0, abs(pcr - 1.0) * 100.0)
+    else:
+        small_side, small_conf = "NEUTRAL", 50.0
+    if small_side in {"CE", "PE"} and ev_ratio >= QUORUM_GREEK_EV_FLOOR:
+        small_conf += 10.0
+    elif small_side in {"CE", "PE"}:
+        small_conf = min(small_conf, 58.0)
+        small_side = "NEUTRAL"
+    small_conf = min(98.0, small_conf)
+    writer_text = "CE రైటింగ్ + PE అన్‌వైండింగ్" if small_side == "PE" else "PE రైటింగ్ + CE అన్‌వైండింగ్" if small_side == "CE" else "రైటర్ ఫ్లో క్లియర్ కాదు"
+    small_vote = _q_vote(
+        "small", "Kronos-small (25M)", "🛡️ KRONOS-25M",
+        side=small_side, confidence=small_conf,
+        reason_te=f"PCR {pcr:.2f}, 5m ΔOI PCR {doi_pcr:.2f} — {writer_text}; Greek EV {ev_ratio:.2f}x.",
+        reason_en=f"PCR {pcr:.2f}, 5m delta-OI PCR {doi_pcr:.2f}; Greek convexity/theta EV {ev_ratio:.2f}x.",
+        trigger=f"PCR {pcr:.2f} · ΔOI PCR {doi_pcr:.2f} · Greek EV {ev_ratio:.2f}x",
+        evidence={"pcr": round(pcr, 4), "doi_pcr": round(doi_pcr, 4), "ev_ratio": round(ev_ratio, 4)},
+    )
+
+    # Model 3 - 4M microstructure.
+    obi = _finite(option.get("obi_5") or depth.get("obi_5") or oscillator.get("input_snapshot", {}).get("obi_5")) or 0.0
+    tbq = _finite(option.get("tbq_tsq") or depth.get("tbq_tsq") or oscillator.get("input_snapshot", {}).get("tbq_tsq")) or 0.0
+    if spot > 0 and vwap > 0 and spot < vwap:
+        mini_side = "PE"
+    elif spot > 0 and vwap > 0 and spot > vwap:
+        mini_side = "CE"
+    else:
+        mini_side = "NEUTRAL"
+    if mini_side == "PE" and not micro_down:
+        mini_side = "NEUTRAL"
+    if mini_side == "CE" and not micro_up:
+        mini_side = "NEUTRAL"
+    if obi >= 1.25 and tbq >= 1.25 and mini_side in {"CE", "PE"}:
+        mini_conf = 62.0 + min(22.0, (obi - 1.25) * 3.0) + min(12.0, (tbq - 1.25) * 5.0)
+    else:
+        mini_conf = 48.0
+        mini_side = "NEUTRAL"
+    mini_vote = _q_vote(
+        "mini", "Kronos-mini (4M)", "⚡ KRONOS-4M",
+        side=mini_side, confidence=mini_conf,
+        reason_te=(
+            f"OBI_5 {obi:.2f}x, TBQ/TSQ {tbq:.2f}x, ధర VWAP {vwap:,.2f} కి {'కింద' if mini_side == 'PE' else 'పైన' if mini_side == 'CE' else 'దగ్గర'} — {mini_side} మైక్రో ఫ్లో."
+            if mini_side in {"CE", "PE"} else
+            f"OBI_5 {obi:.2f}x, TBQ/TSQ {tbq:.2f}x; 1m ధర లేదా బుక్ కన్ఫర్మేషన్ ఇంకా లేదు."
+        ),
+        reason_en=(
+            f"OBI_5 {obi:.2f}x, TBQ/TSQ {tbq:.2f}x with price {'below' if mini_side == 'PE' else 'above' if mini_side == 'CE' else 'near'} micro-VWAP."
+            if mini_side in {"CE", "PE"} else
+            f"OBI_5 {obi:.2f}x, TBQ/TSQ {tbq:.2f}x; 1m price confirmation missing."
+        ),
+        trigger=f"OBI_5 {obi:.2f}x · TBQ/TSQ {tbq:.2f}x · micro {('DOWN' if micro_down else 'UP' if micro_up else 'FLAT')}",
+        evidence={"obi_5": round(obi, 4), "tbq_tsq": round(tbq, 4), "vwap": round(vwap, 2), "spot": round(spot, 2)},
+    )
+
+    votes = [base_vote, small_vote, mini_vote]
+    pe = [vote for vote in votes if vote["side"] == "PE" and vote["confidence"] >= QUORUM_INDIVIDUAL_FLOOR]
+    ce = [vote for vote in votes if vote["side"] == "CE" and vote["confidence"] >= QUORUM_INDIVIDUAL_FLOOR]
+    confirming = pe if len(pe) >= len(ce) else ce
+    side = "PE" if confirming is pe and confirming else "CE" if confirming is ce and confirming else "NEUTRAL"
+    if side == "NEUTRAL":
+        # Preserve the strongest directional majority for the UI even when the
+        # confidence floor is not met; approval remains false.
+        raw = [vote for vote in votes if vote["side"] in {"CE", "PE"}]
+        if raw:
+            side = "PE" if sum(v["side"] == "PE" for v in raw) >= sum(v["side"] == "CE" for v in raw) else "CE"
+    weights = {"base": 0.40, "small": 0.25, "mini": 0.35}
+    quorum_conf = 0.0
+    if confirming:
+        denom = sum(weights.get(vote["role"], 1.0) for vote in confirming)
+        quorum_conf = sum(vote["confidence"] * weights.get(vote["role"], 1.0) for vote in confirming) / max(0.0001, denom)
+    quorum_conf = round(quorum_conf, 1)
+    approved = bool(len(confirming) >= QUORUM_MIN_MODELS and quorum_conf >= QUORUM_COMBINED_FLOOR)
+    confirmed_roles = [vote["role"] for vote in confirming]
+    confirmed_names = [vote["name"] for vote in confirming]
+    quote = (
+        _q_chain(feed, symbol, side, spot, preferred_strike=preferred_strike)
+        if side in {"CE", "PE"} else {}
+    )
+    option_same = _q_side(option.get("option_type") or option.get("side")) == side
+    entry_price = _finite(quote.get("ltp")) or (_finite(option.get("ltp")) if option_same else 0.0)
+    strike = _finite(quote.get("strike")) or (_finite(option.get("strike_price")) if option_same else 0.0)
+    contract = str(quote.get("contract") or option.get("strike_symbol") if option_same else quote.get("contract") or f"{symbol} {strike:.0f} {side}")
+    risk_points = round(max(3.5, min(12.0, entry_price * 0.035)), 2) if entry_price > 0 else 0.0
+    target_1 = round(entry_price + max(4.0, risk_points * 1.5), 2) if entry_price > 0 else 0.0
+    target_2 = round(entry_price + max(8.0, risk_points * 3.0), 2) if entry_price > 0 else 0.0
+    stop_loss = round(entry_price - risk_points, 2) if entry_price > 0 else 0.0
+    status = (
+        f"🟢 {len(confirming)}/3 CONFIRMED ({quorum_conf:.0f}%)"
+        if approved else
+        f"🟡 WATCHING ({len(confirming)}/3 · {quorum_conf:.0f}%)"
+    )
+    reason_te = (
+        f"{len(confirming)} ఆఫ్ 3 మోడల్స్ {side} దిశలో {QUORUM_INDIVIDUAL_FLOOR:.0f}%+ కాన్ఫిడెన్స్‌తో ఏకీభవించాయి; "
+        f"మొత్తం క్వోరమ్ {quorum_conf:.1f}% — వెంటనే ట్రేడ్ ఆమోదం."
+        if approved else
+        f"{len(confirming)}/3 మోడల్స్ మాత్రమే {side} దిశలో ఉన్నాయి; 2-of-3 క్వోరమ్ కోసం వెయిటింగ్."
+    )
+    reason_en = (
+        f"{len(confirming)} of 3 models agree on {side} above {QUORUM_INDIVIDUAL_FLOOR:.0f}% each; "
+        f"combined quorum {quorum_conf:.1f}% - immediate trade approval."
+        if approved else
+        f"Only {len(confirming)}/3 models confirm {side}; waiting for the 2-of-3 quorum."
+    )
+    auto_execute = bool(approved and entry_price > 0 and side in {"CE", "PE"})
+    entry = {
+        "entry_price": entry_price,
+        "risk_points": risk_points,
+        "target_1": target_1,
+        "target_2": target_2,
+        "stop_loss": stop_loss,
+        "qty": 300,
+        "strike": strike,
+        "option_type": side,
+        "contract": contract,
+        "playbook_id": "QUORUM_2_OF_3",
+        "playbook_label": "2-of-3 Model Quorum",
+        "score": quorum_conf,
+        "entry_context": {
+            "quorum_count": f"{len(confirming)}/3",
+            "quorum_confidence": quorum_conf,
+            "confirmed_models": confirmed_names,
+            "individual_floor": QUORUM_INDIVIDUAL_FLOOR,
+            "combined_floor": QUORUM_COMBINED_FLOOR,
+        },
+    }
+    return {
+        "ok": True,
+        "symbol": symbol,
+        "generated_at": datetime.fromtimestamp(
+            float(now if now is not None else feed.get("updated_epoch") or time.time()), tz=IST
+        ).isoformat(timespec="milliseconds"),
+        "votes": votes,
+        "model_cards": votes,
+        "side": side,
+        "approved": approved,
+        "auto_execute": auto_execute,
+        "status": status,
+        "confidence": quorum_conf,
+        "quorum_count": f"{len(confirming)}/3",
+        "confirmed_roles": confirmed_roles,
+        "confirmed_models": confirmed_names,
+        "individual_floor": QUORUM_INDIVIDUAL_FLOOR,
+        "combined_floor": QUORUM_COMBINED_FLOOR,
+        "quorum_band": "60-70%+",
+        "reason_te": reason_te,
+        "reason_en": reason_en,
+        "headline": f"{status} · {side} · {contract}" if side in {"CE", "PE"} else status,
+        "trigger_price": round(entry_price, 2),
+        "entry": entry,
+        "winner_id": "QUORUM_2_OF_3",
+        "winner": {
+            "key": "TWO_OF_THREE_QUORUM",
+            "short": "2-of-3 Model Quorum",
+            "label": "2-of-3 Model Quorum",
+            "angle": "MODEL QUORUM",
+            "index": 5,
+            "score": quorum_conf,
+            "side": side,
+        },
+        "auto_pick_reason": (
+            f"2-of-3 QUORUM {status}: {', '.join(confirmed_names)} -> {contract}"
+            if approved else
+            f"2-of-3 quorum waiting: {len(confirming)}/3 confirmed."
+        ),
+        "routing_gate": {
+            "third_model_neutral_blocks": False,
+            "futures_volume_1_15x_blocks": False,
+            "live_feed_required": True,
+            "trade_approved": auto_execute,
+        },
+    }
+
+
+__all__ = [
+    "build_model_quorum",
+    "QUORUM_COMBINED_FLOOR",
+    "QUORUM_GREEK_EV_FLOOR",
+    "QUORUM_INDIVIDUAL_FLOOR",
+    "QUORUM_MIN_MODELS",
+]

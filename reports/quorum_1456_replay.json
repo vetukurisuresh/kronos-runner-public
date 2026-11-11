@@ -1,0 +1,39 @@
+{
+  "quorum": {
+    "approved": true,
+    "count": "3/3",
+    "side": "PE",
+    "confidence": 88.9,
+    "contract": "NIFTY 25200 PE",
+    "entry": 223.45,
+    "votes": [
+      {
+        "role": "base",
+        "side": "PE",
+        "confidence": 89.5
+      },
+      {
+        "role": "small",
+        "side": "PE",
+        "confidence": 78.7
+      },
+      {
+        "role": "mini",
+        "side": "PE",
+        "confidence": 95.6
+      }
+    ]
+  },
+  "intra": {
+    "elapsed": 63.7,
+    "to_close": 236.3,
+    "ready": true,
+    "entry": 223.45,
+    "contract": "NIFTY 25200 PE"
+  },
+  "regime": {
+    "score": 65.3,
+    "mode": "TRENDY_DIRECTIONAL_HOLD",
+    "badge": "🔄 AUTO REGIME: 🚀 TRENDY DIRECTIONAL MARKET (Speed 6.5 ticks/s · ATR 0.1x)"
+  }
+}

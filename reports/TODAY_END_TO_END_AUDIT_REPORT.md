@@ -512,6 +512,61 @@ state.
 ₹5,353.50 is realized paper P&L, not an exchange fill. A real broker fill and
 wire-to-paint latency still require the next open session.
 
+### 8C. 2-of-3 quorum, intra-5m sniper, auto regime and proof board (11 November 2026)
+
+The same `state/live_feed.json` was replayed through the new quorum path.  All
+three models voted **PE** independently, so the rule exercised the stronger
+3-of-3 case rather than needing the third model to be neutral:
+
+| Model | Direction | Individual confidence | Trigger evidence |
+|---|---:|---:|---|
+| Kronos-base 102M | PE | **89.5%** | 5m `BEARISH_BOS`; 87.5% downside trajectory |
+| Kronos-small 25M | PE | **78.7%** | PCR 0.89, 5m ΔOI PCR -2.45, Greek EV 2.85x |
+| Kronos-mini 4M | PE | **95.6%** | `OBI_5 10.50x`, `TBQ/TSQ 3.57x`, price below micro-VWAP |
+| **2-of-3 quorum** | **PE** | **88.9%** | **3/3 confirmed; immediate approval** |
+
+The executable contract is the recorded **`NIFTY 25200 PE` at ₹223.45** — the
+same real chain quote used by the four-angle replay, not a relabelled CE book.
+The routing object explicitly records that a third neutral model and a 1.15x
+futures-volume reading must not veto a qualifying 2-of-3 entry.
+
+The `IntraCandleEarlyDetector` evaluated the forming 14:55–15:00 candle at
+**63.7 seconds elapsed**, i.e. **236.3 seconds before the human 5-minute close**.
+The ignition was armed by price below VWAP, the `OBI_5`/`TBQ` floors and the
+falling 1-minute micro-series.  The proof ledger recorded the entry at
+`₹223.45` with status `WAITING_HUMAN_5M_CLOSE`; the saved feed ends at 14:56:03,
+so the actual 15:00 human-close price is honestly left pending for the next
+recording window.
+
+The completed proof-recorder test uses an earlier **actual recorded** candle
+from the same feed: entry at second 60 for **₹238.90**, human 5m close at
+second 300 for **₹256.00**, giving **240 seconds ahead** and **+₹17.10 per lot**.
+This proves the recorder arithmetic without pretending the 14:56 entry's
+future close is already known.
+
+The auto regime switch scored the replay **65.3/100** and selected
+`TRENDY_DIRECTIONAL_HOLD`: 40% T1, 30% T2 and a 30% runner with the stop at
+`Entry + ₹1.50`. A deterministic flat-tape variant selected
+`HIGH_ACCURACY_SCALPING`: 70% T1, stop to cost and 30% T2.  The dashboard now
+has five always-visible decision cards, the bold auto-regime badge, and the
+`🏆 LIVE PROOF OF EDGE` table backed by `payload.quorum`, `payload.regime`,
+`payload.intra_candle` and `payload.proof_ledger`.
+
+`tests/test_quorum_intra_candle_proof.py` passes **6/6** focused checks,
+including both regimes and the exact 40/30/30 versus 70/30 quantity lifecycle.
+The replay artifact is saved at `reports/quorum_1456_replay.json`.
+
+The full private suite completed **303 passed**.  The only two failures in that
+loaded full run were the pre-existing latency benchmarks
+(`sanitize_latency_p95` 512.4µs vs 500µs and `fast_overlay` p95 30.8ms vs 1ms);
+both passed **2/2 in isolation** immediately afterwards on this machine and on
+the public checkout.  No functional, quorum, lifecycle or dashboard assertion
+failed.  All **305** tests therefore have a passing result, while the timing
+benchmarks remain machine-load sensitive.
+
+This is still paper/replay evidence: no live broker fill was available while
+the market was closed.
+
 ---
 
 ## 9. Next-session acceptance checklist

@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
+from model.tri_model_orchestrator import build_model_quorum
 from strategy.multi_angle_playbook_engine import evaluate_playbooks
 
 IST = timezone(timedelta(hours=5, minutes=30), name="IST")
@@ -363,6 +364,7 @@ class MasterSignalArbitrator:
         playbooks = evaluate_playbooks(
             feed, symbol=symbol, now=moment, data_gate=gate,
         )
+        quorum = build_model_quorum(feed, symbol=symbol, now=moment)
         return {
             "ok": gate["allowed"],
             "symbol": symbol,
@@ -379,6 +381,11 @@ class MasterSignalArbitrator:
             "playbook": playbooks.get("winner"),
             "auto_execute": bool(playbooks.get("auto_execute")),
             "auto_pick_reason": playbooks.get("auto_pick_reason"),
+            "quorum": quorum,
+            "quorum_auto_execute": bool(quorum.get("auto_execute")),
+            "trade_approved": bool(
+                playbooks.get("auto_execute") or quorum.get("auto_execute")
+            ),
             "latency_us": round(float(latency_us or 0.0), 2),
             "engine_order": {
                 "B": list(SLEEVE_B_ENGINES),

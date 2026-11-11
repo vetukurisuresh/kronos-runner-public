@@ -107,7 +107,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install pytest
-          python -m pytest -q tests/test_cloud_100way_selection.py tests/test_four_angle_autonomous_engine.py tests/test_today_full_lifecycle_audit.py tests/test_live_session_helpers.py
+          python -m pytest -q tests/test_cloud_100way_selection.py tests/test_four_angle_autonomous_engine.py tests/test_today_full_lifecycle_audit.py tests/test_live_session_helpers.py tests/test_quorum_intra_candle_proof.py
 
       - name: Install cloudflared
         if: ${{ inputs.dry_run != true }}

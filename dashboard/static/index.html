@@ -12,7 +12,7 @@
 <link rel="apple-touch-icon" href="icon.svg">
 <script>try{document.documentElement.dataset.theme=localStorage.getItem("kronos_theme")||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&family=Inter:wght@400;600;700;800&family=Noto+Sans+Telugu:wght@400;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
 <script src="config.js" onerror="window.KRONOS_CONFIG=window.KRONOS_CONFIG||{}"></script>
 <script src="vendor/lightweight-charts.js"></script>
 <title>KRONOS · NIFTY 50 Terminal</title>
@@ -1121,6 +1121,64 @@ body.tl-open{overflow:hidden!important}
   .contract-cond.pass{color:#7cf2c3;border-color:#21785b}.contract-cond.fail{color:#ff9aa5;border-color:#853947;opacity:.9}
   .contract-why{font:600 8px 'JetBrains Mono',monospace;color:#8faec2;max-width:330px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   </style>
+<style id="humanTypographyUpgrade">
+  :root{--human-ink:#0f172a;--human-green:#059669;--human-red:#dc2626;--human-line:#cbd5e1}
+  html,body,button,input,select,textarea,table,th,td,
+  .pro-topbar,.pro-topbar *,.pro-sidebar,.pro-sidebar *,.pro-main,.pro-main *,
+  #xray .xc,.log,.ribbon,.fs-strip,.autopilot-bar,.hero-strip,.scalper-strip,
+  .health,.cc-panel,.cc-panel *{font-family:'Plus Jakarta Sans','Noto Sans Telugu',Inter,system-ui,sans-serif!important}
+  body{font-variant-numeric:tabular-nums;font-size:15px;color:#0f172a}
+  .auto-regime-badge{display:inline-flex;align-items:center;gap:7px;max-width:310px;overflow:hidden;
+    white-space:nowrap;text-overflow:ellipsis;padding:7px 12px;border-radius:999px;
+    border:1px solid #34d399;background:linear-gradient(90deg,#052e2b,#064e3b);
+    color:#ecfdf5;font-size:14px!important;font-weight:800!important;letter-spacing:.01em;
+    box-shadow:0 0 20px rgba(16,185,129,.25)}
+  .auto-regime-badge.scalp{border-color:#fbbf24;background:linear-gradient(90deg,#3b2606,#573b08);color:#fffbeb;box-shadow:0 0 20px rgba(251,191,36,.22)}
+  .auto-regime-badge.offline{border-color:#64748b;background:#1e293b;color:#cbd5e1;box-shadow:none}
+  .quorum-deck{flex:0 0 auto;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:9px;
+    padding:10px 12px;background:linear-gradient(180deg,#eef4fb,#e2eaf4);border-top:1px solid #94a3b8;border-bottom:1px solid #94a3b8}
+  .qcard{background:#fff!important;color:var(--human-ink)!important;border:1px solid var(--human-line);
+    border-radius:14px;padding:11px 12px;min-width:0;min-height:156px;box-shadow:0 8px 20px rgba(15,23,42,.10);
+    display:flex;flex-direction:column;gap:5px}
+  .qcard.confirmed{border-color:#10b981;box-shadow:0 8px 24px rgba(5,150,105,.18)}
+  .qcard.desk{background:linear-gradient(180deg,#fff,#f8fafc)!important;border-color:#94a3b8}
+  .qhead{display:flex;align-items:center;gap:7px;justify-content:space-between;flex-wrap:wrap}
+  .qhead>span:first-child{font-size:16.5px!important;font-weight:800!important;line-height:1.25;color:#0f172a!important}
+  .qstatus{font-size:12.5px!important;font-weight:800!important;border-radius:999px;padding:4px 8px;white-space:nowrap}
+  .qstatus.confirmed{color:#047857;background:#d1fae5;border:1px solid #6ee7b7}
+  .qstatus.watching{color:#92400e;background:#fef3c7;border:1px solid #fcd34d}
+  .qstatus.live{color:#047857;background:#dcfce7;border:1px solid #4ade80}
+  .qkicker{font-size:14px!important;font-weight:700!important;color:#334155!important;line-height:1.4}
+  .qconf{font-size:26px!important;font-weight:800!important;color:#0f172a!important;line-height:1.05}
+  .qconf small{font-size:13px!important;font-weight:700!important;color:#475569!important}
+  .qreason{font-size:15.5px!important;font-weight:650!important;line-height:1.62!important;color:#0f172a!important;flex:1}
+  .qtrigger,.qmetric{font-size:14px!important;font-weight:700!important;line-height:1.45!important;color:#334155!important}
+  .qprices{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:3px 8px;font-size:14px!important;font-weight:700!important;color:#475569}
+  .qprices b{font-size:18px!important;font-weight:800!important;color:#0f172a!important}
+  .pos{color:var(--human-green)!important}.neg{color:var(--human-red)!important}
+  .proof-board{flex:0 0 auto;background:#fff;color:var(--human-ink);border-bottom:1px solid #94a3b8;padding:11px 12px 13px;max-height:260px;overflow:auto}
+  .proof-head{display:flex;align-items:flex-end;gap:14px;justify-content:space-between;flex-wrap:wrap;margin-bottom:7px}
+  .proof-kicker{font-size:13px!important;font-weight:800!important;letter-spacing:.08em;color:#047857!important}
+  .proof-head h2{margin:1px 0 0;font-size:22px!important;font-weight:800!important;color:#0f172a!important}
+  .proof-note{font-size:14px!important;font-weight:700!important;color:#334155!important;text-align:right}
+  .proof-scroll{overflow-x:auto}
+  .proof-board table{width:100%;border-collapse:separate;border-spacing:0;min-width:980px}
+  .proof-board th{font-size:13.5px!important;font-weight:800!important;color:#334155!important;text-align:left;padding:7px 9px;border-bottom:2px solid #94a3b8;background:#f1f5f9;white-space:nowrap}
+  .proof-board td{font-size:15px!important;font-weight:700!important;color:#0f172a!important;padding:8px 9px;border-bottom:1px solid #e2e8f0;white-space:nowrap}
+  .proof-board td strong{font-size:17px!important;font-weight:800!important;color:#0f172a!important}
+  .proof-board .proof-empty{font-size:15px!important;font-weight:650!important;color:#475569!important;text-align:center;padding:14px}
+  #bigSpot,#bigPlan,.pro-ticker b,.pro-pill b,.trade-pod-money b{font-size:28px!important;font-weight:800!important;letter-spacing:-.02em}
+  .pro-pill.total b{font-size:30px!important}
+  .log .x,.cc-model-card p{font-size:15.5px!important;font-weight:600!important;line-height:1.65!important;color:#0f172a!important}
+  .log .t,.cc-kicker{font-size:13px!important;font-weight:700!important;color:#475569!important}
+  #xray .xc{font-size:13.5px!important;font-weight:600!important;line-height:1.5!important;color:#0f172a!important}
+  #xray .xk{font-size:12.5px!important;font-weight:700!important;color:#475569!important}
+  #xray .xv{font-size:15px!important;font-weight:700!important;color:#0f172a!important}
+  .health .chip,.ribbon .rx,.fs-card,.fs-card b,.fs-card span,.sniper-strip,.sniper-item,.hero-card,.hero-card span,.scalper-card,.scalper-card span{font-size:13.5px!important;font-weight:650!important;line-height:1.5!important}
+  @media(max-width:1500px){.quorum-deck{grid-template-columns:repeat(3,minmax(0,1fr))}.proof-board{max-height:300px}}
+  @media(max-width:980px){.auto-regime-badge{position:fixed;top:60px;left:8px;right:8px;max-width:none;z-index:1300;justify-content:center}.quorum-deck{grid-template-columns:repeat(2,minmax(0,1fr))}.proof-head h2{font-size:19px!important}}
+  @media(max-width:600px){.quorum-deck{grid-template-columns:1fr;padding:8px}.qcard{min-height:0}.qreason{font-size:15px!important}.proof-board{padding:9px}.proof-note{text-align:left}.auto-regime-badge{font-size:12.5px!important;padding:6px 8px}}
+</style>
   <link rel="stylesheet" href="pro_enterprise.css">
   <link rel="stylesheet" href="command_center.css">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
@@ -1135,6 +1193,7 @@ body.tl-open{overflow:hidden!important}
     <div class="pro-ticker" id="proNiftyTicker"><span>NIFTY 50</span><b id="bigSpot">—</b><em id="bigSpotDelta">—</em></div>
     <div class="pro-ticker" id="proBankTicker"><span>BANKNIFTY</span><b id="proBankLtp">—</b><em id="proBankDelta">—</em></div>
   </div>
+  <div class="auto-regime-badge" id="autoRegimeBadge" aria-live="polite">🔄 AUTO REGIME: WAITING FOR LIVE SPEED</div>
   <div class="pro-pnl" aria-label="Live profit summary">
     <button type="button" class="pro-pill scalp" data-pro-modal="scalp"><span>⚡ ₹35K SCALP P&amp;L</span><b id="proScalpPnl">₹0</b><em id="proScalpState">WAITING</em></button>
     <button type="button" class="pro-pill sniper" data-pro-modal="sniper"><span>🎯 ₹65K SNIPER P&amp;L</span><b id="proSniperPnl">₹0</b><em id="proSniperState">T1/T2 · WAITING</em></button>
@@ -1539,6 +1598,24 @@ body.tl-open{overflow:hidden!important}
       </div>
     </section>
   </div>
+
+  <section class="quorum-deck" id="quorumDeck" aria-label="Always visible model quorum and desk decisions">
+    <article class="qcard" id="qcard102"><div class="qhead"><span>🧠 KRONOS-102M</span><span class="qstatus watching">🟡 WATCHING</span></div><div class="qkicker">5m/15m Trend Brain</div><div class="qreason">Waiting for the 100-way trajectory and 5m structure.</div></article>
+    <article class="qcard" id="qcard25"><div class="qhead"><span>🛡️ KRONOS-25M</span><span class="qstatus watching">🟡 WATCHING</span></div><div class="qkicker">Option Chain &amp; PCR Brain</div><div class="qreason">Waiting for PCR, writer flow and Greek EV.</div></article>
+    <article class="qcard" id="qcard4"><div class="qhead"><span>⚡ KRONOS-4M</span><span class="qstatus watching">🟡 WATCHING</span></div><div class="qkicker">Intra-Candle Order-Flow Brain</div><div class="qreason">Waiting for OBI_5 and TBQ/TSQ ignition.</div></article>
+    <article class="qcard desk" id="qcardScalp"><div class="qhead"><span>⚡ SCALPING DESK (₹35K)</span><span class="qstatus watching">🟢 SCANNING</span></div><div class="qkicker">70% T1 · stop to cost · 30% T2</div><div class="qreason">2-of-3 quorum scanner is live.</div></article>
+    <article class="qcard desk" id="qcardDirectional"><div class="qhead"><span>🚀 DIRECTIONAL DESK (₹65K)</span><span class="qstatus watching">🟢 SCANNING</span></div><div class="qkicker">40% T1 · 30% T2 · 30% runner</div><div class="qreason">Waiting for an intra-5m early entry.</div></article>
+  </section>
+
+  <section class="proof-board" id="proofBoard" aria-label="Live proof of edge">
+    <div class="proof-head"><div><span class="proof-kicker">UNDENIABLE HUMAN-VS-KRONOS EVIDENCE</span><h2>🏆 LIVE PROOF OF EDGE</h2></div><div class="proof-note" id="proofBoardNote">Waiting for the first intra-candle entry.</div></div>
+    <div class="proof-scroll">
+      <table>
+        <thead><tr><th>Time &amp; Strike</th><th>2-of-3 Confirmed</th><th>KRONOS Intra-5m Entry</th><th>Human 5m Close (Saved)</th><th>T1 Booked</th><th>T2 / Runner</th><th>Net Profit</th></tr></thead>
+        <tbody id="proofBoardBody"><tr><td colspan="7" class="proof-empty">No trade taken yet — the proof ledger fills automatically on the first 2-of-3 intra-candle entry.</td></tr></tbody>
+      </table>
+    </div>
+  </section>
 
   <div id="dock">
     <div class="dock-tabs">
@@ -4036,6 +4113,7 @@ function applyTick(t){
   renderOption();
   if(!pro) renderStory();
   paintCloseControls();
+  if(window.kronosQuorumTick) window.kronosQuorumTick(t);
   if(window.kronosProTick) window.kronosProTick(t);
 }
 
@@ -4837,6 +4915,7 @@ setInterval(()=>{
 })();
 </script>
 <script src="model_audit.js"></script>
+<script src="quorum_desk.js"></script>
 <script src="pro_workspace.js"></script>
 <script src="pro_enterprise.js"></script>
 <script src="command_center.js"></script>
