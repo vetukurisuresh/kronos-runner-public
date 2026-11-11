@@ -30,7 +30,7 @@ FEED_STALE_MS = 3_000
 #: A live V3 socket frame is fast; the heavy option-chain cycle can take 4-5s.
 #: When the socket is connected the heartbeat is still the authority, but the
 #: cutoff must tolerate that scan cadence without falsely blocking entries.
-SOCKET_STALE_MS = 3_000
+SOCKET_STALE_MS = 12_000
 OPTION_MIN_LTP = 0.05
 MARKET_OPEN = clock_time(9, 15)
 MARKET_CLOSE = clock_time(15, 30)

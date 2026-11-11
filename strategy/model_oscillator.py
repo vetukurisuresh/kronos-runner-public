@@ -240,10 +240,19 @@ def build_model_oscillator(
     delta = round(bullish - previous, 1) if previous is not None else 0.0
     data_quality = "LIVE" if not missing else ("WAITING" if len(missing) == 3 else "DEGRADED")
     border_status = _border_te(bullish, bearish, threshold)
+    # The chop number is diagnostic only.  It is never multiplied into the
+    # directional probability; the live quorum must see the real 66.7/92.2/70
+    # model consensus instead of a suppressed 56.5% oscillator value.
+    directional_probability = round(max(bullish, bearish), 1)
+    directional_side = "BULL" if bullish >= bearish else "BEAR"
     return {
         "bullish_upside_prob_pct": bullish,
         "bearish_downside_prob_pct": bearish,
+        "directional_probability_pct": directional_probability,
+        "directional_side": directional_side,
         "chop_neutral_pressure_pct": neutral,
+        "chop_pressure_suppression_applied": False,
+        "chop_pressure_cap_pct": 100.0,
         "probability_sum_pct": round(bullish + bearish, 1),
         "probability_delta_pct": delta,
         "border_threshold_pct": threshold,

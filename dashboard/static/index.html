@@ -969,10 +969,22 @@ body.tl-open{overflow:hidden!important}
   .pro-engine-strip .eng.sniper em{color:#6d28d9}
   .pro-engine-strip button{margin-left:auto;border:1px solid #0f766e;border-radius:6px;background:#0f766e;color:#fff;font:800 9px 'Inter',sans-serif;padding:6px 10px;cursor:pointer;white-space:nowrap}
   .pro-engine-strip button:disabled{opacity:.6;cursor:wait}
+  .pro-engine-strip .eng.trigger b{color:#0f766e}
+  .pro-engine-strip .eng.trigger em{color:#0f766e}
+  .pro-engine-strip .eng.rr b{color:#b45309}
+  .pro-engine-strip .eng.rr em{color:#92400e}
+  .pro-eod-strip{position:fixed;left:250px;right:0;top:94px;height:34px;z-index:1290;display:flex;align-items:center;gap:8px;padding:0 12px;background:#07111c;color:#d7e7f4;border-bottom:1px solid #1b3447;box-shadow:0 3px 10px rgba(0,0,0,.28);font:700 9.5px 'JetBrains Mono',monospace;overflow:hidden;white-space:nowrap}
+  .pro-eod-strip span{display:inline-flex;align-items:center;gap:5px;min-width:0;border-right:1px solid #1b3447;padding-right:9px}
+  .pro-eod-strip span:last-of-type{border-right:0}
+  .pro-eod-strip b{font:800 11px 'JetBrains Mono',monospace;color:#f5fbff;font-variant-numeric:tabular-nums}
+  .pro-eod-strip b.good{color:#3ee6ad}.pro-eod-strip b.bad{color:#ff7c8b}
+  .pro-eod-strip em{font-style:normal;color:#7e9bb0}
+  .pro-eod-strip button{margin-left:auto;border:1px solid #2b6d91;border-radius:5px;background:#0d2d42;color:#bde9ff;font:800 8.5px 'Inter',sans-serif;padding:5px 8px;cursor:pointer;white-space:nowrap}
+  .pro-eod-strip button:hover{background:#12415f;border-color:#4aa3d1}
   .ai-range-pill{display:inline-flex;align-items:center;border:1px solid #1e5a45;border-radius:999px;background:#0b2119;color:#62eeb4;font:700 8px 'JetBrains Mono',monospace;padding:4px 7px;white-space:nowrap}
   .ai-range-pill[hidden]{display:none!important}
-  @media(max-width:980px){.pro-engine-strip{left:0}.pro-engine-strip .eng.sniper{display:none}}
-  .pro-sidebar{position:fixed;left:0;top:94px;bottom:0;width:250px;z-index:1100;background:linear-gradient(180deg,#0b1420,#080e17);border-right:1px solid var(--pro-line);display:flex;flex-direction:column;overflow:hidden}
+  @media(max-width:980px){.pro-engine-strip{left:0}.pro-engine-strip .eng.sniper{display:none}.pro-eod-strip{left:0;gap:5px;font-size:8px}.pro-eod-strip em{display:none}}
+  .pro-sidebar{position:fixed;left:0;top:128px;bottom:0;width:250px;z-index:1100;background:linear-gradient(180deg,#0b1420,#080e17);border-right:1px solid var(--pro-line);display:flex;flex-direction:column;overflow:hidden}
   .pro-side-title{display:flex;align-items:center;justify-content:space-between;padding:11px 14px 7px;font:800 9px 'JetBrains Mono',monospace;letter-spacing:.15em;color:#68829a}
   .pro-side-title button{display:none;border:0;background:none;color:#8aa2b8;font-size:18px}
   .pro-side-nav{flex:1;min-height:0;overflow:auto;padding:0 8px 8px;scrollbar-width:thin;scrollbar-color:#22384c transparent}
@@ -991,9 +1003,9 @@ body.tl-open{overflow:hidden!important}
   .pro-nav-item .dot.blocked{background:#ff5870;box-shadow:0 0 8px #ff5870}
   .pro-side-foot{padding:8px 13px 10px;border-top:1px solid var(--pro-line);display:flex;flex-direction:column;gap:3px;font:600 8px 'JetBrains Mono',monospace;color:#6b8399;background:#08101a}
   .pro-side-foot small{font-size:6.5px;letter-spacing:.08em;color:#3f586b}
-  #proSidebarScrim{display:none;position:fixed;inset:94px 0 0;z-index:1050;background:rgba(0,0,0,.55)}
+  #proSidebarScrim{display:none;position:fixed;inset:128px 0 0;z-index:1050;background:rgba(0,0,0,.55)}
 
-  main{position:fixed!important;left:250px;right:0;top:94px;bottom:0;width:auto!important;height:calc(100vh - 94px);margin:0!important;padding:0!important;overflow:hidden!important;display:flex!important;flex-direction:column;background:#060a10}
+  main{position:fixed!important;left:250px;right:0;top:128px;bottom:0;width:auto!important;height:calc(100vh - 128px);margin:0!important;padding:0!important;overflow:hidden!important;display:flex!important;flex-direction:column;background:#060a10}
   main #panes{flex:1 1 auto;height:100%;grid-template-columns:minmax(0,1fr) minmax(0,1fr)!important;grid-template-rows:minmax(0,1fr)!important;gap:1px!important;background:var(--pro-line)!important}
   #splitter{display:none!important}
   #panes .pane{display:block!important;min-height:0;background:#070c13}
@@ -1228,7 +1240,16 @@ body.tl-open{overflow:hidden!important}
 <div class="pro-engine-strip" id="proEngineStrip" aria-label="Live engine activity">
   <span class="eng scalp"><b>⚡ ₹35K SCALPER</b><em id="engineScalp">🟢 స్కానింగ్ SCANNING —</em></span>
   <span class="eng sniper"><b>🎯 ₹65K SNIPER</b><em id="engineSniper">🎯 వాచింగ్ WATCHING —</em></span>
+  <span class="eng trigger"><b>⚡ TRIGGER</b><em id="engineTrigger">WAITING FOR 2-OF-3 OR 78% SINGLE + VWAP</em></span>
+  <span class="eng rr"><b>🛡️ ASYMMETRIC R:R</b><em id="engineRR">SMALL SL → T1 / T2 / UNCAPPED 30%</em></span>
   <button type="button" id="testPaperBtn">⚡ Test Paper Order Now</button>
+</div>
+<div class="pro-eod-strip" id="proEodStrip" aria-label="End-of-day reconciled P and L">
+  <span>💰 GRAND TOTAL NET P&amp;L <b id="proEodTotal">₹0</b></span>
+  <span>🔒 SAFE VAULT LOCKED (50%) <b id="proEodVault">₹0</b></span>
+  <span>📊 TRADES WON / TOTAL <b id="proEodWins">0 / 0</b></span>
+  <span>📈 WIN RATE <b id="proEodWinRate">0%</b></span>
+  <button type="button" id="proEodJournalBtn">📥 8K EOD JOURNAL PDF</button>
 </div>
 
 <aside id="proSidebar" class="pro-sidebar" aria-label="KRONOS feature navigation">

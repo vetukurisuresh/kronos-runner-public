@@ -86,6 +86,7 @@ def test_arbitrator_reports_fresh_live_gate() -> None:
     feed = {
         "updated_epoch": now,
         "spot": {"NIFTY": {"ltp": 25000}},
+        "option": {"NIFTY": {"ltp": 150.0}},
         "full_spectrum": {"NIFTY": {"spot": 25000, "fixture": False}},
     }
     out = build_master_arbitrator(feed, now=now, feed_live=True)

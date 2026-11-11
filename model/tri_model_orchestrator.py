@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import math
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Callable, Iterable
 
 from market.data_sanitizer import FEATURE_NAMES, FeedState, feed_state
 from strategy.smc_engine import (
@@ -516,9 +517,10 @@ def build_audit_snapshot(
 # 2-of-3 directional quorum
 # ---------------------------------------------------------------------------
 
-QUORUM_INDIVIDUAL_FLOOR = 62.0
+QUORUM_INDIVIDUAL_FLOOR = 60.0
 QUORUM_COMBINED_FLOOR = 60.0
 QUORUM_MIN_MODELS = 2
+QUORUM_SINGLE_MODEL_FLOOR = 78.0
 QUORUM_GREEK_EV_FLOOR = 1.50
 
 
@@ -639,9 +641,11 @@ def build_model_quorum(
     option = _q_map((feed.get("option") or {}).get(symbol))
     depth = _q_map(option.get("depth"))
     current = _q_bar(spot_block.get("current_candle_5m"))
-    bars = [_q_bar(row) for row in (spot_block.get("candles_5m") or []) if isinstance(row, Mapping)]
+    # The quorum only needs the last few wrists, never all 512 warm-up bars.
+    # Parsing the whole buffer cost ~5ms per cycle and starved the <2ms trigger.
+    bars = [_q_bar(row) for row in (spot_block.get("candles_5m") or [])[-8:]]
     prior = next((row for row in reversed(bars) if row["t"] < current["t"]), {})
-    one_min = [_q_bar(row) for row in (spot_block.get("candles_1m") or []) if isinstance(row, Mapping)]
+    one_min = [_q_bar(row) for row in (spot_block.get("candles_1m") or [])[-6:]]
     micro = [row["c"] for row in one_min[-4:] if row["c"] > 0]
     micro_down = len(micro) >= 2 and micro[-1] < micro[0]
     micro_up = len(micro) >= 2 and micro[-1] > micro[0]
@@ -774,31 +778,96 @@ def build_model_quorum(
     )
 
     votes = [base_vote, small_vote, mini_vote]
-    pe = [vote for vote in votes if vote["side"] == "PE" and vote["confidence"] >= QUORUM_INDIVIDUAL_FLOOR]
-    ce = [vote for vote in votes if vote["side"] == "CE" and vote["confidence"] >= QUORUM_INDIVIDUAL_FLOOR]
+
+    def _side_votes(side: str) -> list[dict[str, Any]]:
+        return [
+            vote for vote in votes
+            if vote["side"] == side and vote["confidence"] >= QUORUM_INDIVIDUAL_FLOOR
+        ]
+
+    pe = _side_votes("PE")
+    ce = _side_votes("CE")
     confirming = pe if len(pe) >= len(ce) else ce
-    side = "PE" if confirming is pe and confirming else "CE" if confirming is ce and confirming else "NEUTRAL"
-    if side == "NEUTRAL":
-        # Preserve the strongest directional majority for the UI even when the
-        # confidence floor is not met; approval remains false.
+    majority_side = "PE" if confirming is pe and confirming else "CE" if confirming is ce and confirming else "NEUTRAL"
+    weights = {"base": 0.40, "small": 0.25, "mini": 0.35}
+    multi_conf = 0.0
+    if confirming:
+        denom = sum(weights.get(vote["role"], 1.0) for vote in confirming)
+        multi_conf = sum(vote["confidence"] * weights.get(vote["role"], 1.0) for vote in confirming) / max(0.0001, denom)
+    multi_conf = round(multi_conf, 1)
+    multi_approved = bool(
+        len(confirming) >= QUORUM_MIN_MODELS and multi_conf >= QUORUM_COMBINED_FLOOR
+    )
+
+    option_side = _q_side(option.get("option_type") or option.get("side"))
+    option_ltp = _finite(option.get("ltp")) or 0.0
+    option_vwap = _finite(option.get("atp_vwap") or option.get("vwap")) or 0.0
+
+    def _price_aligned(for_side: str) -> bool:
+        if spot <= 0 or vwap <= 0 or for_side not in {"CE", "PE"}:
+            return False
+        spot_ok = spot > vwap if for_side == "CE" else spot < vwap
+        option_ok = bool(
+            option_side == for_side
+            and option_ltp > 0
+            and option_vwap > 0
+            and (option_ltp >= option_vwap if for_side == "CE" else option_ltp <= option_vwap)
+        )
+        return bool(spot_ok and option_ok)
+
+    super_votes = [
+        vote for vote in votes
+        if vote["side"] in {"CE", "PE"}
+        and vote["confidence"] >= QUORUM_SINGLE_MODEL_FLOOR
+        and _price_aligned(vote["side"])
+    ]
+    single_vote = max(super_votes, key=lambda vote: vote["confidence"]) if super_votes else {}
+    single_conf = round(_finite(single_vote.get("confidence")) or 0.0, 1)
+    single_approved = bool(single_vote)
+
+    trigger_path = "WAITING"
+    side = majority_side
+    if multi_approved and single_approved:
+        if single_vote["side"] != majority_side and single_conf > multi_conf + 5.0:
+            trigger_path = "SINGLE_MODEL_SUPER_CONVICTION"
+            side = single_vote["side"]
+            confirming = [single_vote]
+        else:
+            trigger_path = "MULTI_MODEL_CONSENSUS"
+            side = majority_side
+    elif multi_approved:
+        trigger_path = "MULTI_MODEL_CONSENSUS"
+        side = majority_side
+    elif single_approved:
+        trigger_path = "SINGLE_MODEL_SUPER_CONVICTION"
+        side = single_vote["side"]
+        confirming = [single_vote]
+    elif side == "NEUTRAL":
         raw = [vote for vote in votes if vote["side"] in {"CE", "PE"}]
         if raw:
             side = "PE" if sum(v["side"] == "PE" for v in raw) >= sum(v["side"] == "CE" for v in raw) else "CE"
-    weights = {"base": 0.40, "small": 0.25, "mini": 0.35}
-    quorum_conf = 0.0
-    if confirming:
-        denom = sum(weights.get(vote["role"], 1.0) for vote in confirming)
-        quorum_conf = sum(vote["confidence"] * weights.get(vote["role"], 1.0) for vote in confirming) / max(0.0001, denom)
-    quorum_conf = round(quorum_conf, 1)
-    approved = bool(len(confirming) >= QUORUM_MIN_MODELS and quorum_conf >= QUORUM_COMBINED_FLOOR)
+    approved = bool(trigger_path != "WAITING")
+    quorum_conf = single_conf if trigger_path == "SINGLE_MODEL_SUPER_CONVICTION" else multi_conf
     confirmed_roles = [vote["role"] for vote in confirming]
     confirmed_names = [vote["name"] for vote in confirming]
+    short_names = {"base": "102M", "small": "25M", "mini": "4M"}
+    trigger_models = [
+        f"{short_names.get(vote['role'], vote['role'])} ({vote['confidence']:.0f}%)"
+        for vote in confirming
+    ]
+    trigger_label = (
+        "MULTI: " + " + ".join(trigger_models)
+        if trigger_path == "MULTI_MODEL_CONSENSUS"
+        else "SINGLE-SNIPER: " + " + ".join(trigger_models)
+        if trigger_path == "SINGLE_MODEL_SUPER_CONVICTION"
+        else "WAITING FOR 2-OF-3 OR 78% SINGLE MODEL"
+    )
     quote = (
         _q_chain(feed, symbol, side, spot, preferred_strike=preferred_strike)
         if side in {"CE", "PE"} else {}
     )
-    option_same = _q_side(option.get("option_type") or option.get("side")) == side
-    entry_price = _finite(quote.get("ltp")) or (_finite(option.get("ltp")) if option_same else 0.0)
+    option_same = option_side == side
+    entry_price = _finite(quote.get("ltp")) or (option_ltp if option_same else 0.0)
     strike = _finite(quote.get("strike")) or (_finite(option.get("strike_price")) if option_same else 0.0)
     contract = str(quote.get("contract") or option.get("strike_symbol") if option_same else quote.get("contract") or f"{symbol} {strike:.0f} {side}")
     risk_points = round(max(3.5, min(12.0, entry_price * 0.035)), 2) if entry_price > 0 else 0.0
@@ -806,23 +875,37 @@ def build_model_quorum(
     target_2 = round(entry_price + max(8.0, risk_points * 3.0), 2) if entry_price > 0 else 0.0
     stop_loss = round(entry_price - risk_points, 2) if entry_price > 0 else 0.0
     status = (
-        f"🟢 {len(confirming)}/3 CONFIRMED ({quorum_conf:.0f}%)"
-        if approved else
-        f"🟡 WATCHING ({len(confirming)}/3 · {quorum_conf:.0f}%)"
+        f"🟢 MULTI 2-OF-3 ({multi_conf:.0f}%)" if trigger_path == "MULTI_MODEL_CONSENSUS"
+        else f"🟢 SINGLE-SNIPER 78%+ ({single_conf:.0f}%)" if trigger_path == "SINGLE_MODEL_SUPER_CONVICTION"
+        else f"🟡 WATCHING ({len(confirming)}/3 · {multi_conf:.0f}%)"
     )
     reason_te = (
-        f"{len(confirming)} ఆఫ్ 3 మోడల్స్ {side} దిశలో {QUORUM_INDIVIDUAL_FLOOR:.0f}%+ కాన్ఫిడెన్స్‌తో ఏకీభవించాయి; "
-        f"మొత్తం క్వోరమ్ {quorum_conf:.1f}% — వెంటనే ట్రేడ్ ఆమోదం."
-        if approved else
-        f"{len(confirming)}/3 మోడల్స్ మాత్రమే {side} దిశలో ఉన్నాయి; 2-of-3 క్వోరమ్ కోసం వెయిటింగ్."
+        f"2-of-3 మోడల్ కన్సెన్సస్ {multi_conf:.1f}% — {side} ట్రేడ్ ఆమోదం."
+        if trigger_path == "MULTI_MODEL_CONSENSUS" else
+        f"ఒకే మోడల్ {single_conf:.1f}% సూపర్-కన్విక్షన్ + ధర సరైన VWAP వైపు — {side} ట్రేడ్ ఆమోదం."
+        if trigger_path == "SINGLE_MODEL_SUPER_CONVICTION" else
+        f"2/3 కాన్సెన్సస్ లేదా 78%+ సింగిల్ మోడల్ కోసం వెయిటింగ్; ఇప్పుడు {len(confirming)}/3."
     )
     reason_en = (
-        f"{len(confirming)} of 3 models agree on {side} above {QUORUM_INDIVIDUAL_FLOOR:.0f}% each; "
-        f"combined quorum {quorum_conf:.1f}% - immediate trade approval."
-        if approved else
-        f"Only {len(confirming)}/3 models confirm {side}; waiting for the 2-of-3 quorum."
+        f"Dual-path trigger: 2-of-3 consensus at {multi_conf:.1f}% - immediate {side} approval."
+        if trigger_path == "MULTI_MODEL_CONSENSUS" else
+        f"Dual-path trigger: one model at {single_conf:.1f}% with spot/option VWAP alignment - immediate {side} approval."
+        if trigger_path == "SINGLE_MODEL_SUPER_CONVICTION" else
+        f"Waiting for 2-of-3 consensus or one 78%+ model aligned with live VWAP; now {len(confirming)}/3."
     )
     auto_execute = bool(approved and entry_price > 0 and side in {"CE", "PE"})
+    winner_id = (
+        "SINGLE_MODEL_SNIPER" if trigger_path == "SINGLE_MODEL_SUPER_CONVICTION"
+        else "QUORUM_2_OF_3"
+    )
+    winner_key = (
+        "SINGLE_MODEL_SUPER_CONVICTION" if trigger_path == "SINGLE_MODEL_SUPER_CONVICTION"
+        else "TWO_OF_THREE_QUORUM"
+    )
+    winner_label = (
+        "Single-Model 78% Super-Conviction" if trigger_path == "SINGLE_MODEL_SUPER_CONVICTION"
+        else "2-of-3 Model Quorum"
+    )
     entry = {
         "entry_price": entry_price,
         "risk_points": risk_points,
@@ -833,14 +916,18 @@ def build_model_quorum(
         "strike": strike,
         "option_type": side,
         "contract": contract,
-        "playbook_id": "QUORUM_2_OF_3",
-        "playbook_label": "2-of-3 Model Quorum",
+        "playbook_id": winner_id,
+        "playbook_label": winner_label,
         "score": quorum_conf,
         "entry_context": {
             "quorum_count": f"{len(confirming)}/3",
             "quorum_confidence": quorum_conf,
             "confirmed_models": confirmed_names,
+            "trigger_path": trigger_path,
+            "trigger_label": trigger_label,
+            "price_aligned": bool(single_vote and _price_aligned(side)),
             "individual_floor": QUORUM_INDIVIDUAL_FLOOR,
+            "single_model_floor": QUORUM_SINGLE_MODEL_FLOOR,
             "combined_floor": QUORUM_COMBINED_FLOOR,
         },
     }
@@ -860,32 +947,46 @@ def build_model_quorum(
         "quorum_count": f"{len(confirming)}/3",
         "confirmed_roles": confirmed_roles,
         "confirmed_models": confirmed_names,
+        "trigger_models": trigger_models,
+        "trigger_path": trigger_path,
+        "trigger_label": trigger_label,
+        "single_model": {
+            "role": single_vote.get("role"),
+            "name": single_vote.get("name"),
+            "confidence": single_conf,
+            "price_aligned": bool(single_vote and _price_aligned(single_vote.get("side"))),
+            "floor": QUORUM_SINGLE_MODEL_FLOOR,
+        },
+        "price_aligned": bool(side in {"CE", "PE"} and _price_aligned(side)),
         "individual_floor": QUORUM_INDIVIDUAL_FLOOR,
+        "single_model_floor": QUORUM_SINGLE_MODEL_FLOOR,
         "combined_floor": QUORUM_COMBINED_FLOOR,
-        "quorum_band": "60-70%+",
+        "quorum_band": "60-78%+",
         "reason_te": reason_te,
         "reason_en": reason_en,
         "headline": f"{status} · {side} · {contract}" if side in {"CE", "PE"} else status,
         "trigger_price": round(entry_price, 2),
         "entry": entry,
-        "winner_id": "QUORUM_2_OF_3",
+        "winner_id": winner_id,
         "winner": {
-            "key": "TWO_OF_THREE_QUORUM",
-            "short": "2-of-3 Model Quorum",
-            "label": "2-of-3 Model Quorum",
-            "angle": "MODEL QUORUM",
+            "key": winner_key,
+            "short": winner_label,
+            "label": winner_label,
+            "angle": "MODEL QUORUM" if trigger_path == "MULTI_MODEL_CONSENSUS" else "SINGLE-MODEL SNIPER",
             "index": 5,
             "score": quorum_conf,
             "side": side,
         },
         "auto_pick_reason": (
-            f"2-of-3 QUORUM {status}: {', '.join(confirmed_names)} -> {contract}"
+            f"{trigger_label} -> {contract}"
             if approved else
-            f"2-of-3 quorum waiting: {len(confirming)}/3 confirmed."
+            f"Dual trigger waiting: {len(confirming)}/3 confirmed, no aligned 78%+ model."
         ),
         "routing_gate": {
             "third_model_neutral_blocks": False,
             "futures_volume_1_15x_blocks": False,
+            "single_model_78_plus_allowed": True,
+            "single_model_requires_vwap_alignment": True,
             "live_feed_required": True,
             "trade_approved": auto_execute,
         },
@@ -898,4 +999,5 @@ __all__ = [
     "QUORUM_GREEK_EV_FLOOR",
     "QUORUM_INDIVIDUAL_FLOOR",
     "QUORUM_MIN_MODELS",
+    "QUORUM_SINGLE_MODEL_FLOOR",
 ]

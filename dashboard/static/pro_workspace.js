@@ -486,12 +486,43 @@
     const getText = (id, fallback) => { const el = $(id); return el && el.textContent ? el.textContent : fallback; };
     updateLevels(t);
     updateModalStats(t);
-    if ($('proScalpPnl')) $('proScalpPnl').textContent = getText('scalpProfitMain', money((t.scalp_sleeve || {}).realized_pnl_rs || 0));
-    if ($('proSniperPnl')) $('proSniperPnl').textContent = getText('sniperProfitMain', money((t.sniper_sleeve || {}).realized_pnl_rs || 0));
-    if ($('proTotalPnl')) $('proTotalPnl').textContent = getText('combinedProfitMain', money(((t.hud || {}).total_net_pnl || 0)));
-    if ($('proVaultState')) $('proVaultState').textContent = 'VAULT ' + getText('hudVault', money(((t.hud || {}).profit_vault || 0)));
+    const eod = t.eod_pnl || {};
+    const scalpTotal = eod.scalp_35k_total != null ? eod.scalp_35k_total : ((t.scalp_sleeve || {}).realized_pnl_rs || 0);
+    const sniperTotal = eod.sniper_65k_total != null ? eod.sniper_65k_total : ((t.sniper_sleeve || {}).realized_pnl_rs || 0);
+    const grandTotal = eod.grand_total_net_pnl != null ? eod.grand_total_net_pnl : ((t.hud || {}).total_net_pnl || 0);
+    const vaultLocked = eod.vault_locked_inr != null ? eod.vault_locked_inr : ((t.hud || {}).profit_vault || 0);
+    if ($('proScalpPnl')) $('proScalpPnl').textContent = getText('scalpProfitMain', money(scalpTotal));
+    if ($('proSniperPnl')) $('proSniperPnl').textContent = getText('sniperProfitMain', money(sniperTotal));
+    if ($('proTotalPnl')) $('proTotalPnl').textContent = money(grandTotal);
+    if ($('proVaultState')) $('proVaultState').textContent = 'VAULT ' + money(vaultLocked);
     if ($('proSniperState')) $('proSniperState').textContent = getText('sniperProfitState', 'T1/T2 · WAITING');
     if ($('proScalpState')) $('proScalpState').textContent = ((t.scalp_sleeve || {}).state || getText('scalpProfitTicker', 'WAITING')).slice(0, 42);
+    const activeTrade = ((t.trade || {})[symbol()]) || t.active_trade || {};
+    const quorumRoot = t.quorum || {};
+    const quorumNow = quorumRoot[symbol()] || quorumRoot || {};
+    const triggerLabel = activeTrade.trigger_label || quorumNow.trigger_label || t.trigger_badge || 'WAITING FOR 2-OF-3 OR 78% SINGLE + VWAP';
+    const plan = activeTrade.asymmetric_plan || {};
+    const risk = Number(plan.risk_points || 0);
+    const entryPx = Number(plan.entry_price || activeTrade.entry_price || 0);
+    const t1Px = Number(plan.t1_price || activeTrade.target_1 || 0);
+    const t2Px = Number(plan.t2_price || activeTrade.target_2_p90 || 0);
+    const riskPct = Number(plan.risk_pct || 0);
+    const rrText = risk > 0
+      ? `🛡️ SL -₹${risk.toFixed(2)} (${riskPct.toFixed(1)}%) → T1 +₹${Math.max(0, t1Px - entryPx).toFixed(2)} / T2 +₹${Math.max(0, t2Px - entryPx).toFixed(2)} / 30% UNCAPPED`
+      : 'SMALL SL → T1 / T2 / UNCAPPED 30%';
+    if ($('engineTrigger')) { $('engineTrigger').textContent = triggerLabel; $('engineTrigger').title = triggerLabel; }
+    if ($('engineRR')) { $('engineRR').textContent = rrText; $('engineRR').title = rrText; }
+    const won = Number(eod.trades_won || 0);
+    const totalTrades = Number(eod.trades_total || 0);
+    const winRate = Number(eod.win_rate_pct || 0);
+    const eodTotal = $('proEodTotal');
+    const eodVault = $('proEodVault');
+    const eodWins = $('proEodWins');
+    const eodRate = $('proEodWinRate');
+    if (eodTotal) { eodTotal.textContent = money(grandTotal); eodTotal.className = Number(grandTotal) >= 0 ? 'good' : 'bad'; }
+    if (eodVault) eodVault.textContent = money(vaultLocked);
+    if (eodWins) eodWins.textContent = `${won} / ${totalTrades}`;
+    if (eodRate) eodRate.textContent = `${winRate.toFixed(1)}%`;
 
     const call = t.chart_call || {};
     const callout = $('proAiCallout');
@@ -881,6 +912,12 @@
   bindChartStudio();
   bindTestPaper();
   applyChartStyle();
+  const eodJournalBtn = $('proEodJournalBtn');
+  if (eodJournalBtn) eodJournalBtn.addEventListener('click', () => {
+    const btn = $('journalQuickBtn');
+    if (btn) btn.click();
+    else if (window.toast) window.toast('8K journal is still loading…');
+  });
   if (typeof LIVE !== 'undefined' && LIVE.tick) paint(LIVE.tick);
   paint(null);
   setTimeout(() => paint((typeof LIVE !== 'undefined' && LIVE.tick) ? LIVE.tick : null), 600);

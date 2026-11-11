@@ -83,7 +83,7 @@ def _chain():
     return rows
 
 
-def test_auto_starts_only_when_sniper_waits_and_all_five_align():
+def test_auto_scalp_remains_independent_when_macro_sniper_is_active():
     ready = evaluate_continuous_scalp(**_context())
     assert ready["trigger"] is True
     assert ready["all_five"] is True
@@ -92,9 +92,12 @@ def test_auto_starts_only_when_sniper_waits_and_all_five_align():
     assert ready["order"] == "SCALP_BUY_CE"
     assert ready["engine_state"] == "AUTO_SCALPING"
 
+    # The ₹35K sleeve is a separate risk book.  A live macro position must not
+    # park AUTO at 0 Qty / TREND ONLY while its own ignition is valid.
     macro = evaluate_continuous_scalp(**_context(main_state="IN_TRADE"))
-    assert macro["trigger"] is False
-    assert macro["reason"] == "MAIN_SNIPER_ACTIVE"
+    assert macro["trigger"] is True
+    assert macro["reason"] == "SCALP_READY"
+    assert macro["trigger_route"] == "TREND_CONTINUATION"
 
     early = evaluate_continuous_scalp(**_context(now=datetime(2026, 11, 10, 9, 15)))
     assert early["trigger"] is False
@@ -105,16 +108,19 @@ def test_auto_starts_only_when_sniper_waits_and_all_five_align():
     assert late["reason"] == "OUTSIDE_SCALP_SESSION"
 
 
-def test_flow_and_structure_are_hard_gates():
+def test_flexible_routes_still_require_a_real_ignition():
+    # Structure alone at OBI 1.20 is below the Trend Continuation floor and the
+    # SMC route requires an actual p10/p90 sweep, so AUTO correctly waits.
     no_flow = evaluate_continuous_scalp(**_context(ce_obi_5=1.20))
     assert no_flow["trigger"] is False
-    assert no_flow["reason"] == "ORDER_FLOW_NOT_IGNITED"
+    assert no_flow["reason"] == "NO_FLEXIBLE_ROUTE"
 
     no_structure = evaluate_continuous_scalp(**_context(
         spot=24_900, spot_vwap=24_950, spot_ema5=24_945, p10=0,
+        ce_obi_5=1.20, ce_tbq=100_000,
     ))
     assert no_structure["trigger"] is False
-    assert no_structure["reason"] == "NO_MICRO_STRUCTURE_BURST"
+    assert no_structure["reason"] == "NO_FLEXIBLE_ROUTE"
 
 
 def test_dead_tape_pauses_before_brokerage_bleed():

@@ -37,11 +37,14 @@ MIN_OPTION_ATR = 2.20
 MAX_SPREAD = 0.35
 SPREAD_FLOOR = 0.75
 SPREAD_PCT_OF_LTP = 0.004
-MIN_OBI = 1.55
-MIN_TBQ_TSQ = 1.30
-MIN_FUTURES_VOLUME_RATIO = 1.80
-MIN_DELTA = 0.48
-MAX_DELTA = 0.65
+MIN_OBI = 1.25
+MIN_TBQ_TSQ = 1.25
+MIN_FUTURES_VOLUME_RATIO = 1.00
+ORDER_FLOW_IGNITION_OBI = 1.60
+ORDER_FLOW_IGNITION_TBQ = 1.40
+SMC_MIN_OBI = 1.10
+MIN_DELTA = 0.35
+MAX_DELTA = 0.75
 PREFERRED_LTP_MIN = 70.0
 PREFERRED_LTP_MAX = 145.0
 EXPIRY_LTP_MIN = 35.0
@@ -145,7 +148,7 @@ def _structure_for(
         return False, "CE OPTION BELOW ATP"
     reclaim = (
         _below_all(spot, spot_vwap, spot_ema5)
-        and pe_atp > 0 and pe_ltp >= pe_atp and kronos_slope > 0
+        and pe_atp > 0 and pe_ltp >= pe_atp and kronos_slope < 0
     )
     rejection = (
         p90 > 0 and spot >= p90 - 1.5
@@ -157,8 +160,8 @@ def _structure_for(
         return True, "PE p90 REJECTION"
     if not _below_all(spot, spot_vwap, spot_ema5):
         return False, "PE WAITING FOR ATP/EMA5 BREAK"
-    if kronos_slope <= 0:
-        return False, "PE KRONOS-MINI SLOPE NOT UP"
+    if kronos_slope >= 0:
+        return False, "PE KRONOS-MINI SLOPE NOT DOWN"
     return False, "PE OPTION BELOW ATP"
 
 
@@ -232,11 +235,28 @@ def evaluate_continuous_scalp(
             pe_ltp=_f(pe_ltp), pe_atp=_f(pe_atp),
         )
         ratio = (tbq / tsq) if tsq > 0 else 0.0
-        flow_ok = obi >= MIN_OBI and ratio >= MIN_TBQ_TSQ and fut_ratio >= MIN_FUTURES_VOLUME_RATIO
+        trend_route = bool(
+            structure_ok and obi >= MIN_OBI and ratio >= MIN_TBQ_TSQ
+            and fut_ratio >= MIN_FUTURES_VOLUME_RATIO
+        )
+        ignition_route = bool(
+            obi >= ORDER_FLOW_IGNITION_OBI and ratio >= ORDER_FLOW_IGNITION_TBQ
+        )
+        smc_route = bool(
+            structure_ok and obi >= SMC_MIN_OBI
+            and ("p10" in structure_label.upper() or "p90" in structure_label.upper())
+        )
+        flow_ok = bool(trend_route or ignition_route or smc_route)
+        route = (
+            "TREND_CONTINUATION" if trend_route else
+            "ORDER_FLOW_IGNITION" if ignition_route else
+            "SMC_REVERSAL" if smc_route else ""
+        )
         candidates.append({
             "side": side,
-            "trigger": bool(time_ok and main_ok and volatility_ok and spread_ok
-                            and structure_ok and flow_ok
+            # The ₹35K engine is independent: a macro sniper position must
+            # never turn AUTO into "TREND ONLY / WAITING" with 0 Qty.
+            "trigger": bool(time_ok and volatility_ok and spread_ok and flow_ok
                             and not dead_tape and not engine_active
                             and _f(cooldown_sec) <= 0),
             "entry": round(ltp, 2),
@@ -245,6 +265,10 @@ def evaluate_continuous_scalp(
             "tbq_tsq": round(ratio, 3),
             "structure_ok": structure_ok,
             "structure_label": structure_label,
+            "trend_route": trend_route,
+            "ignition_route": ignition_route,
+            "smc_route": smc_route,
+            "route": route,
             "flow_ok": flow_ok,
             "score": round(obi + min(ratio, 3.0) + max(slope, 0.0), 3),
         })
@@ -257,14 +281,13 @@ def evaluate_continuous_scalp(
     structure_ok = bool(chosen and chosen["structure_ok"])
     flow_ok = bool(chosen and chosen["flow_ok"])
     trigger = bool(chosen and chosen["trigger"])
+    route = str((chosen or {}).get("route") or "")
 
     reason = "SCALP_READY"
     if engine_active:
         reason = "SCALP_ALREADY_OPEN"
     elif _f(cooldown_sec) > 0:
         reason = "POST_SCALP_COOLDOWN"
-    elif not main_ok:
-        reason = "MAIN_SNIPER_ACTIVE"
     elif not time_ok:
         reason = "OUTSIDE_SCALP_SESSION"
     elif dead_tape:
@@ -273,10 +296,8 @@ def evaluate_continuous_scalp(
         reason = "VOLATILITY_TOO_LOW"
     elif not spread_ok:
         reason = "SPREAD_TOO_WIDE"
-    elif not structure_ok:
-        reason = "NO_MICRO_STRUCTURE_BURST"
     elif not flow_ok:
-        reason = "ORDER_FLOW_NOT_IGNITED"
+        reason = "NO_FLEXIBLE_ROUTE"
     elif not side:
         reason = "NO_DIRECTIONAL_SETUP"
 
@@ -290,11 +311,10 @@ def evaluate_continuous_scalp(
         {"key": "structure", "pass": structure_ok,
          "value": (chosen or {}).get("structure_label") or "waiting for ATP/EMA5 or p10/p90"},
         {"key": "flow", "pass": flow_ok,
-         "value": f"OBI {float((chosen or {}).get('obi_5') or 0):.2f} · TBQ/TSQ {float((chosen or {}).get('tbq_tsq') or 0):.2f} · fut {fut_ratio:.2f}x"},
+         "value": f"{route or 'NO ROUTE'} · OBI {float((chosen or {}).get('obi_5') or 0):.2f} · TBQ/TSQ {float((chosen or {}).get('tbq_tsq') or 0):.2f} · fut {fut_ratio:.2f}x"},
     ]
     state = "AUTO_SCALPING" if trigger else (
         "PAUSED_DEAD_TAPE" if dead_tape else
-        "PAUSED_MAIN_TRADE" if not main_ok else
         "WAITING_FOR_SIGNATURES"
     )
     return {
@@ -315,6 +335,12 @@ def evaluate_continuous_scalp(
         "all_five": all(condition["pass"] for condition in conditions),
         "reason": reason,
         "engine_state": state,
+        "trigger_route": route,
+        "flexible_routes": {
+            "trend_continuation": bool((chosen or {}).get("trend_route")),
+            "order_flow_ignition": bool((chosen or {}).get("ignition_route")),
+            "smc_reversal": bool((chosen or {}).get("smc_route")),
+        },
         "main_state": str(main_state or ""),
         "now_ist": moment.isoformat(timespec="seconds"),
         "dead_tape": dead_tape,
@@ -387,23 +413,26 @@ def select_scalp_contract(
         allowed_spread = (spread_cap_for_ltp(ltp) if max_spread is None
                           else _f(max_spread, MAX_SPREAD))
         strike = _f(row.get("strike_price") or row.get("strike") or leg.get("strike_price"))
-        if not (low <= ltp <= high) or not (MIN_DELTA <= delta <= MAX_DELTA):
-            continue
-        if spread > allowed_spread:
+        if ltp <= 0 or spread > allowed_spread:
             continue
         qty = int(math.floor(cap / (ltp * lot))) * lot if ltp > 0 else 0
+        if qty <= 0 and cap >= ltp * lot:
+            qty = lot
         if qty <= 0:
             continue
         deployed = round(qty * ltp, 2)
         if deployed > MAX_SCALP_CAPITAL:
             continue
-        # Gamma is the explosive component; delta proximity to 0.56 and a
-        # tight spread break ties without ever leaving the risk band.
+        preferred = bool(low <= ltp <= high and MIN_DELTA <= delta <= MAX_DELTA)
+        # Gamma is the explosive component; delta proximity to 0.56 and a tight
+        # spread break ties.  If no strike is inside the narrow preferred band,
+        # a real affordable lot is still returned rather than 0 Qty.
         score = round(
             gamma * 10_000.0
             + (MAX_DELTA - abs(delta - 0.56)) * 100.0
             + (1.0 / (1.0 + spread))
-            - abs(ltp - 105.0) / 100.0,
+            - abs(ltp - 105.0) / 100.0
+            + (10_000.0 if preferred else 0.0),
             4,
         )
         candidate = {
@@ -424,6 +453,8 @@ def select_scalp_contract(
             "deployed": deployed,
             "capital": round(cap, 2),
             "score": score,
+            "preferred_band": preferred,
+            "min_one_lot_enforced": qty >= lot,
             "expiry_day": bool(expiry_day),
         }
         if best is None or candidate["score"] > best["score"]:
@@ -435,6 +466,9 @@ def init_scalp_trade(contract: dict[str, Any], *, now: datetime | str | None = N
     """Create the mutable paper/live trade dictionary for a selected contract."""
     entry = _f(contract.get("entry") or contract.get("ltp"))
     qty = int(_f(contract.get("qty")))
+    lot = max(1, int(_f(contract.get("lot_size"), NIFTY_LOT_SIZE)))
+    if qty <= 0 and entry > 0 and entry * lot <= MAX_SCALP_CAPITAL:
+        qty = lot
     sl_points = round(min(4.50, max(3.50, _f(contract.get("sl_points"), DEFAULT_SL_POINTS))), 2)
     return {
         "status": "OPEN",
@@ -507,7 +541,15 @@ def manage_continuous_scalp(
     obi_5: Any = 1.0,
     now: datetime | str | None = None,
 ) -> dict[str, Any]:
-    """Manage the paid-to-free runner: 50% at +6.50, trail the rest by ₹2."""
+    """Manage the paid-to-free runner: 50% at +6.50, trail the rest by ₹2.
+
+    A trade carrying the new asymmetric plan is delegated to the 35/35/30
+    rider; legacy trades keep the exact 50% path covered by existing tests.
+    """
+    if trade.get("asymmetric_plan"):
+        from execution.asymmetric_trend_rider import manage_asymmetric_trade
+
+        return manage_asymmetric_trade(trade, ltp, obi_5=obi_5, now=now)
     entry = _f(trade.get("entry_price"))
     price = _f(ltp)
     initial = int(trade.get("initial_qty") or trade.get("qty") or 0)
@@ -653,8 +695,9 @@ class ContinuousScalpEngine:
             return {"ok": False, "reason": "SCALP_ALREADY_OPEN"}
         contract = dict(contract)
         if not contract.get("qty"):
-            qty = int(math.floor(self.capital / (_f(contract.get("ltp")) * NIFTY_LOT_SIZE))) * NIFTY_LOT_SIZE
-            contract["qty"] = qty
+            lot = max(1, int(_f(contract.get("lot_size"), NIFTY_LOT_SIZE)))
+            qty = int(math.floor(self.capital / (_f(contract.get("ltp")) * lot))) * lot
+            contract["qty"] = max(lot, qty) if _f(contract.get("ltp")) * lot <= self.capital else qty
         self.active = init_scalp_trade(contract, now=now)
         return {"ok": True, "trade": self.active}
 

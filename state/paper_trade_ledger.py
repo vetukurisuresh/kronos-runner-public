@@ -62,6 +62,18 @@ def _fallback_id(date: str, symbol: str, strike: str, entry_at: str) -> str:
     return f"{date}|{symbol}|{strike}|{entry_at}"
 
 
+def _leg_kind(name: Any) -> str:
+    """Classify booked legs without assuming only the legacy names."""
+    upper = str(name or "").upper()
+    if "T1" in upper:
+        return "t1"
+    if "T2" in upper:
+        return "t2"
+    if any(token in upper for token in ("SL", "STOP", "TRAIL", "RUNNER", "SCRATCH", "EXIT")):
+        return "exit"
+    return ""
+
+
 @dataclass
 class PaperTrade:
     date: str                     # YYYY-MM-DD
@@ -81,6 +93,10 @@ class PaperTrade:
     outcome: str = ""             # WIN | SL | BREAKEVEN
     entry_at: str = ""
     exit_at: str = ""
+    sleeve: str = ""
+    trigger_label: str = ""
+    decision_latency_ms: float = 0.0
+    brokerage_taxes: float = 0.0
 
     # -- Pro Trade Ledger detail -------------------------------------------
     trade_id: str = ""
@@ -116,17 +132,18 @@ class PaperTrade:
         # Old records predate the split fields; a booked leg is still authoritative.
         for leg in self.booked_legs:
             name = str((leg or {}).get("leg") or "").upper()
-            if (name == "T1" or name.startswith("SUPER_T1")) and not self.t1_qty:
+            kind = _leg_kind(name)
+            if kind == "t1" and not self.t1_qty:
                 self.t1_qty = int(_num(leg.get("qty")))
                 self.t1_price = _num(leg.get("price"))
                 self.t1_pnl = _num(leg.get("pnl"))
                 self.t1_at = str(leg.get("at") or "")
-            elif (name == "T2" or name.startswith("SUPER_T2")) and not self.t2_qty:
+            elif kind == "t2" and not self.t2_qty:
                 self.t2_qty = int(_num(leg.get("qty")))
                 self.t2_price = _num(leg.get("price"))
                 self.t2_pnl = _num(leg.get("pnl"))
                 self.t2_at = str(leg.get("at") or "")
-            elif name in {"SL", "TSL", "TRAIL", "STOP"} and not self.sl_price:
+            elif kind == "exit" and not self.sl_price:
                 self.sl_price = _num(leg.get("price"))
                 self.sl_pnl = _num(leg.get("pnl"))
                 self.sl_at = str(leg.get("at") or "")
@@ -162,35 +179,25 @@ def paper_trade_from_live(
     if status not in {"OPEN", "CLOSED"}:
         status = "OPEN"
 
-    def leg(name: str) -> dict[str, Any]:
+    def find_leg(kind: str) -> dict[str, Any]:
         return next(
-            (row for row in legs if str((row or {}).get("leg") or "").upper() == name),
+            (row for row in legs if _leg_kind((row or {}).get("leg")) == kind),
             {},
         )
 
-    def leg_prefix(prefix: str) -> dict[str, Any]:
-        return next(
-            (row for row in legs
-             if str((row or {}).get("leg") or "").upper().startswith(prefix)),
-            {},
-        )
-
-    t1 = leg("T1") or leg_prefix("SUPER_T1")
-    t2 = leg("T2") or leg_prefix("SUPER_T2")
-    sl = next(
-        (row for row in legs
-         if str((row or {}).get("leg") or "").upper() in {"SL", "TSL", "TRAIL", "STOP"}),
-        {},
-    )
+    t1 = find_leg("t1")
+    t2 = find_leg("t2")
+    sl = find_leg("exit")
     t1_qty = int(_num(t1.get("qty")))
     t2_qty = int(_num(t2.get("qty")))
     qty_open = int(_num(trade.get("qty_open"), max(initial_qty - t1_qty - t2_qty, 0)))
     if status == "CLOSED":
         qty_open = 0
-    realized = _num(trade.get("realized_pnl_rs"))
+    realized = _num(trade.get("gross_pnl_rs") or trade.get("realized_pnl_rs"))
     entry = _num(trade.get("entry_price"))
     exit_price = _num(trade.get("exit_price"))
-    net = realized if status == "CLOSED" else realized
+    costs = _num(trade.get("brokerage_taxes") or trade.get("costs")) if status == "CLOSED" else 0.0
+    net = round(realized - costs, 2) if status == "CLOSED" else realized
     outcome = "OPEN" if status == "OPEN" else (
         "WIN" if net > 0 else "SL" if net < 0 else "BREAKEVEN"
     )
@@ -207,12 +214,16 @@ def paper_trade_from_live(
         exit=round(exit_price, 2) if status == "CLOSED" else 0.0,
         points=round(exit_price - entry, 2) if status == "CLOSED" else 0.0,
         gross=round(realized, 2),
-        costs=0.0,
+        costs=round(costs, 2),
         net=round(net, 2),
-        vaulted=round(max(net, 0.0) * 0.70, 2) if status == "CLOSED" else 0.0,
+        vaulted=round(max(net, 0.0) * 0.50, 2) if status == "CLOSED" else 0.0,
         outcome=outcome,
         entry_at=str(trade.get("entry_at") or ""),
         exit_at=str(trade.get("exit_at") or "") if status == "CLOSED" else "",
+        sleeve=str(trade.get("sleeve") or trade.get("sniper_grade") or ""),
+        trigger_label=str(trade.get("trigger_label") or ""),
+        decision_latency_ms=round(_num(trade.get("decision_latency_ms")), 3),
+        brokerage_taxes=round(costs, 2),
         trade_id=str(trade.get("trade_id") or ""),
         status=status,
         initial_qty=initial_qty,
@@ -455,11 +466,11 @@ class PaperLedger:
         entry = _num(trade.entry)
         qty = int(trade.initial_qty or trade.qty or 0)
         t1_leg = next((leg for leg in trade.booked_legs
-                       if str(leg.get("leg", "")).upper() == "T1"), None)
+                       if _leg_kind(leg.get("leg")) == "t1"), None)
         t2_leg = next((leg for leg in trade.booked_legs
-                       if str(leg.get("leg", "")).upper() == "T2"), None)
+                       if _leg_kind(leg.get("leg")) == "t2"), None)
         sl_leg = next((leg for leg in trade.booked_legs
-                       if str(leg.get("leg", "")).upper() in {"SL", "TSL", "TRAIL", "STOP"}), None)
+                       if _leg_kind(leg.get("leg")) == "exit"), None)
         t1_qty = int(trade.t1_qty or (t1_leg or {}).get("qty") or 0)
         t2_qty = int(trade.t2_qty or (t2_leg or {}).get("qty") or 0)
         t1_price = _num(trade.t1_price if trade.t1_price else (t1_leg or {}).get("price"))
@@ -503,6 +514,10 @@ class PaperLedger:
             "costs": round(_num(trade.costs), 2),
             "net": round(_num(trade.net), 2),
             "vaulted": round(_num(trade.vaulted), 2),
+            "sleeve": trade.sleeve,
+            "trigger_label": trade.trigger_label,
+            "decision_latency_ms": round(_num(trade.decision_latency_ms), 3),
+            "brokerage_taxes": round(_num(trade.brokerage_taxes), 2),
             "outcome": trade.outcome,
             "status": trade.status,
             "light": trade.light,

@@ -865,6 +865,11 @@ def snapshot(symbol: str = "NIFTY", now: float | None = None) -> dict[str, Any]:
             "profit_vault": 0.0, "tradable_capital": 100_000.0,
             "sniper_trades": 0, "daily_lock": False,
         },
+        "eod_pnl": feed.get("eod_pnl") or {},
+        "sniper_sleeve": feed.get("sniper_sleeve") or {},
+        "trigger_badge": (
+            (feed.get("trade") or {}).get(symbol, {}) or {}
+        ).get("trigger_label") or ((feed.get("quorum") or {}).get(symbol, {}) or {}).get("trigger_label") or "",
         "stale": not live,
         "as_of": feed.get("updated_at"),
         "cutoff": feed.get("cutoff") or cutoff_state(),

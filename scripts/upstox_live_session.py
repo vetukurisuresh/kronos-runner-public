@@ -32,6 +32,7 @@ import uuid
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import requests
 
@@ -49,6 +50,15 @@ from execution.trading_cutoff import (  # noqa: E402
 from execution.autonomous_trade_manager import (  # noqa: E402
     create_autonomous_trade,
     manage_autonomous_trade,
+)
+from execution.asymmetric_trend_rider import (  # noqa: E402
+    attach_plan_to_trade,
+    build_asymmetric_plan,
+    manage_asymmetric_trade,
+)
+from state.eod_pnl_reconciler import (  # noqa: E402
+    reconcile_eod,
+    write_eod_summary,
 )
 from execution.pro_money_manager import (  # noqa: E402
     HERO_GUARD_FILE,
@@ -1015,6 +1025,52 @@ def merge_verified_option_depth(payload: dict) -> dict:
     return payload
 
 
+def _session_bar_low(row: Any) -> float:
+    if isinstance(row, dict):
+        try:
+            return float(row.get("low") or row.get("l") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+    try:
+        return float(getattr(row, "low", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def attach_asymmetric_plan_for_session(
+    trade: dict,
+    ltp: Any,
+    bars: list | None,
+    *,
+    trigger_label: str = "",
+    decision_latency_ms: Any = 0.0,
+) -> dict:
+    """Freeze the asymmetric plan on a live trade before the first management tick."""
+    try:
+        entry = float(trade.get("entry_price") or ltp or 0.0)
+        if entry <= 0:
+            return trade
+        lows = [_session_bar_low(row) for row in (bars or [])[-2:] if _session_bar_low(row) > 0]
+        ignition_low = min(lows) if lows else 0.0
+        plan = build_asymmetric_plan(
+            entry_price=entry,
+            ignition_low=ignition_low,
+            qty=trade.get("initial_qty") or trade.get("qty") or 75,
+            side=str(trade.get("option_type") or trade.get("side") or "CE"),
+            trigger_label=trigger_label,
+            decision_latency_ms=decision_latency_ms,
+            candles_1m=list(bars or []),
+            created_at=trade.get("entry_at") or datetime.now(tz=IST),
+        )
+        attach_plan_to_trade(trade, plan)
+        trade["sl_points"] = plan["risk_points"]
+        trade["auto_stage"] = 1
+        trade["auto_stage_label"] = "ENTRY_FILLED"
+    except (TypeError, ValueError, KeyError) as exc:
+        print(f"asymmetric plan skipped: {exc}", flush=True)
+    return trade
+
+
 def add_scalp_hud_leg(hud: dict, leg: dict) -> None:
     """Bank a fast-scalp leg; the 50% vault sweep happens once at closure."""
     pnl = float(leg.get("pnl") or 0.0)
@@ -1328,6 +1384,7 @@ def main(argv: list[str] | None = None) -> int:
     fast_publisher.start()
     seen_frames = 0
     seen_bytes = 0
+    eod_published = 0.0
     latest_scan_ms: dict[str, float] = {}
     print(f"live session started ({args.minutes} min)")
 
@@ -1346,7 +1403,9 @@ def main(argv: list[str] | None = None) -> int:
         # A connected V3 socket is the liveness authority.  The heavy chain
         # cycle may take ~5s; 8s prevents a false UI lockout without allowing
         # a genuinely dead feed to trade.
-        feed_stale = socket_age_ms is None or socket_age_ms > 8000
+        # Choke #5: the live websocket LKG window is 12s.  A heavy option-chain
+        # scan must not zero every candidate merely because it took 4-5s.
+        feed_stale = socket_age_ms is None or socket_age_ms > 12000
         gap = socket.take_gap()
         if gap >= 5.0:
             backfill_missed(gap)
@@ -2036,6 +2095,7 @@ def main(argv: list[str] | None = None) -> int:
             cooldown_until = continuous_cooldown_until.get(name)
             if cooldown_until:
                 cooldown_left = max(0, int((cooldown_until - now_ist_dt).total_seconds()))
+            continuous_started = time.perf_counter()
             continuous_now = evaluate_continuous_scalp(
                 now_ist_dt,
                 symbol=name,
@@ -2070,6 +2130,7 @@ def main(argv: list[str] | None = None) -> int:
                 cooldown_sec=cooldown_left,
                 engine_active=bool(scalp_sleeve.active),
             )
+            continuous_latency_ms = round((time.perf_counter() - continuous_started) * 1000.0, 3)
             continuous_decision[name] = continuous_now
             bottom = detect_bottom_reversal(
                 spot=spot, p10=float(plan.get("p10") or 0.0),
@@ -2218,9 +2279,11 @@ def main(argv: list[str] | None = None) -> int:
             playbook_feed["trade"] = {name: trade}
             playbook_feed["updated_at"] = now_iso
             playbook_feed["liveness_epoch"] = cycle
+            decision_started = time.perf_counter()
             playbook_now = evaluate_playbooks(playbook_feed, symbol=name)
             payload.setdefault("playbooks", {})[name] = playbook_now
             quorum_now = build_model_quorum(playbook_feed, symbol=name)
+            decision_latency_ms = round((time.perf_counter() - decision_started) * 1000.0, 3)
             payload.setdefault("quorum", {})[name] = quorum_now
             regime_now = evaluate_market_regime(
                 playbook_feed, symbol=name, quorum=quorum_now,
@@ -2260,6 +2323,11 @@ def main(argv: list[str] | None = None) -> int:
                             trade["sl_points"] = float(playbook_now["entry"].get("risk_points") or 0.0)
                             trade["auto_stage"] = 1
                             trade["auto_stage_label"] = "ENTRY_FILLED"
+                            attach_asymmetric_plan_for_session(
+                                trade, ltp, hist,
+                                trigger_label=str(playbook_now.get("trigger_label") or playbook_now.get("winner_id") or "FLEXIBLE PLAYBOOK"),
+                                decision_latency_ms=decision_latency_ms,
+                            )
                             state["trade"] = trade
                             state["risk_recorded"] = False
                             state["story_trade"] = False
@@ -2309,6 +2377,13 @@ def main(argv: list[str] | None = None) -> int:
                             trade["quorum_count"] = quorum_now.get("quorum_count")
                             trade["quorum_confidence"] = quorum_now.get("confidence")
                             trade["confirmed_models"] = quorum_now.get("confirmed_models")
+                            trade["trigger_path"] = quorum_now.get("trigger_path")
+                            trade["trigger_label"] = quorum_now.get("trigger_label")
+                            attach_asymmetric_plan_for_session(
+                                trade, ltp, hist,
+                                trigger_label=str(quorum_now.get("trigger_label") or "DUAL TRIGGER"),
+                                decision_latency_ms=decision_latency_ms,
+                            )
                             state["trade"] = trade
                             state["risk_recorded"] = False
                             state["story_trade"] = False
@@ -2462,8 +2537,16 @@ def main(argv: list[str] | None = None) -> int:
                         trade["t1_label"] = "SCALP_S1_50PCT"
                         trade["t2_label"] = "SCALP_TRAIL_50PCT"
                         trade["scalp_signal"] = dict(continuous_now)
-                        trade["scalp_regime"] = "CONTINUOUS_5OF5"
+                        trade["scalp_regime"] = "CONTINUOUS_FLEXIBLE_ROUTE"
                         trade["scalp_grade"] = "A+"
+                        trade["trigger_label"] = (
+                            "SCALP " + str(continuous_now.get("trigger_route") or "FLEXIBLE")
+                        )
+                        attach_asymmetric_plan_for_session(
+                            trade, ltp, hist,
+                            trigger_label=str(trade["trigger_label"]),
+                            decision_latency_ms=continuous_latency_ms,
+                        )
                         state["trade"] = trade
                         state["risk_recorded"] = True
                         state["story_trade"] = True
@@ -2773,12 +2856,23 @@ def main(argv: list[str] | None = None) -> int:
                         if str(trade.get("regime_mode") or "") == "TRENDY_DIRECTIONAL_HOLD"
                         and spot_ema9 > 0 else option_ema5
                     )
-                    auto_update = manage_autonomous_trade(
-                        trade, ltp,
-                        obi_5=(option_obi if option_obi > 0 else 1.0),
-                        ema5=runner_ema,
-                        prior_1m_low=prior_1m_low,
-                    )
+                    if trade.get("asymmetric_plan"):
+                        auto_update = manage_asymmetric_trade(
+                            trade, ltp,
+                            obi_5=(option_obi if option_obi > 0 else 1.0),
+                            ema9=runner_ema,
+                            prior_1m_low=prior_1m_low,
+                            regime_trendy=str(trade.get("regime_mode") or "") == "TRENDY_DIRECTIONAL_HOLD",
+                            now=now_ist_dt,
+                            candles_1m=hist,
+                        )
+                    else:
+                        auto_update = manage_autonomous_trade(
+                            trade, ltp,
+                            obi_5=(option_obi if option_obi > 0 else 1.0),
+                            ema5=runner_ema,
+                            prior_1m_low=prior_1m_low,
+                        )
                     legs = list(auto_update.get("legs") or [])
                     if auto_update.get("events"):
                         trade.setdefault("auto_events", []).extend(auto_update["events"])
@@ -3761,6 +3855,56 @@ def main(argv: list[str] | None = None) -> int:
             ),
             engine_state=scalp_sleeve.engine_state,
         )
+        # Canonical EOD sum: ledger rows + only the open mark-to-market.  This
+        # is the single total the header, ledger and 8K journal all read.
+        try:
+            scalp_open_mtm = 0.0
+            sniper_open_mtm = 0.0
+            for open_trade in (payload.get("trade") or {}).values():
+                if not isinstance(open_trade, dict):
+                    continue
+                if str(open_trade.get("status") or "").upper() != "OPEN":
+                    continue
+                mtm = round(
+                    float(open_trade.get("live_pnl_rs") or 0.0)
+                    - float(open_trade.get("realized_pnl_rs") or 0.0), 2,
+                )
+                tag = " ".join(str(open_trade.get(key) or "") for key in (
+                    "sleeve", "sniper_grade", "playbook_id", "scalp_mode",
+                )).upper()
+                if open_trade.get("scalp_mode") or "SCALP" in tag or "35K" in tag:
+                    scalp_open_mtm += mtm
+                else:
+                    sniper_open_mtm += mtm
+            ledger_rows = [row.as_dict() for row in ledger.trades]
+            eod = reconcile_eod(
+                ledger_rows,
+                date=today_ist(),
+                scalp_open_mtm=scalp_open_mtm,
+                sniper_open_mtm=sniper_open_mtm,
+                journal_rows=ledger_rows,
+                reported_vault=float(hud.get("profit_vault") or 0.0),
+            )
+            payload["eod_pnl"] = eod
+            payload["sniper_sleeve"] = {
+                "realized_pnl_rs": eod["sniper_65k_realized_pnl"],
+                "open_mtm_rs": eod["sniper_65k_open_mtm"],
+                "total_pnl_rs": eod["sniper_65k_total"],
+                "vault_locked_inr": eod["vault_locked_inr"],
+            }
+            hud["total_net_pnl"] = eod["grand_total_net_pnl"]
+            hud["grand_total_net_pnl"] = eod["grand_total_net_pnl"]
+            hud["scalp_35k_realized_pnl"] = eod["scalp_35k_realized_pnl"]
+            hud["sniper_65k_realized_pnl"] = eod["sniper_65k_realized_pnl"]
+            hud["vault_locked_inr"] = eod["vault_locked_inr"]
+            payload["hud"] = hud
+            if cycle - eod_published >= 15:
+                eod_published = cycle
+                write_eod_summary(eod)
+            save_hud(hud)
+        except Exception as exc:  # noqa: BLE001 - the tape must keep streaming
+            print(f"EOD reconciliation skipped: {exc}", flush=True)
+            payload["hud"] = hud
         last_option.update(payload["option"])
         last_trade.update(payload["trade"])
         last_scanner.update(payload["scanner"])

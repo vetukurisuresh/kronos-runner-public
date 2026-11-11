@@ -39,7 +39,7 @@ SLEEVE_A_ENGINES = (
     "LEAD_LAG_3S_SNIPE",
     "ADAPTIVE_VELOCITY_PING_PONG",
 )
-LIVE_STALE_AFTER_SEC = 3.0
+LIVE_STALE_AFTER_SEC = 12.0
 
 
 def _f(value: Any, default: float = 0.0) -> float:
@@ -94,6 +94,24 @@ def edge_score(
     }
 
 
+def _core_market_fields(feed: Mapping[str, Any], symbol: str) -> dict[str, Any]:
+    spots = feed.get("spot") or {}
+    spot_block = spots.get(symbol) if isinstance(spots, Mapping) else {}
+    spot_block = spot_block if isinstance(spot_block, Mapping) else {}
+    options = feed.get("option") or {}
+    option_block = options.get(symbol) if isinstance(options, Mapping) else {}
+    if not isinstance(option_block, Mapping):
+        option_block = options if isinstance(options, Mapping) else {}
+    spot_ltp = _f(spot_block.get("ltp") or spot_block.get("display"))
+    option_ltp = _f(option_block.get("ltp") or (option_block.get("market_data") or {}).get("ltp"))
+    return {
+        "spot_ltp": round(spot_ltp, 2),
+        "option_ltp": round(option_ltp, 2),
+        "spot_present": spot_ltp > 0,
+        "option_present": option_ltp > 0,
+    }
+
+
 def _data_gate(
     feed: Mapping[str, Any],
     *,
@@ -101,20 +119,28 @@ def _data_gate(
     symbol: str,
     feed_live: bool,
 ) -> dict[str, Any]:
-    # The 1s socket heartbeat is the liveness fact.  The full snapshot may lag
-    # the heavy chain cycle by several seconds without being stale.
+    # Choke #5: one stale field among dozens may not zero every candidate.
+    # The only liveness facts are the live Spot LTP, live Option LTP and the
+    # websocket LKG heartbeat.  The heavy chain snapshot may lag up to 12s.
     epoch = _f(feed.get("liveness_epoch") or feed.get("updated_epoch"))
     age_sec = max(0.0, now - epoch) if epoch > 0 else None
     fixture = bool(feed.get("fixture"))
     spectrum = (feed.get("full_spectrum") or {}).get(symbol) or {}
     fixture = fixture or bool(spectrum.get("fixture"))
     zero_feed = not bool(feed.get("spot") or feed.get("full_spectrum"))
+    core = _core_market_fields(feed, symbol)
+    last_good_age_ok = age_sec is not None and age_sec <= LIVE_STALE_AFTER_SEC
     live = bool(
         feed_live
         and not fixture
-        and not zero_feed
-        and age_sec is not None
-        and age_sec <= LIVE_STALE_AFTER_SEC
+        and core["spot_present"]
+        and core["option_present"]
+        and last_good_age_ok
+    )
+    lkg_reason = (
+        f"CORE_FIELDS_LKG_{age_sec:.3f}S_LE_12S" if live else
+        f"LKG_AGE_{age_sec:.3f}S_GT_12S" if age_sec is not None else
+        "NO_FEED_HEARTBEAT"
     )
     if live:
         reason = "SANITIZED_LIVE_FEED"
@@ -122,18 +148,24 @@ def _data_gate(
         reason = "FIXTURE_BLOCKED"
     elif zero_feed:
         reason = "ZERO_OR_MISSING_MARKET_DATA"
+    elif not core["spot_present"] or not core["option_present"]:
+        reason = "CORE_SPOT_OR_OPTION_LTP_MISSING"
     elif not feed_live:
         reason = "FEED_OFFLINE_OR_STALE"
     elif age_sec is None:
         reason = "NO_FEED_HEARTBEAT"
     else:
-        reason = f"HEARTBEAT_AGE_{age_sec:.3f}S"
+        reason = lkg_reason
     return {
         "allowed": live,
         "live": live,
         "status": "LIVE" if live else "BLOCKED",
         "reason": reason,
+        "lkg_detail": lkg_reason,
         "age_sec": round(age_sec, 3) if age_sec is not None else None,
+        "lkg_window_sec": LIVE_STALE_AFTER_SEC,
+        "core_fields": core,
+        "field_lag_applies_to_scores": False,
         "fixture": fixture,
         "zero_feed": zero_feed,
     }
@@ -158,11 +190,13 @@ def _candidate(
     source: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     score = edge_score(net_roi_pct, confidence_pct, _flow_velocity(obi_5, tbq_tsq, futures_ratio))
-    valid = bool(trigger and data_ok and side in {"CE", "PE"} and _f(entry) > 0)
+    # A minor field lag must not erase the real candidate score.  Side, trigger
+    # and entry are retained and ranked; the 12s core gate decides execution.
+    valid = bool(trigger and side in {"CE", "PE"} and _f(entry) > 0)
     return {
         "engine": engine,
         "sleeve": sleeve,
-        "side": side if valid else "",
+        "side": side if side in {"CE", "PE"} else "",
         "trigger": bool(trigger),
         "data_ok": bool(data_ok),
         "valid": valid,
@@ -336,18 +370,20 @@ class MasterSignalArbitrator:
         ]
 
         def choose(rows: list[dict[str, Any]], threshold: float) -> dict[str, Any]:
+            ranked = sorted(rows, key=lambda item: item["edge_score"], reverse=True)
             if not gate["allowed"]:
-                for row in rows:
+                for row in ranked:
                     row["blocked_reason"] = "BLOCKED_BY_DATA_GATE"
+                    row["selected"] = False
                 return {
                     "selected": None, "blocked": True,
                     "reason": "BLOCKED_BY_DATA_GATE",
                     "threshold": threshold,
-                    "candidates": sorted(rows, key=lambda item: item["edge_score"], reverse=True),
+                    "candidates": ranked,
                 }
-            eligible = [row for row in rows if row["valid"] and row["edge_score"] >= threshold]
-            winner = max(eligible, key=lambda item: item["edge_score"]) if eligible else None
-            for row in rows:
+            eligible = [row for row in ranked if row["valid"] and row["edge_score"] >= threshold]
+            winner = eligible[0] if eligible else None
+            for row in ranked:
                 row["selected"] = bool(winner and row is winner)
                 row["blocked_reason"] = "" if row["valid"] else "NO_VALID_TRIGGER"
             return {
@@ -355,7 +391,7 @@ class MasterSignalArbitrator:
                 "blocked": False,
                 "reason": winner["engine"] if winner else "NO_CANDIDATE_ABOVE_EDGE_THRESHOLD",
                 "threshold": threshold,
-                "candidates": sorted(rows, key=lambda item: item["edge_score"], reverse=True),
+                "candidates": ranked,
             }
 
         sleeve_b = choose(candidates_b, self.sniper_threshold)
@@ -383,8 +419,12 @@ class MasterSignalArbitrator:
             "auto_pick_reason": playbooks.get("auto_pick_reason"),
             "quorum": quorum,
             "quorum_auto_execute": bool(quorum.get("auto_execute")),
+            "trigger_path": quorum.get("trigger_path"),
+            "trigger_label": quorum.get("trigger_label"),
+            "single_model_path": quorum.get("trigger_path") == "SINGLE_MODEL_SUPER_CONVICTION",
             "trade_approved": bool(
-                playbooks.get("auto_execute") or quorum.get("auto_execute")
+                gate["allowed"]
+                and (playbooks.get("auto_execute") or quorum.get("auto_execute"))
             ),
             "latency_us": round(float(latency_us or 0.0), 2),
             "engine_order": {

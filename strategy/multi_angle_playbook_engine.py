@@ -310,8 +310,10 @@ def _context(feed: Mapping[str, Any], symbol: str) -> dict[str, Any]:
 def _angle(
     *, key: str, index: int, label: str, short: str, side: str, score: float,
     conditions: list[dict[str, Any]], reason: str,
+    route_label: str = "", route_hit: bool = False,
 ) -> dict[str, Any]:
-    trigger = bool(conditions) and all(row["pass"] for row in conditions)
+    checklist_hit = bool(conditions) and all(row["pass"] for row in conditions)
+    trigger = bool(checklist_hit or route_hit)
     return {
         "key": key,
         "index": index,
@@ -322,6 +324,9 @@ def _angle(
         "score": round(max(0.0, min(100.0, score)), 1),
         "threshold": ENTRY_THRESHOLD,
         "trigger": trigger,
+        "route_hit": bool(route_hit),
+        "route_label": route_label,
+        "checklist_hit": bool(checklist_hit),
         "status": "FIRING" if trigger else "WATCHING",
         "conditions": conditions,
         "conditions_passed": sum(1 for row in conditions if row["pass"]),
@@ -443,24 +448,59 @@ def evaluate_playbooks(
         + 0.30 * (1.0 if convexity_ok else 0.0)
     )
 
+    routes = [
+        {
+            "key": "TREND_CONTINUATION",
+            "pass": bool(aligned and obi >= 1.25 and futures >= 1.0),
+            "label": "Spot vs VWAP + OBI >=1.25x + Futures Vol >=1.0x",
+            "playbook": "TREND_SURF_PULLBACK",
+        },
+        {
+            "key": "ORDER_FLOW_IGNITION",
+            "pass": bool(obi >= 1.60 and tbq >= 1.40),
+            "label": "OBI >=1.60x + TBQ/TSQ >=1.40x",
+            "playbook": "ORDERFLOW_MOMENTUM_IGNITION",
+        },
+        {
+            "key": "SMC_REVERSAL",
+            "pass": bool(at_floor and sweep_ok and choch),
+            "label": "p10/p90 sweep + CHoCH",
+            "playbook": "SMC_EXTREME_REVERSAL_SNIPER",
+        },
+        {
+            "key": "WRITER_TRAP",
+            "pass": bool(a4_conditions and all(row["pass"] for row in a4_conditions)),
+            "label": "Writer unwind + opposite OI build + Greek edge",
+            "playbook": "WRITER_TRAP_GAMMA_SQUEEZE",
+        },
+    ]
+    route_by_key = {row["key"]: row for row in routes}
     angles = [
         _angle(key="TREND_SURF_PULLBACK", index=1, label="🌊 Trend Surf", short="TREND SURF",
                side=side, score=a1_score, conditions=a1_conditions,
+               route_label=route_by_key["TREND_CONTINUATION"]["label"],
+               route_hit=route_by_key["TREND_CONTINUATION"]["pass"],
                reason=f"{prob:.1f}% directional · Spot {'<' if side == 'PE' else '>'} VWAP · OBI {obi:.2f}x"),
         _angle(key="ORDERFLOW_MOMENTUM_IGNITION", index=2, label="⚡ OrderFlow Burst",
                short="ORDERFLOW MOMENTUM IGNITION", side=side, score=a2_score,
                conditions=a2_conditions,
+               route_label=route_by_key["ORDER_FLOW_IGNITION"]["label"],
+               route_hit=route_by_key["ORDER_FLOW_IGNITION"]["pass"],
                reason=f"Whale book {obi:.2f}x / {tbq:.2f}x · 1m break {'confirmed' if momentum >= 2/3 else 'waiting'}"),
         _angle(key="SMC_EXTREME_REVERSAL_SNIPER", index=3, label="🎯 SMC Sweep",
                short="SMC EXTREME REVERSAL SNIPER", side=side, score=a3_score,
                conditions=a3_conditions,
+               route_label=route_by_key["SMC_REVERSAL"]["label"],
+               route_hit=route_by_key["SMC_REVERSAL"]["pass"],
                reason=f"p10/p90 band {'hit' if at_floor else 'not hit'} · {len(sweeps)} sweep(s)"),
         _angle(key="WRITER_TRAP_GAMMA_SQUEEZE", index=4, label="🔥 OI Squeeze",
                short="WRITER TRAP GAMMA SQUEEZE", side=side, score=a4_score,
                conditions=a4_conditions,
+               route_label=route_by_key["WRITER_TRAP"]["label"],
+               route_hit=route_by_key["WRITER_TRAP"]["pass"],
                reason=f"{threatened_side} ΔOI {threatened_oi:+.2f}% · {opposite_side} ΔOI {opposite_oi:+.2f}%"),
     ]
-    triggered = [row for row in angles if row["trigger"] and row["score"] >= ENTRY_THRESHOLD]
+    triggered = [row for row in angles if row["trigger"]]
     winner = max(triggered, key=lambda row: row["score"]) if triggered else None
 
     entry = ctx["option_ltp"]
@@ -504,11 +544,14 @@ def evaluate_playbooks(
     if isinstance(data_gate, Mapping):
         gate_allowed = bool(data_gate.get("allowed", True))
     ev_approved = bool(ctx["ev"]["approved"])
-    auto_execute = bool(winner and entry > 0 and gate_allowed and ev_approved)
+    # A flexible playbook route is executable on its own.  Greek EV remains
+    # visible for ranking, but it cannot veto the three audited routes.
+    auto_execute = bool(winner and entry > 0 and gate_allowed)
     auto_reason = (
-        f"🎯 AUTO-PICKED: {ctx['contract']} · {ctx['paths_bearish'] if side == 'PE' else ctx['paths_bullish']}/100 Paths "
-        f"{'Bearish' if side == 'PE' else 'Bullish'} · Spot {'<' if side == 'PE' else '>'} VWAP · "
-        f"{side} OBI {obi:.2f}x"
+        f"🎯 AUTO-PICKED: {ctx['contract']} · ROUTE {winner.get('route_label') or winner['short']} · "
+        f"Spot {'<' if side == 'PE' else '>'} VWAP · {side} OBI {obi:.2f}x"
+        if auto_execute and winner else
+        f"WATCHING {ctx['contract']} · no flexible route yet · {side} OBI {obi:.2f}x"
         if side else "WAITING FOR DIRECTION"
     )
     headline = (
@@ -534,6 +577,9 @@ def evaluate_playbooks(
         "futures_ratio": futures,
         "ev_ratio": ctx["ev"]["ev_ratio"],
         "ev_approved": ev_approved,
+        "flexible_routes": routes,
+        "route_hit": winner.get("route_hit") if winner else False,
+        "route_label": winner.get("route_label") if winner else "",
         "angles": angles,
         "radar": [
             {
@@ -544,6 +590,8 @@ def evaluate_playbooks(
         ],
         "winner": winner,
         "winner_id": winner["key"] if winner else "",
+        "trigger_path": ("FLEXIBLE_ROUTE_" + str(winner.get("index"))) if winner else "WAITING",
+        "trigger_label": (winner.get("route_label") or winner.get("short") or "") if winner else "",
         "auto_execute": auto_execute,
         "data_gate_allowed": gate_allowed,
         "auto_pick_reason": auto_reason,
