@@ -982,11 +982,15 @@ def merge_verified_option_depth(payload: dict) -> dict:
             continue
         for key in ("obi_5", "tbq_tsq", "tbq", "tsq"):
             value = book.get(key)
-            if value not in (None, "", 0, 0.0):
+            # Never replace a real per-contract option book with the futures
+            # full-spectrum book.  Fill only the zero/missing shadow value.
+            if value not in (None, "", 0, 0.0) and option_row.get(key) in (None, "", 0, 0.0):
                 option_row[key] = value
+                option_row["depth_source"] = "full_spectrum_fallback"
         row_depth = option_row.get("depth") or {}
         if not row_depth.get("bid_qty_5") and not row_depth.get("bids"):
             option_row["depth"] = dict(book)
+            option_row["depth_source"] = "full_spectrum_fallback"
         if not option_row.get("strike_price"):
             option_row["strike_price"] = option_row.get("strike")
         if not option_row.get("side"):

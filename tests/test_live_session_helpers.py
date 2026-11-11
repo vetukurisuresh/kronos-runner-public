@@ -50,3 +50,19 @@ def test_verified_option_book_overrides_prechain_zero() -> None:
     assert row["depth"]["bid_qty_5"] == 320.0
     assert payload["depth"]["NIFTY"]["obi_5"] == 0.84
     assert row["strike_symbol"] == "NIFTY 25200 PE"
+    assert row["depth_source"] == "full_spectrum_fallback"
+
+
+def test_real_option_book_is_not_overwritten_by_futures_book() -> None:
+    payload = {
+        "option": {"NIFTY": {"strike_symbol": "NIFTY 25200 PE", "obi_5": 10.5,
+                              "tbq_tsq": 3.57, "depth": {"bid_qty_5": 1235.0}}},
+        "full_spectrum": {"NIFTY": {"depth": {
+            "obi_5": 0.4222, "tbq_tsq": 1.1985, "bid_qty_5": 320.0,
+        }}},
+    }
+    merge_verified_option_depth(payload)
+    row = payload["option"]["NIFTY"]
+    assert row["obi_5"] == 10.5
+    assert row["tbq_tsq"] == 3.57
+    assert "depth_source" not in row

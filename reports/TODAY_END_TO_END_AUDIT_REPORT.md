@@ -63,7 +63,8 @@ Bearish bias ఉంటే ATM PE, bullish bias ఉంటే ATM CE watch చే�
 
 OBI 0.00x సమస్యకు అసలు కారణం option row లో మొదట 0.0 ఉండి, తర్వాత verified
 full-spectrum book `setdefault` వల్ల override కాకపోవడం. ఇప్పుడు verified book
-authoritative. 102M కి 512 bars ఇచ్చేలా base lookback 480 ➔ 512 చేశాము.
+authoritative (కానీ ఒక valid option book ను futures book తో ఎప్పుడూ replace చేయము).
+102M కి 512 bars ఇచ్చేలా base lookback 480 ➔ 512 చేశాము.
 2-sample path vote మాత్రమే 0/50/100 ఇవ్వగలదు కాబట్టి, model యొక్క p10/p50/p90
 quantile CDF నుంచి continuous probability (2%–98%) compute చేస్తున్నాము; 8+ samples
 ఉన్నప్పుడే path vote blend అవుతుంది.
@@ -104,9 +105,9 @@ consumed by the 4M/25M/102M or oscillator; **UI** = visible to the browser.
 | Index LTP (`NIFTY`, `BANKNIFTY`) | Yes, 6.48 ticks/s | Yes | Yes | Dashboard lagged 4–6.5 s behind V3 | Event-driven fast frame; every decoded tick notifies the publisher; `fast_overlay` patches the rightmost candle/LTP |
 | Index OHLC/volume 1m/5m/15m | Yes; 512 each at close | Yes | Yes | Snapshot rebuilt only on heavy cycle | Fast overlay updates current candle high/low/close; full snapshot still owns history |
 | Watched option LTP (`NIFTY 25200 CE`) | Yes, ₹239.25 at 14:56 | Yes | 4M | Stayed on CE while bias was bearish | `choose_watch_side` selects CE/PE; open trade pins exact contract |
-| Option 5-level bids/asks | Yes for selected option | Yes, in option row | 4M | `[DATA SYNC]`/4M saw 0.00x while the audit saw a valid book | Canonical merge now overwrites a zero option row with the verified non-zero book; empty depth is replaced only by a non-empty verified book |
+| Option 5-level bids/asks | Yes for selected option | Yes, in option row | 4M | `[DATA SYNC]`/4M saw 0.00x while the audit saw a valid book | Canonical merge fills only a **zero/missing** option value from the verified book and labels it `full_spectrum_fallback`; a live option book is never overwritten |
 | Option OBI_5 | Yes: 10.50 at 14:56 | Yes (option row) | 4M | Pre-chain row default 0.0 survived `setdefault()` | Authoritative non-zero override; test asserts zero → verified book path |
-| Option TBQ/TSQ | Yes: 3.5747x | Yes (option row) | 4M | Zero book fed the model | Same authoritative merge for `tbq`, `tsq`, `tbq_tsq` |
+| Option TBQ/TSQ | Yes: 3.5747x | Yes (option row) | 4M | Zero book fed the model | Same zero-only merge for `tbq`, `tsq`, `tbq_tsq`; positive option values are preserved |
 | Futures LTP/ATP/volume/amount/OI/basis | Yes; basis **+53.60** | Yes | 102M/25M | Sometimes published `basis -25384` when spot fell back to zero | Session now refuses a zero spot; falls back to socket/engine quote before chain/audit; `basis = fut - spot` only after a real spot |
 | Futures depth/OBI | Yes; futures OBI_5 0.4222 | Yes (`full_spectrum.depth`) | Directional engines | Audit's OBI and option OBI were treated as one value | Report and UI now label **futures book** vs **option book**; model 4M card is fed from the option row; no silent substitution |
 | 11-strike chain / PCR / max pain / ΔOI | Yes; final audit 37/37 | Yes | 25M/arbitrator | Chain cycle delayed gate | Chain runs in heavy background cycle; gate authority is the fast socket frame |
@@ -342,7 +343,7 @@ zone, not four chasing lines.
 
 ### Fix 5 — OBI/512/probability
 
-- verified full-spectrum depth overrides a zero option row;
+- verified full-spectrum depth fills only a zero option row;
 - base 102M lookback **480 → 512**;
 - quantile CDF continuous probability (2–98%); path vote only blended at ≥8
   samples;
@@ -370,7 +371,7 @@ zone, not four chasing lines.
 | IDLE ENTRY/SL/T1/T2 | moved with every plan tick | absent from `chart_levels`; UI clears; only ATP + static trigger | `test_idle_levels...`; `IDLE_STATIC` |
 | Bearish option | stuck CE (`NIFTY 25200 CE`) | ATM PE on bearish bias; CE on bullish; open trade locked | `test_bearish_flow...` |
 | `0 CE` label | possible when strike=0 | `NIFTY ATM CE/PE`; real label when strike exists | `contract_label` tests |
-| Option OBI fed to 4M | zero preserved by `setdefault` | verified non-zero book wins; empty book not accepted as real | session merge; depth test |
+| Option OBI fed to 4M | zero preserved by `setdefault` | zero-only fallback; a real option book (e.g. 10.50) is preserved | session merge; depth tests |
 | 102M bars | 480 requested | **512** requested, same 512 cap | `agent/kronos_ensemble.ROLE_CONFIG` |
 | 2-sample probability | 0/50/100 then damped ~55.9 | continuous 2–98 from quantile CDF; path vote only ≥8 | `test_quantile...` |
 | Paper lifecycle | not covered end to end | T1→BE→T2→close deterministic | `test_t1...` passes |
@@ -385,7 +386,7 @@ python -m pytest -q tests/test_today_full_lifecycle_audit.py \
   tests/test_health_and_ledger.py tests/test_ai_command_center.py \
   tests/test_programmatic_scanner_deck.py tests/test_live_ticks.py \
   tests/test_live_session_helpers.py tests/test_tick_engine.py
-# 50 passed
+# 51 passed
 
 python -m pytest -q tests/test_today_full_lifecycle_audit.py
 # 5 passed
