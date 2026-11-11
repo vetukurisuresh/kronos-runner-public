@@ -186,6 +186,10 @@ def _model_card(
         "model_loaded": bool(prediction),
         "inference_ms": round(float(inference_ms), 3) if inference_ms is not None else None,
         "probability_pct": probability,
+        "upside_prob": prediction.get("upside_prob") if prediction else None,
+        "downside_prob": prediction.get("downside_prob") if prediction else None,
+        "paths_up": prediction.get("paths_up") if prediction else None,
+        "samples": prediction.get("samples") if prediction else None,
         "direction": prediction.get("direction") if prediction else None,
         "state": state,
         "reason": reason,
@@ -387,12 +391,26 @@ def build_audit_snapshot(
     ki, input_ok, source, input_reason = _model_inputs(feed, symbol)
     smc = _smc_for_feed(feed, symbol, feed_live=live)
     smc_structure = (smc or {}).get("structure") or {}
+    smc_structures = (smc or {}).get("structures") if isinstance(smc, Mapping) else {}
+    # The audit verifies the *data stream*: the engine computed live structure
+    # from genuine 1m/5m/15m bars.  A missing BOS/zone is a trade-trigger fact,
+    # not a missing-feed fact, so it must not fail stream #8.
+    smc_scanned = isinstance(smc_structures, Mapping) and any(
+        isinstance(row, Mapping)
+        and (
+            _finite(row.get("swing_high")) not in (None, 0.0)
+            or _finite(row.get("swing_low")) not in (None, 0.0)
+            or row.get("bos") or row.get("active_bos") or row.get("choch")
+        )
+        for row in smc_structures.values()
+    )
     smc_ok = bool(
         smc
         and (
-            smc_structure.get("bos")
+            smc_scanned
+            or smc_structure.get("bos")
             or smc_structure.get("active_bos")
-            or float(smc_structure.get("last_swing_high") or 0.0) > 0
+            or (_finite(smc_structure.get("last_swing_high")) or 0.0) > 0
         )
     )
 
@@ -410,10 +428,12 @@ def build_audit_snapshot(
     vix_ok, vix_detail = _vix_breadth_check(spectrum)
     if smc:
         wait_zone = smc.get("wait_zone") or {}
+        active_bos = (smc_structure.get("active_bos")
+                      or smc_structure.get("bos") or "no BOS")
         smc_detail = (
-            f"{smc.get('state', '—')} · {smc.get('structure', {}).get('active_bos') or 'no BOS'}"
+            f"Structure scanned 1m/5m/15m · {smc.get('state', '—')} · {active_bos}"
             + (f" · zone ₹{wait_zone.get('spot_low')}–₹{wait_zone.get('spot_high')}"
-               if wait_zone else " · no exact zone")
+               if wait_zone else " · waiting for OB/FVG entry")
         )
     else:
         smc_detail = "No 1m/5m candles for SMC structure"

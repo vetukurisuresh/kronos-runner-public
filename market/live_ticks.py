@@ -25,6 +25,7 @@ from strategy.model_oscillator import build_oscillator_from_feed
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FEED_FILE = REPO_ROOT / "state" / "live_feed.json"
 STATE_FILE = REPO_ROOT / "state" / "latest_cloud_state.json"
+HEARTBEAT_FILE = REPO_ROOT / "state" / "live_heartbeat.json"
 
 INDEX_KEYS = {"NIFTY": "NSE_INDEX|Nifty 50", "BANKNIFTY": "NSE_INDEX|Nifty Bank"}
 #: A full-spectrum snapshot older than this must never be treated as live.
@@ -36,6 +37,36 @@ def _load(path: Path) -> dict:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
+
+
+def effective_feed(feed: dict, now: float | None = None) -> dict:
+    """Overlay the 1s socket heartbeat on the slower full-snapshot cycle.
+
+    The heavy option-chain pass can take ~5s while the V3 websocket keeps
+    delivering frames every ~150ms.  The heartbeat is stamped only from an
+    actual frame, so it is liveness evidence — not a synthetic refresh.
+    """
+    moment = time.time() if now is None else float(now)
+    beat = _load(HEARTBEAT_FILE)
+    try:
+        beat_epoch = float(beat.get("epoch") or 0.0)
+    except (TypeError, ValueError):
+        beat_epoch = 0.0
+    try:
+        feed_epoch = float(feed.get("updated_epoch") or 0.0)
+    except (TypeError, ValueError):
+        feed_epoch = 0.0
+    if beat_epoch > feed_epoch and moment - beat_epoch <= 2.0 and beat.get("connected"):
+        # A real socket frame arrived within the last 2s; the 5s snapshot may
+        # still carry socket_connected=False from the previous heavy cycle.
+        # Keep updated_epoch as the full-snapshot age (so an old chain still
+        # trips spectrum staleness).  liveness_epoch is the socket fact used by
+        # the feed gate, audit age and readiness.
+        return {**feed, "socket_connected": True,
+                "heartbeat_epoch": beat_epoch,
+                "liveness_epoch": beat_epoch,
+                "heartbeat_frame_age_ms": beat.get("socket_frame_age_ms")}
+    return feed
 
 
 def pick_price(feed: dict, symbol: str) -> float:
@@ -127,11 +158,14 @@ def countdown(now: float | None = None) -> dict[str, int]:
 def snapshot(symbol: str = "NIFTY", now: float | None = None) -> dict[str, Any]:
     """The payload pushed over SSE and polled by the phone."""
     now = now or time.time()
-    feed = _load(FEED_FILE)
+    feed = effective_feed(_load(FEED_FILE), now)
     state = _load(STATE_FILE)
     full_spectrum, spectrum_stale = _stamp_full_spectrum(feed, now)
 
-    age_ms = max(0, int((now - float(feed.get("updated_epoch") or 0)) * 1000))
+    # Socket liveness is the 1s heartbeat; the full snapshot may lag a heavy
+    # chain cycle.  Full-spectrum staleness still uses the snapshot epoch.
+    live_epoch = float(feed.get("liveness_epoch") or feed.get("updated_epoch") or 0)
+    age_ms = max(0, int((now - live_epoch) * 1000))
     flag = feed.get("market_open")
     gate = feed_state(
         feed, now=now,

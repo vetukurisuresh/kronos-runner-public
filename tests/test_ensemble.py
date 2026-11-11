@@ -40,6 +40,7 @@ from agent.kronos_ensemble import (  # noqa: E402
     ModelForecast,
     _collapse_path_batch,
     decide_trio,
+    ensemble_available,
     quantiles,
 )
 
@@ -65,9 +66,9 @@ TOKENIZERS = ("Kronos-Tokenizer-base", "Kronos-Tokenizer-2k")
 
 
 def _weights_present() -> bool:
-    models = all((WEIGHTS_DIR / role / "model.safetensors").is_file() for role in ROLES)
-    toks = all((WEIGHTS_DIR / "tokenizers" / name / "model.safetensors").is_file() for name in TOKENIZERS)
-    return models and toks
+    # Size-checked, not existence-only: a partial safetensors download must not
+    # make the integration tests attempt to load a corrupt checkpoint.
+    return ensemble_available(WEIGHTS_DIR)[0]
 
 
 WEIGHTS_PRESENT = _weights_present()

@@ -104,9 +104,9 @@ def test_edge_publisher_record_has_both_discovery_fields_and_local_mirror(tmp_pa
     assert json.loads(target.read_text(encoding="utf-8"))["edge_url"] == record["edge_url"]
 
 
-def test_runner_workflows_have_overlap_fast_restart_and_public_sync():
+def test_runner_workflows_have_overlap_fast_restart_and_public_pages_deploy():
     edge = yaml.safe_load((ROOT / ".github/workflows/02-live-market-edge.yml").read_text(encoding="utf-8"))
-    public_sync = yaml.safe_load(
+    pages = yaml.safe_load(
         (ROOT / ".github/workflows/deploy-pages.yml").read_text(encoding="utf-8")
     )
     text = (ROOT / ".github/workflows/02-live-market-edge.yml").read_text(encoding="utf-8")
@@ -116,14 +116,13 @@ def test_runner_workflows_have_overlap_fast_restart_and_public_sync():
     assert edge["permissions"]["contents"] == "write"
     assert "sleep 1" in text
     assert "KRONOS_SHIFT" in text
-    assert public_sync[True]["push"]["branches"] == ["main"]
-    sync_steps = public_sync["jobs"]["sync"]["steps"]
-    public_checkout = next(
-        step for step in sync_steps
-        if step.get("with", {}).get("repository") == "vetukurisuresh/kronos-runner-public"
+    assert pages[True]["push"]["branches"] == ["main"]
+    publish_steps = pages["jobs"]["publish"]["steps"]
+    assert any(
+        step.get("uses", "").startswith("peaceiris/actions-gh-pages@")
+        for step in publish_steps
     )
-    assert public_checkout["with"]["token"] == "${{ secrets.SECRET_PAT }}"
-    assert any("rsync" in step.get("run", "") for step in sync_steps)
+    assert any("cp -r dashboard/static/." in step.get("run", "") for step in publish_steps)
     assert (ROOT / "dashboard/static/.nojekyll").exists()
 
 

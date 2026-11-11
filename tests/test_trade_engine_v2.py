@@ -88,7 +88,14 @@ def test_official_row_parsing_and_512_backfill(tmp_path):
     assert {candle.minutes for candle in bars} == {5}
     urls = [call[1] for call in calls]
     assert any("/intraday/" in url and "/minutes/5" in url for url in urls)
-    assert any("/historical-candle/" in url and "2026-11-08/2026-10-09" in url for url in urls)
+    historical = [
+        url for url in urls
+        if "/historical-candle/" in url and "/intraday/" not in url
+    ]
+    # The 30-day archive is walked in <=30-day windows, never one wide request.
+    assert len(historical) == 2
+    assert any(url.endswith("/2026-11-08/2026-11-08") for url in historical)
+    assert any("/2026-11-07/2026-10-09" in url for url in historical)
 
 
 def test_live_engine_buckets_by_exchange_ltt_and_15m_mtf():

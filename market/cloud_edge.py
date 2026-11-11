@@ -112,6 +112,7 @@ class CloudEdge:
         self.server: subprocess.Popen | None = None
         self.tunnel: subprocess.Popen | None = None
         self.url = ""
+        self.verified = False
         self.error = ""
         self.last_publish = 0.0
         self.last_restart = 0.0
@@ -132,7 +133,8 @@ class CloudEdge:
         atexit.register(self.stop)
         self._start_tunnel()
         self._publish()
-        return {"ok": True, "port": self.port, "server_pid": self.server.pid,
+        return {"ok": True, "port": self.port,
+                "server_pid": self.server.pid if self.server is not None else None,
                 "url": self.url or None, "error": self.error or None}
 
     def tick(self) -> None:
@@ -209,7 +211,11 @@ class CloudEdge:
     def _start_server(self) -> bool:
         if self.server and self.server.poll() is None:
             return True
-        if port_open(self.host, self.port) and not self._server_alive():
+        if port_open(self.host, self.port):
+            if self._server_alive():
+                # The session may already host the dashboard; reuse it and add
+                # only the tunnel instead of spawning a duplicate predictor.
+                return True
             self.error = f"port {self.port} is held by another process"
             return False
         LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -290,6 +296,7 @@ class CloudEdge:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         self._url_event.clear()
         self.url = ""
+        self.verified = False
         log = TUNNEL_LOG.open("ab")
         try:
             self.tunnel = subprocess.Popen(
@@ -305,14 +312,21 @@ class CloudEdge:
         if not self._url_event.wait(50):
             self.error = "cloudflared produced no URL in 50s"
             return False
-        # The DNS/edge takes a few seconds to answer; retry before advertising.
-        for _ in range(6):
-            if self._verify(self.url):
+        # DNS/edge propagation can outlive the session's startup budget.  Keep
+        # the real URL and verify it in the background; readiness stays red
+        # until /api/ping actually answers.
+        threading.Thread(target=self._verify_until_live, args=(self.url,),
+                         daemon=True, name="kronos-edge-verify").start()
+        return True
+
+    def _verify_until_live(self, url: str) -> None:
+        deadline = time.time() + 300.0
+        while not self._stopped and time.time() < deadline:
+            if self._verify(url):
+                self.verified = True
                 self.error = ""
-                return True
-            time.sleep(3)
-        self.error = "tunnel URL did not answer /api/ping"
-        return False
+                return
+            time.sleep(3.0)
 
     def _read_tunnel(self, proc: subprocess.Popen, log) -> None:
         try:
@@ -345,7 +359,7 @@ class CloudEdge:
     def _publish(self, active: bool | None = None) -> dict:
         from scripts.publish_edge_url import edge_payload, publish_edge_record
 
-        active = bool(self.url) if active is None else bool(active and self.url)
+        active = bool(self.url and self.verified) if active is None else bool(active and self.url)
         body = edge_payload(
             self.url, active=active, port=self.port, host=socket.gethostname(),
         )

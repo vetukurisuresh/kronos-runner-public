@@ -466,16 +466,23 @@ def fetch_official_backfill(
     end = current.date() - timedelta(days=1)
     start = end - timedelta(days=max(int(days), 1))
     bars: list[Candle] = []
-    try:
-        bars.extend(
-            fetch_upstox_candles(
-                instrument_key, minutes, access_token=access_token, intraday=False,
-                to_date=end.isoformat(), from_date=start.isoformat(), timeout=timeout,
-                session=session,
+    # Upstox rejects very wide intraday ranges (a 90-day 15m request returns
+    # only today), so walk the archive in 30-day windows and merge.  One failed
+    # window must not discard the others.
+    window_start = start
+    while window_start <= end:
+        window_end = min(window_start + timedelta(days=29), end)
+        try:
+            bars.extend(
+                fetch_upstox_candles(
+                    instrument_key, minutes, access_token=access_token, intraday=False,
+                    to_date=window_end.isoformat(), from_date=window_start.isoformat(),
+                    timeout=timeout, session=session,
+                )
             )
-        )
-    except Exception:  # noqa: BLE001 - today's intraday may still be available
-        pass
+        except Exception:  # noqa: BLE001 - keep every window that did load
+            pass
+        window_start = window_end + timedelta(days=1)
     try:
         bars.extend(
             fetch_upstox_candles(

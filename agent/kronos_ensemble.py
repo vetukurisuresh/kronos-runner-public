@@ -32,6 +32,9 @@ BASE_BULL_THRESHOLD = 78.0
 BASE_BEAR_THRESHOLD = 22.0
 CONE_TIGHT_RATIO = 0.012  # (p90 - p10) / last_close
 DEFAULT_THREADS = 4
+#: A present-but-partial safetensors file must never count as a loaded model.
+MIN_WEIGHT_BYTES = {"base": 300_000_000, "small": 70_000_000, "mini": 12_000_000}
+MIN_TOKENIZER_BYTES = 12_000_000
 
 #: Production Monte Carlo budget. ``KRONOS_MC_SAMPLES`` overrides every role at
 #: once, which is how CI keeps a single verification run inside a few minutes.
@@ -375,10 +378,11 @@ class KronosTrioEnsemble:
         pred_len = int(config["pred_len"])
         draws = self.samples[role]
 
+        step_minutes = 1 if config["interval"] == "1m" else 5
         future = pd.date_range(
-            start=pd.Timestamp(timestamps.iloc[-1]) + pd.Timedelta(minutes=5),
+            start=pd.Timestamp(timestamps.iloc[-1]) + pd.Timedelta(minutes=step_minutes),
             periods=pred_len,
-            freq="5min",
+            freq=f"{step_minutes}min",
         )
 
         # ONE batched generation for all draws. Calling predict() in a Python
@@ -444,12 +448,29 @@ def ensemble_available(weights_root: Path | str = WEIGHTS_DIR) -> tuple[bool, st
     missing = [role for role in ROLE_CONFIG if not (root / role / "model.safetensors").is_file()]
     if missing:
         return False, f"weights missing: {missing}"
+    undersized: list[str] = []
+    for role in ROLE_CONFIG:
+        path = root / role / "model.safetensors"
+        try:
+            size = path.stat().st_size
+        except OSError:
+            size = 0
+        if size < int(MIN_WEIGHT_BYTES[role]):
+            undersized.append(f"{role}={size}B/expect>={MIN_WEIGHT_BYTES[role]}B")
+    if undersized:
+        return False, f"weights incomplete: {undersized}"
     missing_tok = [
         name for name in set(TOKENIZER_FOR_ROLE.values())
         if not (root / "tokenizers" / name / "model.safetensors").is_file()
     ]
     if missing_tok:
         return False, f"tokenizers missing: {missing_tok}"
+    short_tok = [
+        name for name in set(TOKENIZER_FOR_ROLE.values())
+        if (root / "tokenizers" / name / "model.safetensors").stat().st_size < MIN_TOKENIZER_BYTES
+    ]
+    if short_tok:
+        return False, f"tokenizers incomplete: {short_tok}"
     try:
         import torch  # noqa: F401
     except ImportError:

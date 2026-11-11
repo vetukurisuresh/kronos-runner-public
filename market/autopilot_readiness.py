@@ -284,7 +284,9 @@ def build_from_runtime(
     # A 5-hour-old fixture must never look like a live V3 socket.  The feed
     # heartbeat is the authority for every feed-derived check.
     try:
-        feed_updated = float(feed.get("updated_epoch") or 0)
+        # Socket liveness is the 1s heartbeat; the full snapshot may lag the
+        # heavy chain cycle by a few seconds.
+        feed_updated = float(feed.get("liveness_epoch") or feed.get("updated_epoch") or 0)
     except (TypeError, ValueError):
         feed_updated = 0.0
     feed_age = _age_seconds(feed_updated, current)

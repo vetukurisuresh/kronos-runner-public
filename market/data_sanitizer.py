@@ -124,7 +124,7 @@ def feed_state(
     opened = bool(present_market_flag) if market_open is None and isinstance(present_market_flag, bool) else (
         is_market_open(moment) if market_open is None else bool(market_open)
     )
-    epoch = _as_epoch(feed.get("updated_epoch"))
+    epoch = _as_epoch(feed.get("liveness_epoch") or feed.get("updated_epoch"))
     age_ms = int(max(0.0, moment.timestamp() - epoch) * 1000.0) if epoch else None
     if not opened:
         return FeedState("MARKET_CLOSED", age_ms, False, False,

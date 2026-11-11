@@ -1,71 +1,106 @@
-name: "01 - Ghost morning auth (08:30 IST)"
+name: 01 Morning Upstox Auth (08:25 IST)
 
-# Zero-touch token mint before the open. The Playwright login is skipped
-# cleanly when the credential secrets are absent, so the phone fallback stays
-# usable. The token is published to Firebase before the live-edge shift starts.
-
+# 08:25 IST = 02:55 UTC.  The `29 2` spelling in the request is 07:59 IST, not
+# 08:25; this is the corrected cron.  Scheduled workflows can be delayed by
+# GitHub, so the edge job independently verifies the token before streaming.
 on:
   schedule:
-    - cron: "0 3 * * 1-5"   # 08:30 IST, Monday-Friday
+    - cron: "55 2 * * 1-5"
   workflow_dispatch:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: kronos-morning-auth
   cancel-in-progress: false
 
+env:
+  TZ: Asia/Kolkata
+  PYTHONUNBUFFERED: "1"
+  UPSTOX_API_KEY: ${{ secrets.UPSTOX_API_KEY }}
+  UPSTOX_API_SECRET: ${{ secrets.UPSTOX_API_SECRET }}
+  UPSTOX_MOBILE: ${{ secrets.UPSTOX_MOBILE }}
+  UPSTOX_PIN: ${{ secrets.UPSTOX_PIN }}
+  UPSTOX_TOTP_SECRET: ${{ secrets.UPSTOX_TOTP_SECRET }}
+  UPSTOX_MOBILE_REDIRECT_URI: ${{ vars.UPSTOX_MOBILE_REDIRECT_URI }}
+  FIREBASE_CREDENTIALS_JSON: ${{ secrets.FIREBASE_CREDENTIALS_JSON }}
+  FIREBASE_DB_URL: ${{ secrets.FIREBASE_DB_URL }}
+  SECRET_PAT: ${{ secrets.SECRET_PAT }}
+  GITHUB_REPOSITORY: ${{ github.repository }}
+
 jobs:
-  ghost-login:
-    name: Headless Upstox login + token
+  mint:
+    name: Headless token mint + Firebase publish
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    env:
-      TZ: Asia/Kolkata
-      FIREBASE_CREDENTIALS_JSON: ${{ secrets.FIREBASE_CREDENTIALS_JSON }}
-      FIREBASE_DB_URL: ${{ secrets.FIREBASE_DB_URL }}
-      UPSTOX_API_KEY: ${{ secrets.UPSTOX_API_KEY }}
-      UPSTOX_API_SECRET: ${{ secrets.UPSTOX_API_SECRET }}
-      UPSTOX_MOBILE_REDIRECT_URI: ${{ vars.UPSTOX_MOBILE_REDIRECT_URI }}
-      UPSTOX_MOBILE: ${{ secrets.UPSTOX_MOBILE }}
-      UPSTOX_PIN: ${{ secrets.UPSTOX_PIN }}
-      UPSTOX_TOTP_SECRET: ${{ secrets.UPSTOX_TOTP_SECRET }}
-      SECRET_PAT: ${{ secrets.SECRET_PAT }}
-      GITHUB_REPOSITORY: ${{ github.repository }}
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
           cache: pip
-          cache-dependency-path: requirements-auth.txt
 
-      - name: Install Playwright, pyotp and Firebase deps
+      - name: Install auth-only dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements-auth.txt
-          python -m playwright install --with-deps chromium
+          pip install requests pyotp playwright pynacl google-auth google-auth-httplib2 protobuf python-dotenv
 
-      - name: Ensure public readiness read rule
+      - name: Install headless Chromium
+        run: python -m playwright install --with-deps chromium
+
+      - name: Mint with 3 retries
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            echo "auth attempt ${attempt}/3"
+            if python scripts/auto_upstox_morning_login.py --require --push-secret; then
+              exit 0
+            fi
+            sleep 20
+          done
+          echo "Upstox auth failed after 3 attempts" >&2
+          exit 1
+
+      - name: Verify live profile
+        run: |
+          python - <<'PY'
+          import os, sys
+          sys.path.insert(0, ".")
+          from market.upstox_health import load_access_token, verify_token
+          token = load_access_token()
+          if not token:
+              raise SystemExit("no token after mint")
+          probe = verify_token(token)
+          print(f"profile HTTP {probe.get('status')} ok={probe.get('ok')}")
+          raise SystemExit(0 if probe.get("ok") else 1)
+          PY
+
+      - name: Show safe readiness
+        if: always()
         run: |
           python - <<'PY'
           import json
-          from state.firebase_sync import ensure_public_read_rules
-          result = ensure_public_read_rules()
-          print(json.dumps({"ok": result.get("ok"), "status": result.get("status")}))
-          raise SystemExit(0 if result.get("ok") else 1)
+          from pathlib import Path
+          p = Path("state/autopilot_readiness.json")
+          if p.is_file():
+              data = json.loads(p.read_text())
+              print({k: data.get(k) for k in ("status", "auth_minted", "auth_verified", "minted_at_ist")})
+          else:
+              print("readiness file not written")
           PY
 
-      - name: Mint today's token headlessly
-        run: python scripts/auto_upstox_morning_login.py --push-secret
-
-      - name: Upload the login screenshot on failure
-        if: failure()
+      - name: Upload auth evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: upstox-login-debug-${{ github.run_id }}
-          path: state/logs/upstox_login_*.png
+          name: kronos-morning-auth-${{ github.run_id }}
+          path: |
+            state/autopilot_readiness.json
+            state/logs/
           if-no-files-found: ignore
           retention-days: 7

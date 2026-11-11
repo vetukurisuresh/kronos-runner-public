@@ -148,6 +148,8 @@ IST = timezone(timedelta(hours=5, minutes=30))
 HEARTBEAT = REPO_ROOT / "state" / "live_feed.json"
 EXPIRY_HERO_MODE_FILE = REPO_ROOT / "state" / "expiry_hero_mode.json"
 SCALPER_MODE_FILE = REPO_ROOT / "state" / "scalper_mode.json"
+#: 1s liveness beat driven by real V3 frames, independent of the heavy chain cycle.
+HEARTBEAT_FILE = REPO_ROOT / "state" / "live_heartbeat.json"
 HERO_DESK_FILE = REPO_ROOT / HERO_GUARD_FILE
 SCALPER_STATE_FILE = REPO_ROOT / HOUSE_MONEY_FILE
 STATE_FILE = REPO_ROOT / "state" / "latest_cloud_state.json"
@@ -216,6 +218,44 @@ def roll(cur: dict | None, price: float, now: float, minutes: int = 1,
     return cur, None
 
 
+class SocketHeartbeat(threading.Thread):
+    """Publish a liveness beat from actual socket frames every second.
+
+    The option-chain cycle can block for several seconds; the websocket keeps
+    ticking underneath it.  This beat only records that a real frame arrived
+    inside the freshness window, never a price or a synthetic value.
+    """
+
+    def __init__(self, socket: "SocketWatch", path, interval: float = 1.0) -> None:
+        super().__init__(daemon=True, name="kronos-socket-heartbeat")
+        self.socket = socket
+        self.path = path
+        self.interval = max(float(interval), 0.25)
+        self.stop = threading.Event()
+
+    def run(self) -> None:
+        import os
+
+        while not self.stop.is_set():
+            try:
+                last = float(self.socket.last_frame or 0.0)
+                age_ms = (time.time() - last) * 1000.0 if last else None
+                if self.socket.streaming() and age_ms is not None and age_ms <= 1500:
+                    body = {
+                        "epoch": round(time.time(), 3),
+                        "as_of": datetime.now(tz=IST).isoformat(timespec="milliseconds"),
+                        "socket_frame_age_ms": round(age_ms),
+                        "socket_frames": int(self.socket.frames),
+                        "connected": True,
+                    }
+                    temp = self.path.with_suffix(".tmp")
+                    temp.write_text(json.dumps(body), encoding="utf-8")
+                    os.replace(temp, self.path)
+            except Exception:  # noqa: BLE001 - a missed beat must never kill the feed
+                pass
+            self.stop.wait(self.interval)
+
+
 class SocketWatch(threading.Thread):
     """Keep a V3 socket open; Upstox silently drops TEXT subscribe frames."""
 
@@ -282,13 +322,19 @@ class SocketWatch(threading.Thread):
         import websocket
 
         ws.settimeout(5)
+        idle_since = time.time()
         while not self.stop.is_set():
             try:
                 message = ws.recv()
             except websocket.WebSocketTimeoutException:
+                # A half-open TCP connection can return timeouts forever.  If no
+                # frame has arrived for 12s, force reconnect_forever to act.
+                if time.time() - idle_since > 12.0:
+                    raise ConnectionError("Upstox feed idle for 12s") from None
                 continue
             if not message:
                 raise ConnectionError("Upstox feed closed")
+            idle_since = time.time()
             self.frames += 1
             self.bytes_total += len(message)
             self.last_frame = time.time()
@@ -536,8 +582,11 @@ def warm_engine(
         counts[name] = {}
         for minutes in (1, 5, 15):
             try:
+                # 30 calendar days yields only ~507 15m bars; 90 days fills
+                # the full 512-bar model contract from genuine exchange candles.
                 bars = fetch_official_backfill(
-                    key, minutes, access_token=token, days=30, timeout=15,
+                    key, minutes, access_token=token,
+                    days=90 if minutes == 15 else 30, timeout=15,
                 )
                 counts[name][f"{minutes}m"] = engine.seed(key, minutes, bars)
             except Exception as exc:  # noqa: BLE001 - a REST outage is logged, never invented
@@ -763,6 +812,8 @@ def main(argv: list[str] | None = None) -> int:
     ))
     socket = SocketWatch(token, initial_keys=initial_keys)
     socket.start()
+    heartbeat = SocketHeartbeat(socket, HEARTBEAT_FILE)
+    heartbeat.start()
     engine = UpstoxTickEngine()
     engine.register(INDIA_VIX, "INDIA VIX", "index")
     for name, key in futures_keys.items():
@@ -2914,13 +2965,54 @@ def main(argv: list[str] | None = None) -> int:
             int((payload.get("buffer_1m") or {}).get(name) or 0)
             for name in KEYS
         ) if payload.get("buffer_1m") else 0
-        model_ready = min_buffer >= 512 and model_bars >= 512
-        model_feeds = {
-            name: {"ready": model_ready, "bars": model_bars, "features": 6,
-                   "source": "shared-ohlcva"}
-            for name in ("base", "small", "mini")
-        }
-        edge_ready = bool(edge and edge.url)
+        try:
+            predictor_status = json.loads(
+                (REPO_ROOT / "state" / "kronos_predictor_status.json").read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError):
+            predictor_status = {}
+        predictor_roles = predictor_status.get("roles") or {}
+        try:
+            from agent.kronos_ensemble import ensemble_available
+
+            weights_ok, weights_reason = ensemble_available()
+        except Exception as exc:  # noqa: BLE001 - readiness must never crash the session
+            weights_ok, weights_reason = False, f"{type(exc).__name__}: {exc}"
+        feeds_warm = min_buffer >= 512 and model_bars >= 512
+        model_feeds = {}
+        for role in ("base", "small", "mini"):
+            row = predictor_roles.get(role) or {}
+            try:
+                age_sec = float(row.get("age_sec"))
+            except (TypeError, ValueError):
+                age_sec = None
+            fresh = bool(
+                age_sec is not None
+                and age_sec <= 120.0
+                and row.get("probability_pct") is not None
+            )
+            model_feeds[role] = {
+                "ready": bool(weights_ok and feeds_warm and fresh),
+                "bars": model_bars,
+                "features": 6,
+                "source": "live-predictor",
+                "probability_pct": row.get("probability_pct"),
+                "age_sec": round(age_sec, 1) if age_sec is not None else None,
+            }
+        model_ready = all(row["ready"] for row in model_feeds.values())
+        live_cards = [
+            f"{role} {row['probability_pct']}% ({row['age_sec']}s)"
+            for role, row in model_feeds.items() if row["ready"]
+        ]
+        if model_ready:
+            model_detail = " · ".join(live_cards)
+        elif not weights_ok:
+            model_detail = weights_reason
+        elif not feeds_warm:
+            model_detail = f"WARMING · min {min_buffer}/512 bars"
+        else:
+            model_detail = "PREDICTOR WARMING · no fresh 3/3 cards yet"
+        edge_ready = bool(edge and edge.url and getattr(edge, "verified", False))
         checks = build_checks(
             auth_ok=auth_verified,
             runner_ok=True,
@@ -2935,7 +3027,7 @@ def main(argv: list[str] | None = None) -> int:
                 "edge": (f"CONNECTED · {edge.url}" if edge_ready else "TUNNEL NOT PUBLISHED"),
                 "socket": f"{payload.get('tick_rate', 0)} ticks/s · chain {min_chain}/11",
                 "bars": f"min {min_buffer}/512 · futures volume fused",
-                "models": f"102M/25M/4M · {model_bars}×6 feeds",
+                "models": model_detail,
             },
         )
         if checks["all_green"] and not ready_at_ist:
@@ -3024,6 +3116,7 @@ def main(argv: list[str] | None = None) -> int:
 
         time.sleep(max(0.0, 1.0 - (time.time() - cycle)))
 
+    heartbeat.stop.set()
     socket.stop.set()
     story.session_summary(spot=float((payload["spot"].get("NIFTY") or {}).get("ltp") or 0.0),
                           pnl=float((payload["trade"].get("NIFTY") or {}).get("live_pnl_rs") or 0.0),

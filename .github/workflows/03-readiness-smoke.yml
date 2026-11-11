@@ -1,0 +1,66 @@
+name: 03 08:40 Readiness Smoke Test
+
+# 08:41 IST = 03:11 UTC.  This is deliberately separate from the trading
+# runner: it fails visibly if Firebase never receives a complete, on-time
+# READY_0840_ALL_SYSTEMS_GO record.  It reads only the public readiness path.
+#
+# Manual dispatch defaults to diagnostic mode so an off-hours wiring check can
+# prove Firebase is reachable without pretending the six live checks are green.
+# The scheduled run and an explicit strict dispatch still enforce 6/6 at 08:40.
+
+on:
+  schedule:
+    - cron: "11 3 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Strict 6/6 gate or off-hours wiring diagnostic"
+        required: true
+        default: diagnostic
+        type: choice
+        options:
+          - diagnostic
+          - strict
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kronos-readiness-smoke
+  cancel-in-progress: false
+
+env:
+  TZ: Asia/Kolkata
+  PYTHONUNBUFFERED: "1"
+  FIREBASE_DB_URL: ${{ secrets.FIREBASE_DB_URL }}
+
+jobs:
+  verify:
+    name: Verify 08:40 publication
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install smoke dependency
+        run: python -m pip install --upgrade pip requests
+
+      - name: Check readiness
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] \
+             && [ "${{ inputs.mode }}" = "diagnostic" ]; then
+            echo "Manual diagnostic mode: strict 6/6 gate is not asserted."
+            python scripts/check_0840_readiness.py --diagnostic
+          else
+            echo "Strict mode: requiring READY_0840_ALL_SYSTEMS_GO (6/6)."
+            python scripts/check_0840_readiness.py
+          fi

@@ -411,13 +411,15 @@ class Handler(SimpleHTTPRequestHandler):
             from market.autopilot_readiness import build_from_runtime, load_readiness
             from market.upstox_health import load_access_token, load_token_meta
 
+            from market.live_ticks import effective_feed
+
             feed_path = REPO_ROOT / "state" / "live_feed.json"
             try:
                 feed = json.loads(feed_path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 feed = {}
             payload = build_from_runtime(
-                feed=feed,
+                feed=effective_feed(feed),
                 readiness=load_readiness(),
                 token_present=bool(load_access_token()),
                 token_meta=load_token_meta(),
@@ -615,6 +617,8 @@ class Handler(SimpleHTTPRequestHandler):
                 self._json({"ok": False, "reason": f"journal build failed: {exc}"}, status=500)
             return
         if parsed.path == "/api/model-audit":
+            from market.live_ticks import effective_feed
+            from model.live_predictor import ready_predictors, start as start_live_predictor
             from model.tri_model_orchestrator import build_audit_snapshot
 
             feed_path = REPO_ROOT / "state" / "live_feed.json"
@@ -622,7 +626,9 @@ class Handler(SimpleHTTPRequestHandler):
                 feed = json.loads(feed_path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 feed = {}
-            self._json(build_audit_snapshot(feed))
+            start_live_predictor()
+            self._json(build_audit_snapshot(effective_feed(feed),
+                                            predictors=ready_predictors()))
             return
         if parsed.path == "/api/live":
             payload: dict = {"ok": True, "telemetry": [], "money": {}, "traffic": None}
@@ -1000,6 +1006,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     TICK_HUB.start_watcher()
+    try:
+        from model.live_predictor import start as start_live_predictor
+
+        start_live_predictor()
+    except Exception as exc:  # noqa: BLE001 - the terminal still serves without weights
+        print(f"  model predictor unavailable: {type(exc).__name__}: {exc}")
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"KRONOS terminal  ->  http://localhost:{args.port}")
     print(f"serving           ->  {STATIC}")
