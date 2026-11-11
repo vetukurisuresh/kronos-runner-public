@@ -46,6 +46,10 @@ from execution.trading_cutoff import (  # noqa: E402
     SQUARE_OFF_REASON,
     cutoff_state,
 )
+from execution.autonomous_trade_manager import (  # noqa: E402
+    create_autonomous_trade,
+    manage_autonomous_trade,
+)
 from execution.pro_money_manager import (  # noqa: E402
     HERO_GUARD_FILE,
     HeroTradeDesk,
@@ -82,6 +86,7 @@ from market.upstox_stream import Candle  # noqa: E402
 from market.data_sanitizer import feed_state, is_market_open  # noqa: E402
 from market.programmatic_telemetry import ProgrammaticTelemetry  # noqa: E402
 from state.telugu_narration_logger import ProgrammaticBrainLogger  # noqa: E402
+from strategy.multi_angle_playbook_engine import evaluate_playbooks  # noqa: E402
 from strategy.model_oscillator import build_oscillator_from_feed  # noqa: E402
 from market.upstox_full_decoder import (  # noqa: E402
     FullSpectrumBook,
@@ -2174,6 +2179,90 @@ def main(argv: list[str] | None = None) -> int:
                 except Exception as exc:  # noqa: BLE001 - never crash the desk
                     print(f"p90 top exit failed for {name}: {exc}", flush=True)
 
+            # ---- four-angle autonomous playbooks (parallel, non-destructive) ----
+            # The old NO_TRADE traffic light remains useful for the legacy
+            # reversal checklist, but it must never veto a live 87.5% trend
+            # backed by a one-sided option book.  The playbook gate below uses
+            # the actual feed freshness, cutoff and risk guard only.
+            playbook_option = {
+                "strike_price": strike, "option_type": side, "ltp": ltp,
+                "atp_vwap": atp, "obi_5": option_obi, "tbq_tsq": option_flow,
+                "bid": float(option_quote.bid if option_quote else 0.0),
+                "ask": float(option_quote.ask if option_quote else 0.0),
+                "oi_change_5m_pct": oi_change, "delta": option_delta,
+                "candles_1m": hist,
+                "depth": {
+                    "obi_5": option_obi, "tbq_tsq": option_flow,
+                    "bids": option_quote.bids if option_quote else [],
+                    "asks": option_quote.asks if option_quote else [],
+                },
+            }
+            playbook_feed = dict(payload)
+            playbook_feed["spot"] = dict(payload.get("spot") or {})
+            playbook_feed["option"] = dict(payload.get("option") or {})
+            playbook_feed["option"][name] = playbook_option
+            playbook_feed["smc"] = dict(payload.get("smc") or {})
+            playbook_feed["model_brain"] = dict(payload.get("model_brain") or {})
+            playbook_feed["model_brain"][name] = plan
+            playbook_feed["model_oscillator"] = {
+                **(payload.get("model_oscillator") or {}),
+                "bullish_upside_prob_pct": bull_now,
+                "bearish_downside_prob_pct": bear_now,
+            }
+            playbook_feed["full_spectrum"] = dict(payload.get("full_spectrum") or {})
+            playbook_feed["option_chain"] = {name: chain_cache.get(name) or []}
+            playbook_feed["trade"] = {name: trade}
+            playbook_feed["updated_at"] = now_iso
+            playbook_feed["liveness_epoch"] = cycle
+            playbook_now = evaluate_playbooks(playbook_feed, symbol=name)
+            payload.setdefault("playbooks", {})[name] = playbook_now
+            if name == "NIFTY":
+                payload["auto_pick"] = playbook_now
+
+            if (not trade and playbook_now.get("auto_execute")
+                    and cutoff["new_entries_allowed"] and not feed_stale
+                    and not payload.get("entries_suspended")):
+                auto_side = str(playbook_now.get("side") or "").upper()
+                if auto_side in {"CE", "PE"} and auto_side != side:
+                    # Never fill a PE thesis on the CE chart.  Arm the selected
+                    # leg and let the next chain cycle subscribe its real book.
+                    sniper_pending[name] = auto_side
+                elif auto_side in {"CE", "PE"}:
+                    risk_check = guard.can_open("A+")
+                    if risk_check.get("ok"):
+                        try:
+                            trade = create_autonomous_trade(
+                                playbook_now, entry_at=now_iso,
+                            )
+                        except (TypeError, ValueError) as exc:
+                            print(f"auto entry skipped for {name}: {exc}", flush=True)
+                            trade = None
+                        if trade:
+                            trade["instrument_key"] = instrument_key
+                            trade["mfe_price"] = round(ltp, 2)
+                            trade["mae_price"] = round(ltp, 2)
+                            trade["sl_points"] = float(playbook_now["entry"].get("risk_points") or 0.0)
+                            trade["auto_stage"] = 1
+                            trade["auto_stage_label"] = "ENTRY_FILLED"
+                            state["trade"] = trade
+                            state["risk_recorded"] = False
+                            state["story_trade"] = False
+                            state["ledger_sig"] = None
+                            guard.register_entry("A+")
+                            hud["trades_today"] = int(hud.get("trades_today") or 0) + 1
+                            hud["sniper_trades"] = guard.trades
+                            save_hud(hud)
+                            guard.save(RISK_FILE)
+                            pending_now = pending_setups.get(name)
+                            if pending_now:
+                                ledger.remove_missed(str(pending_now.get("setup_id") or ""))
+                                pending_setups.pop(name, None)
+                            print(
+                                f"AUTO PLAYBOOK FILL {trade['option_symbol']} @ Rs{ltp:.2f} "
+                                f"[{trade['playbook_id']} {trade['playbook_score']:.1f}]",
+                                flush=True,
+                            )
+
             plan_strike = str(plan.get("strike") or symbol)
             setup_id = f"{today_ist()}|{name}|{plan_strike}|{side}"
             now_iso = datetime.now(tz=IST).isoformat(timespec="seconds")
@@ -2468,6 +2557,7 @@ def main(argv: list[str] | None = None) -> int:
                 low_5m = min((c["low"] for c in hist[-5:]), default=None)
                 low_1m = hist[-1]["low"] if hist else None
                 scalp_trade = bool(trade.get("scalp_mode"))
+                auto_trade = bool(trade.get("auto_executed"))
                 if scalp_trade and trade.get("continuous_scalp"):
                     scalp_update = manage_continuous_scalp(
                         trade, ltp,
@@ -2594,6 +2684,24 @@ def main(argv: list[str] | None = None) -> int:
                             )
                     elif hero_update.get("stage1") or hero_update.get("stage2"):
                         save_hud(hud)
+                elif auto_trade:
+                    option_ema5 = ema_value([
+                        float(bar.get("close") or 0.0) for bar in hist[-30:]
+                    ], 5)
+                    prior_1m_low = (float(hist[-2].get("low") or 0.0)
+                                    if len(hist) >= 2 else 0.0)
+                    auto_update = manage_autonomous_trade(
+                        trade, ltp,
+                        obi_5=(option_obi if option_obi > 0 else 1.0),
+                        ema5=option_ema5,
+                        prior_1m_low=prior_1m_low,
+                    )
+                    legs = list(auto_update.get("legs") or [])
+                    if auto_update.get("events"):
+                        trade.setdefault("auto_events", []).extend(auto_update["events"])
+                    if str(trade.get("status") or "").upper() == "CLOSED":
+                        state["reentry_armed"] = True
+                    save_hud(hud)
                 else:
                     smc_payload = payload.get("smc", {}).get(name) or {}
                     structures = smc_payload.get("structures") or {}

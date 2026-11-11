@@ -1103,6 +1103,16 @@ body.tl-open{overflow:hidden!important}
   .exec-close{margin-left:auto;border:1px solid #853947;background:#2a0b12;color:#ff9aa5;border-radius:5px;padding:4px 6px;font:800 7.5px 'JetBrains Mono',monospace;cursor:pointer}
   .model-verdict{flex:1;min-width:220px;border:1px solid #244b62;border-radius:5px;background:#071722;color:#9ed8f5;padding:3px 6px;font:700 8px 'JetBrains Mono',monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .model-verdict.bull{color:#7cf2c3;border-color:#21785b}.model-verdict.bear{color:#ff9aa5;border-color:#853947}
+  .playbook-radar{flex:0 0 auto;display:flex;align-items:center;gap:7px;min-height:34px;padding:4px 8px;background:linear-gradient(90deg,#07131d,#0a1b27 55%,#07131d);border-bottom:1px solid #1d3b50;overflow:hidden;white-space:nowrap;z-index:900}
+  .pb-headline{font:800 8px 'JetBrains Mono',monospace;color:#8affd0;border:1px solid #21785b;background:#09251d;border-radius:5px;padding:4px 7px;min-width:245px;overflow:hidden;text-overflow:ellipsis}
+  .pb-headline.waiting{color:#ffd479;border-color:#7a6428;background:#241d08}
+  .pb-angles{display:flex;align-items:center;gap:5px;min-width:0;overflow:auto;scrollbar-width:none}
+  .pb-angles::-webkit-scrollbar{display:none}
+  .pb-angle{display:inline-flex;align-items:center;gap:4px;border:1px solid #29475b;border-radius:5px;background:#081722;color:#86a7bb;padding:4px 6px;font:700 7.5px 'JetBrains Mono',monospace;white-space:nowrap}
+  .pb-angle b{color:#d9edfa;font-weight:800}.pb-angle em{font-style:normal;color:#ffd479}.pb-angle.firing{border-color:#1f8f68;background:#09271e;color:#7cf2c3}.pb-angle.firing em{color:#8affd0}
+  .pb-pick{margin-left:auto;border:1px solid #2b607d;background:#0a2433;color:#9fe6ff;border-radius:5px;padding:4px 7px;font:700 7.5px 'JetBrains Mono',monospace;max-width:36vw;overflow:hidden;text-overflow:ellipsis}
+  @media(max-width:980px){.pb-headline{min-width:0;max-width:27vw}.pb-pick{display:none}}
+  @media(max-width:760px){.playbook-radar{min-height:30px;padding:3px 5px}.pb-headline{font-size:6.5px;max-width:34vw}.pb-angle{font-size:6.5px;padding:3px 4px}.pb-angle .pb-angle-name{display:none}}
   .contract-selection{display:none;border-top:1px solid #1d3b50;border-bottom:1px solid #1d3b50;background:#07151f;padding:5px 8px;gap:8px;align-items:center;flex-wrap:wrap}
   .contract-selection.show{display:flex}
   .contract-badge{font:800 8.5px 'JetBrains Mono',monospace;color:#9fe6ff;border:1px solid #2b607d;background:#0a2433;border-radius:5px;padding:4px 6px;white-space:nowrap}
@@ -1449,6 +1459,16 @@ body.tl-open{overflow:hidden!important}
 <div id="sidebarScrim"></div>
 
 <main class="pro-main">
+  <div class="playbook-radar" id="playbookRadar" aria-label="Four autonomous playbook radar">
+    <div class="pb-headline waiting" id="playbookHeadline">⏳ FOUR-ANGLE RADAR · WAITING FOR LIVE FEED</div>
+    <div class="pb-angles" id="playbookAngles">
+      <span class="pb-angle" data-pb="TREND_SURF_PULLBACK"><span class="pb-angle-name">🌊 Trend Surf</span> <b>—</b></span>
+      <span class="pb-angle" data-pb="ORDERFLOW_MOMENTUM_IGNITION"><span class="pb-angle-name">⚡ OrderFlow Burst</span> <b>—</b></span>
+      <span class="pb-angle" data-pb="SMC_EXTREME_REVERSAL_SNIPER"><span class="pb-angle-name">🎯 SMC Sweep</span> <b>—</b></span>
+      <span class="pb-angle" data-pb="WRITER_TRAP_GAMMA_SQUEEZE"><span class="pb-angle-name">🔥 OI Squeeze</span> <b>—</b></span>
+    </div>
+    <div class="pb-pick" id="autoPickPill">AUTO-PICK: WAITING</div>
+  </div>
   <div id="panes" data-layout="split">
     <section class="pane spot">
       <div class="chart-dock">
@@ -3837,9 +3857,10 @@ function paintModelVerdict(t){
   const pill = $('#modelVerdictPill');
   if(!pill) return;
   const p = (t && t.model_projection) || {};
+  const pb = (t && t.playbooks && t.playbooks[liveSymbol()]) || {};
   const m = ((t && t.model_brain) || {})[liveSymbol()] || {};
-  const total = Number(p.paths_total || m.paths_total || 0);
-  const bullish = Number(p.paths_bullish != null ? p.paths_bullish : m.paths_up || 0);
+  const total = Number(p.paths_total || (pb.paths_bullish_of_100 != null ? 100 : 0) || m.paths_total || 0);
+  const bullish = Number(p.paths_bullish != null ? p.paths_bullish : (pb.paths_bullish_of_100 != null ? pb.paths_bullish_of_100 : m.paths_up || 0));
   if(!total){ pill.textContent = '🧠 150-Candle × 100-Ways: WAITING FOR PROJECTION'; pill.className='model-verdict'; return; }
   const pct = total ? (100*bullish/total) : 0;
   const p10 = Number(p.p10), p50 = Number(p.p50), p90 = Number(p.p90);
@@ -3878,6 +3899,37 @@ function paintContractSelection(t){
   }
 }
 
+function paintPlaybookRadar(t){
+  const host = $('#playbookAngles');
+  const headline = $('#playbookHeadline');
+  const pick = $('#autoPickPill');
+  if(!host || !headline) return;
+  const symbol = liveSymbol();
+  const pb = (t && t.playbooks && t.playbooks[symbol]) || (t && t.playbooks && t.playbooks.NIFTY) || (t && t.auto_pick) || {};
+  const rows = Array.isArray(pb.radar) ? pb.radar : [];
+  if(!rows.length){
+    headline.textContent = '⏳ FOUR-ANGLE RADAR · WAITING FOR LIVE FEED';
+    headline.className = 'pb-headline waiting';
+    if(pick) pick.textContent = 'AUTO-PICK: WAITING FOR 4-ANGLE SCAN';
+    return;
+  }
+  const byId = Object.fromEntries(rows.map(row=>[row.id,row]));
+  host.querySelectorAll('.pb-angle').forEach(el=>{
+    const row = byId[el.dataset.pb] || {};
+    const firing = !!row.trigger;
+    el.classList.toggle('firing', firing);
+    const icon = firing ? '🟢 FIRING' : '⏳';
+    const name = el.querySelector('.pb-angle-name');
+    if(name) name.textContent = row.label || name.textContent;
+    const score = Number(row.score);
+    el.innerHTML = `<span class="pb-angle-name">${row.label || el.dataset.pb}</span> <b>${Number.isFinite(score)?score.toFixed(0):'—'}%</b> <em>${icon}</em>`;
+  });
+  const winner = pb.winner || {};
+  headline.textContent = winner.key ? `✅ ${winner.angle || 'ANGLE'} · ${winner.short || winner.label || winner.key} · ${Number(winner.score).toFixed(0)}%` : '⏳ FOUR-ANGLE RADAR · NO PLAYBOOK FIRING';
+  headline.className = 'pb-headline' + (winner.key ? '' : ' waiting');
+  if(pick) pick.textContent = pb.auto_pick_reason || pick.textContent;
+}
+
 function paintExecutionHud(t){
   const hud = $('#liveOrderHud');
   if(!hud) return;
@@ -3891,17 +3943,23 @@ function paintExecutionHud(t){
   const sl = Number(tr.current_trailing_sl || tr.sl_price || 0);
   const t1 = Number(tr.target_1 || tr.t1 || 0), t2 = Number(tr.target_2_p90 || tr.target_2 || 0);
   const badge = $('#execBadge');
-  if(badge) badge.textContent = `✅ ${tr.test_order || tr.sniper_grade === 'PAPER_TEST' ? 'PAPER' : (MODE.real ? 'LIVE' : 'PAPER')} ORDER EXECUTED · BUY ${sym} @ ₹${fmt(entry,2)} (${qty} Qty)`;
+  const auto = !!tr.auto_executed;
+  const angleNo = Number(tr.playbook_angle || 0);
+  const angleName = String(tr.playbook_label || 'FOUR-ANGLE').toUpperCase();
+  if(badge) badge.textContent = auto
+    ? `✅ AUTO-EXECUTED [ANGLE ${angleNo || '—'}: ${angleName}] · BUY ${sym} @ ₹${fmt(entry,2)}`
+    : `✅ ${tr.test_order || tr.sniper_grade === 'PAPER_TEST' ? 'PAPER' : (MODE.real ? 'LIVE' : 'PAPER')} ORDER EXECUTED · BUY ${sym} @ ₹${fmt(entry,2)} (${qty} Qty)`;
   const t1Done = !!(tr.t1_booked || tr.t1_hit || Number(tr.t1_booked_qty)>0);
-  const slDone = t1Done || !!(tr.sl_trailed_to_cost) || (sl > 0 && entry > 0 && sl >= entry - 0.01);
+  const shieldDone = !!(tr.micro_shield_armed || tr.sl_trailed_to_cost || t1Done);
+  const t2Done = !!(tr.t2_booked || tr.runner_active);
   const stages = [
-    ['✅ ENTRY', `₹${fmt(entry,2)} · ${qty} Qty`, true],
-    [`${t1Done?'✅':'🎯'} T1`, `₹${fmt(t1,2)} · 50% (${Math.round(qty/2)} Qty)`, t1Done],
-    [`${slDone?'✅':'🛡️'} SL`, t1Done ? `TRAILED TO COST ₹${fmt(entry+ (entry*0.005),2)}` : `₹${fmt(sl,2)}`, slDone],
-    [`${t1Done?'🚀':'⏳'} T2`, `₹${fmt(t2,2)} · GEAR-${tr.tsl_gear||5} RUNNER`, t1Done],
+    [`${entry>0?'✅':'⏳'} Entry Filled`, `₹${fmt(entry,2)} · ${qty} Qty`, entry>0],
+    [`${shieldDone?'✅':'🛡️'} Shield Armed`, `SL ₹${fmt(sl,2)}`, shieldDone],
+    [`${t1Done?'✅':'🎯'} T1 50% Booked`, `₹${fmt(t1,2)} · ${Math.round(qty/2)} Qty`, t1Done],
+    [`${t2Done?'🚀':'⏳'} T2 Runner`, `₹${fmt(t2,2)} · GEAR-${tr.tsl_gear||5} · ${t2Done?'TRAILING':'WAITING'}`, t2Done],
   ];
   const track = $('#execTrack');
-  if(track) track.innerHTML = stages.map(([label,val,done],i)=>`<span class="exec-step ${done?'done':(i===1&&t1Done?'live':'')}">${label}: ${val}</span>`).join('');
+  if(track) track.innerHTML = stages.map(([label,val,done],i)=>`<span class="exec-step ${done?'done':(!done&&i===0?'live':'')}">${label}: ${val}</span>`).join('');
   const close = $('#execCloseBtn');
   if(close && !close.dataset.bound){ close.dataset.bound='1'; close.addEventListener('click', ()=>{ try{ closePosition(); }catch(e){} }); }
 }
@@ -3962,6 +4020,7 @@ function applyTick(t){
   }
   LIVE.opt = t.option || LIVE.opt;
   LIVE.trade = t.active_trade || null;
+  paintPlaybookRadar(t);
   paintExecutionHud(t);
   paintModelVerdict(t);
   paintContractSelection(t);

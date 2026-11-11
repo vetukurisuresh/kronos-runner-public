@@ -21,6 +21,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
+from strategy.multi_angle_playbook_engine import evaluate_playbooks
+
 IST = timezone(timedelta(hours=5, minutes=30), name="IST")
 SNIPER_THRESHOLD = 78.0
 SCALP_THRESHOLD = 72.0
@@ -358,6 +360,9 @@ class MasterSignalArbitrator:
         sleeve_b = choose(candidates_b, self.sniper_threshold)
         sleeve_a = choose(candidates_a, self.scalp_threshold)
         exit_guard = _exit_guard(feed, symbol)
+        playbooks = evaluate_playbooks(
+            feed, symbol=symbol, now=moment, data_gate=gate,
+        )
         return {
             "ok": gate["allowed"],
             "symbol": symbol,
@@ -370,6 +375,10 @@ class MasterSignalArbitrator:
             "sleeve_b": sleeve_b,
             "sleeve_a": sleeve_a,
             "exit_guard": exit_guard,
+            "playbooks": playbooks,
+            "playbook": playbooks.get("winner"),
+            "auto_execute": bool(playbooks.get("auto_execute")),
+            "auto_pick_reason": playbooks.get("auto_pick_reason"),
             "latency_us": round(float(latency_us or 0.0), 2),
             "engine_order": {
                 "B": list(SLEEVE_B_ENGINES),

@@ -414,17 +414,103 @@ git diff --check
 2. **Socket-to-browser latency must be measured in the next session.** The fast
    lane is event-driven and the local patch is sub-millisecond at p95, but the
    browser paint path over the tunnel requires a live frame and a live client.
-3. **Model inference is still expensive.** `samples=2` is sufficient for a
-   direction card but does not give a high-confidence forecast. The probability
-   is now continuous and honest; it does not manufacture a 78% signal.
+3. **The old 2-sample ceiling is closed in the forecast contract.** Each role
+   now publishes a vectorized 100-path conditional projection over the last
+   150 candles, while the neural checkpoint still supplies the p10/p50/p90
+   backbone. `samples=2` remains only a neural-speed test setting, never the
+   public forecast count. The projection is labelled
+   `VECTORIZED_100WAY_150CANDLE`, not raw neural inference.
 4. **The 4M option book can legitimately be empty** when the selected contract
    has no five-level depth. The UI will show zero and the model will not invent
    a book; this is correct fail-closed behaviour.
 5. **Historical zero values remain in old artifacts** under `reports/`. They are
    evidence of the old bug, not live state. The report deliberately does not
    hide them.
-6. **Full test suite** was not run end-to-end tonight; the focused suite covers
-   the changed paths. A broader suite should be run before the next live open.
+6. **Verification status:** the focused contracts and the broader local suite
+   are run from this repository; the GitHub Actions runner repeats the focused
+   contracts. The browser/tunnel path still needs a live-market frame for a
+   wire-to-paint measurement. No closed-market number is presented as a live
+   fill.
+
+### 8A. Closure implementation (11 November 2026)
+
+- **100-way projection:** `vectorized_path_projection()` builds a `[100, 12]`
+  matrix in one NumPy operation, conditioned on the last 150 closes, realized
+  volatility, futures participation and OBI skew. Warm local benchmark:
+  **1.2 ms CPU** (requirement: `<5 ms`), with 100 path finals and the exact p10/p25/p50/
+  p75/p90 corridor. The forecast payload publishes `candles_analyzed=150`,
+  `buffer_total=512`, `paths_total=100`, bullish/bearish counts and the
+  12-step median trajectory.
+- **Chart clarity:** spot and ATM charts seed a 150-candle viewport once per
+  symbol/timeframe; live updates only call `series.update()` for the current
+  bar. The corridor overlays are drawn only when p10/p50/p90 are within ±1.2%
+  of live spot; the toolbar pill shows the 100-way verdict.
+- **CE/PE selection:** `selection_snapshot()` publishes the active contract,
+  AUTO/MANUAL/LOCKED mode, five explicit pass/fail conditions and a Telugu
+  transition banner. An open trade always wins and pins its exact strike/leg.
+- **Fast lane:** `/api/tick-stream` sends named `event: tick_delta` frames from
+  the 4 Hz `live_fast.json`; the browser merges them into its existing snapshot
+  and never calls `setData()` for a tick. The unnamed full snapshot remains for
+  backwards compatibility.
+- **Execution HUD:** `#liveOrderHud` renders the emerald `✅ PAPER ORDER EXECUTED`
+  badge, entry/T1/SL-to-cost/T2 tracker and one-click close, synchronized with
+  the existing bracket logic. IDLE keeps only candles, ATP/VWAP and the static
+  trigger zone; OPEN shows the locked bracket and trailed SL.
+- **Cloud path:** the focused 100-way/selection/lifecycle contracts are now a
+  step in both edge workflows; the private CI runs the full pytest suite. The
+  public Pages bundle is synchronised from `dashboard/static` and listens to
+  both `tick` and `tick_delta`.
+
+The remaining live-only gaps (actual broker fill, real tunnel wire-to-paint
+latency, and a live 150-candle banknifty neural cone) are listed above rather
+than hidden by a synthetic result.
+
+### 8B. Four-angle autonomous proof (11 November 2026, 14:56:03 IST)
+
+The saved `state/live_feed.json` was replayed unchanged. The feed contains
+`NIFTY 25,174.00`, VWAP `25,214.10`, `87.5%` downside, selected option book
+`OBI_5 10.50`, `TBQ/TSQ 3.5747x`, and futures participation `1.15x`. The chain
+also contains the real `NIFTY 25200 PE` quote at **₹223.45**.
+
+| Proof point | Replay result |
+|---|---|
+| Direction selector | `choose_watch_side()` selected **PE**; contract **NIFTY 25200 PE** |
+| Angle 1 `TREND_SURF_PULLBACK` | **80.2%**, all 5 conditions pass; fires without the old 300% volume-spike demand |
+| Angle 2 `ORDERFLOW_MOMENTUM_IGNITION` | **93.8%**, all 6 conditions pass; winner by score |
+| Angle 3 `SMC_EXTREME_REVERSAL_SNIPER` | 15.0%, correctly not fired: no sweep, no p10 breach, no CHoCH/OB |
+| Angle 4 `WRITER_TRAP_GAMMA_SQUEEZE` | 30.0%, correctly not fired: trapped-side ΔOI condition unmet |
+| 100-way distribution | **88/100 bearish**, **12/100 bullish** |
+| Exponential OBI | raw ratio **10.50**; weighted five-level ratio **8.7616x** |
+| Greek EV ratio | **3.0423** from the live delta/gamma/theta/spread inputs |
+| Auto entry | **300 qty** at ₹223.45; stop ₹217.53; T1 ₹232.33; T2 ₹241.21 |
+| Micro-shield | armed at +40% to T1; stop tightened to **₹221.97** |
+| T1 | **150 qty** booked at ₹232.33; stop locked at **₹224.95** (Entry + ₹1.50) |
+| T2 | **75 qty** booked at ₹241.21; final **75 qty** Gear-5 runner remains |
+| Runner exit | OBI fell to **0.62**; final 75 qty exited at ₹259.21 |
+| Realized paper P&L | **+₹5,353.50** across T1, T2 and runner |
+
+The new `tests/test_four_angle_autonomous_engine.py` asserts this exact
+lifecycle, including 300 → 150 → 75 → 0 quantity and positive realized P&L.
+The focused test also rejects a synthetic quote: the entry comes from the real
+25200 PE chain row, not from relabelling the simultaneously selected CE book.
+
+The JSON routing is now `payload.playbooks.NIFTY`: each cycle carries the four
+radar scores, the winning angle, the explicit auto-pick reason and the entry
+proposal. The session consumes that proposal only after the feed/cutoff/risk
+checks; the legacy `NO_TRADE` traffic light no longer vetoes a qualifying
+trend. The dashboard renders the four-angle radar, `AUTO-PICKED` pill and the
+four-stage `Entry → Shield → T1 50% → T2 Runner` tracker from the same payload.
+
+**Verification:** local `pytest -q` completed **299 passed** (8 upstream
+Pandas warnings only), all dashboard JavaScript passed `node --check`, and the
+public checkout repeated the focused four-angle/arbitrator/lifecycle suite with
+**14 passed**. The exact 14:56 snapshot is versioned as
+`tests/fixtures/live_feed_1456.json` so CI does not depend on ignored runtime
+state.
+
+**What remains live-only:** the market was closed during this replay. The
+₹5,353.50 is realized paper P&L, not an exchange fill. A real broker fill and
+wire-to-paint latency still require the next open session.
 
 ---
 
