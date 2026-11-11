@@ -55,16 +55,16 @@ jobs:
           from zoneinfo import ZoneInfo
 
           now = datetime.now(ZoneInfo("Asia/Kolkata"))
-          active = now.weekday() < 5 and time(9, 15) <= now.time() <= time(15, 30)
+          active = now.weekday() < 5 and time(8, 30) <= now.time() <= time(15, 30)
           dry_run = os.environ.get("DRY_RUN", "").lower() == "true"
           print(f"IST now={now.isoformat(timespec='seconds')} in_session={active} dry_run={dry_run}")
 
           if not active and not dry_run:
               if os.environ.get("EVENT_NAME") == "schedule":
-                  print("Scheduled edge arrived outside 09:15-15:30 IST - clean no-op; no orders placed.")
+                  print("Scheduled edge arrived outside 08:30-15:30 IST - clean no-op; no orders placed.")
                   Path(os.environ["GITHUB_OUTPUT"]).write_text("run=false\n", encoding="utf-8")
                   raise SystemExit(0)
-              raise SystemExit("Outside the 09:15-15:30 IST session window - refusing to start live edge.")
+              raise SystemExit("Outside the 08:30-15:30 IST session window - refusing to start live edge.")
 
           Path(os.environ["GITHUB_OUTPUT"]).write_text("run=true\n", encoding="utf-8")
           PY
