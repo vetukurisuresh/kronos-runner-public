@@ -2276,7 +2276,10 @@ function renderSpot(){
   mergeCurrent(data, picked.current, px, picked.current && picked.current.volume);
   CHARTS.spot.__rows = {n:data.length, span:TF, first:data[0]&&data[0].time, last:data[data.length-1]&&data[data.length-1].time};
   CHARTS.spot.__data = data;
-  applyCandles(SERIES.spot.candle, data, liveSymbol() + '|' + TF);
+  // Include the source in the series key: when the live tick replaces the
+  // stale cloud/replay seed the key changes and the series is reseeded,
+  // instead of appending live bars onto months-old candles.
+  applyCandles(SERIES.spot.candle, data, liveSymbol() + '|' + TF + '|' + (ts ? 'live' : 'state'));
   applyVolumes(SERIES.spot.volume, data);
   if(data.length){
     const tail=data.slice(-100);
