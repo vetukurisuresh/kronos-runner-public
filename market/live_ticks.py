@@ -139,13 +139,18 @@ def snapshot(symbol: str = "NIFTY", now: float | None = None) -> dict[str, Any]:
     )
     live = bool(feed) and gate.status == "FEED_LIVE"
 
-    spot_block = _fallback_spot(state, symbol)
     # The session writes per-symbol maps; older feeds used a flat dict.
     def _for(value: dict | None) -> dict:
         value = value or {}
         if isinstance(value, dict) and "ltp" in value:
             return value
         return (value.get(symbol) if isinstance(value, dict) else None) or {}
+
+    # Prefer the session's real spot even when the heartbeat is a few seconds
+    # stale.  The zero-fake gate still marks it stale and blocks entries, but
+    # the chart must never fall back to months-old cloud candles while a live
+    # session is writing today's bars.
+    spot_block = {**_fallback_spot(state, symbol), **_for(feed.get("spot"))}
 
     option = _for(feed.get("option"))
     trade = _for(feed.get("trade"))

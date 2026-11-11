@@ -329,6 +329,22 @@ class FullSpectrumBook:
         return self._velocity(self.gamma_history.get(key) or deque(), window)
 
 
+def _expiry_date(value: Any) -> date | None:
+    """Parse the master's expiry, which is epoch milliseconds (or ISO in tests)."""
+    if isinstance(value, (int, float)) or (isinstance(value, str) and value.strip().isdigit()):
+        stamp = float(value)
+        if stamp > 100_000_000_000:  # milliseconds
+            stamp /= 1000.0
+        try:
+            return datetime.fromtimestamp(stamp, tz=IST).date()
+        except (OverflowError, OSError, ValueError):
+            return None
+    try:
+        return date.fromisoformat(str(value or "")[:10])
+    except ValueError:
+        return None
+
+
 def select_front_month_futures(
     rows: Iterable[dict[str, Any]], underlying: str, today: date | None = None
 ) -> dict[str, Any]:
@@ -341,13 +357,17 @@ def select_front_month_futures(
         kind = str(row.get("instrument_type") or row.get("instrumentType") or "").upper()
         if kind != "FUT":
             continue
-        name = str(row.get("name") or row.get("asset_symbol") or row.get("underlying") or "").upper()
-        symbol = str(row.get("tradingsymbol") or row.get("trading_symbol") or "").upper()
-        if name != target and not symbol.startswith(target):
+        # ``name`` can be the issuer ("VEDANTA LIMITED"); the index futures
+        # carry the index in asset_symbol/underlying_symbol and the trading
+        # symbol.  Match those exactly so NIFTYNXT50 never shadows NIFTY.
+        name = str(row.get("name") or "").upper()
+        asset = str(row.get("asset_symbol") or row.get("underlying_symbol")
+                    or row.get("underlying") or "").upper()
+        symbol = str(row.get("trading_symbol") or row.get("tradingsymbol") or "").upper()
+        if target not in {name, asset} and not symbol.startswith(f"{target} FUT"):
             continue
-        try:
-            expiry = date.fromisoformat(str(row.get("expiry") or "")[:10])
-        except ValueError:
+        expiry = _expiry_date(row.get("expiry"))
+        if expiry is None:
             continue
         if expiry >= current:
             candidates.append((expiry, row))

@@ -326,6 +326,17 @@ class Handler(SimpleHTTPRequestHandler):
     # -- GET ---------------------------------------------------------------
     def do_GET(self) -> None:  # noqa: N802 - stdlib naming
         parsed = urlparse(self.path)
+        # The page probes this artifact as a state source.  An absent artifact
+        # is an empty state, not a missing file, so the browser console stays
+        # clean instead of logging a 404 on every load.
+        if parsed.path in ("/latest_cloud_state.json", "/state/latest_cloud_state.json"):
+            try:
+                payload = (json.loads(STATE_FILE.read_text(encoding="utf-8"))
+                           if STATE_FILE.is_file() else {})
+            except ValueError:
+                payload = {}
+            self._json(payload)
+            return
         if parsed.path == "/api/state":
             if not STATE_FILE.is_file():
                 self._json({"ok": False, "reason": "no forecast artifact yet"}, status=404)
