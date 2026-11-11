@@ -733,10 +733,168 @@ def build_narration_snapshot(
     )
 
 
+SPLIT_STREAM_KEYS = ("scalper", "intraday", "model")
+SPLIT_STREAM_TITLES = {
+    "scalper": "⚡ ₹35K Scalper Live Telugu Log",
+    "intraday": "🎯 ₹65K Intraday Sniper & SMC Telugu Log",
+    "model": "🧠 3-Models & Human-Lead Reasoning Log",
+}
+SPLIT_SCOPE = {
+    "scalper": "scalper_logs",
+    "intraday": "intraday_sniper_logs",
+    "model": "model_thoughts",
+}
+
+
+class SplitTeluguNarrationLogger:
+    """Three independent, second-by-second actionable Telugu streams.
+
+    The object is intentionally I/O-light: ``emit`` appends to an in-memory
+    deque and hands the same record to the asynchronous ``FirebaseLogArchiver``.
+    It never performs Firebase I/O on the caller's thread.
+    """
+
+    def __init__(
+        self,
+        *,
+        archiver: Any = None,
+        capacity: int = 800,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
+        self.archiver = archiver
+        self.clock = clock or (lambda: datetime.now(tz=IST))
+        self.streams: dict[str, deque[dict[str, Any]]] = {
+            key: deque(maxlen=max(50, int(capacity))) for key in SPLIT_STREAM_KEYS
+        }
+
+    def _now(self, value: Any = None) -> datetime:
+        if value is None:
+            return _as_ist(self.clock())
+        return _as_ist(value)
+
+    def emit(
+        self,
+        stream: str,
+        text: str,
+        *,
+        meta: Mapping[str, Any] | None = None,
+        ts: Any = None,
+        kind: str = "scan",
+    ) -> dict[str, Any]:
+        key = str(stream or "").strip().lower()
+        if key not in self.streams:
+            raise ValueError(f"stream must be one of {SPLIT_STREAM_KEYS}")
+        moment = self._now(ts)
+        clean = str(text or "").strip()
+        if not clean:
+            raise ValueError("log text cannot be empty")
+        record = {
+            "stream": key,
+            "title": SPLIT_STREAM_TITLES[key],
+            "ts": moment.isoformat(timespec="milliseconds"),
+            "time_ist": moment.strftime("%H:%M:%S"),
+            "date": moment.strftime("%Y-%m-%d"),
+            "kind": str(kind or "scan"),
+            "text": clean,
+            "meta": dict(meta or {}),
+        }
+        self.streams[key].append(record)
+        if self.archiver is not None:
+            self.archiver.enqueue(
+                SPLIT_SCOPE[key], record, date=record["date"], ts=record["ts"]
+            )
+        return dict(record)
+
+    def record_scalp(
+        self,
+        *,
+        spot: float,
+        spread: float,
+        obi_5: float,
+        trigger: str,
+        entry: float | None = None,
+        stop: float | None = None,
+        target: float | None = None,
+        extra_te: str = "",
+        ts: Any = None,
+    ) -> dict[str, Any]:
+        levels = ""
+        if entry:
+            levels = f" Entry ₹{entry:,.2f} · SL ₹{(stop or 0):,.2f} · T1 ₹{(target or 0):,.2f}."
+        text = (
+            f"⚡ స్కాల్ప్ స్కాన్: NIFTY {spot:,.2f} · స్ప్రెడ్ {spread:.2f} · "
+            f"OBI {obi_5:.2f} · సిగ్నల్ {trigger}.{levels} {extra_te}".strip()
+        )
+        return self.emit("scalper", text, meta={"spot": spot, "spread": spread,
+                                                   "obi_5": obi_5, "trigger": trigger},
+                         ts=ts, kind="scan" if not entry else "entry")
+
+    def record_intraday(
+        self,
+        *,
+        spot: float,
+        zone: str,
+        p10: float | None,
+        p90: float | None,
+        side: str,
+        trigger: str,
+        entry: float | None = None,
+        stop: float | None = None,
+        target1: float | None = None,
+        target2: float | None = None,
+        ts: Any = None,
+    ) -> dict[str, Any]:
+        corridor = (
+            f"p10 ₹{p10:,.2f} · p90 ₹{p90:,.2f}" if p10 and p90 else "p10/p90 waiting"
+        )
+        levels = (
+            f" Entry ₹{entry:,.2f} · SL ₹{(stop or 0):,.2f} · T1 ₹{(target1 or 0):,.2f} "
+            f"· T2 ₹{(target2 or 0):,.2f}." if entry else ""
+        )
+        text = (
+            f"🎯 ఇంట్రాడే SMC: NIFTY {spot:,.2f} · {zone} · {corridor} · "
+            f"{side} సెటప్ {trigger}.{levels}"
+        )
+        return self.emit("intraday", text, meta={"spot": spot, "zone": zone,
+                                                   "side": side, "trigger": trigger},
+                         ts=ts, kind="setup" if not entry else "entry")
+
+    def record_model(
+        self,
+        *,
+        model: str,
+        thought_te: str,
+        decision: str,
+        lead_seconds: float | None = None,
+        gate_passed: bool = False,
+        ts: Any = None,
+    ) -> dict[str, Any]:
+        lead = (
+            f" · మానవ క్యాండిల్ క్లోజ్ కంటే {lead_seconds:+.1f}s ముందు"
+            if lead_seconds is not None else ""
+        )
+        text = f"🧠 {model}: {thought_te.strip()} · నిర్ణయం: {decision}{lead}"
+        return self.emit("model", text, meta={"model": model, "decision": decision,
+                                               "lead_seconds": lead_seconds,
+                                               "gate_passed": bool(gate_passed)},
+                         ts=ts, kind="decision" if gate_passed else "thought")
+
+    def snapshot(self) -> dict[str, list[dict[str, Any]]]:
+        return {key: [dict(row) for row in rows] for key, rows in self.streams.items()}
+
+    def clear(self, stream: str | None = None) -> None:
+        if stream is None:
+            for rows in self.streams.values():
+                rows.clear()
+            return
+        self.streams[str(stream)].clear()
+
+
 __all__ = [
     "IST", "MAX_LOG_ENTRIES", "CATEGORIES",
     "READING_BASE_TE", "READING_SMALL_TE", "READING_MINI_TE",
-    "ProgrammaticBrainLogger", "TeluguBrainNarrationLogger", "millisecond_stamp",
+    "ProgrammaticBrainLogger", "SplitTeluguNarrationLogger", "SPLIT_SCOPE",
+    "SPLIT_STREAM_KEYS", "SPLIT_STREAM_TITLES", "TeluguBrainNarrationLogger", "millisecond_stamp",
     "build_narration_snapshot",
 ]
 TeluguBrainNarrationLogger = ProgrammaticBrainLogger

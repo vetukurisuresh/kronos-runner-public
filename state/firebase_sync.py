@@ -131,6 +131,14 @@ def rt_put(url: str, token: str, path: str, body: Any, timeout: float = 30.0) ->
     return response.status_code
 
 
+def rt_patch(url: str, token: str, path: str, body: Any, timeout: float = 30.0) -> int:
+    """Merge date-keyed archiver records without replacing the whole day."""
+    response = requests.patch(
+        f"{url}{path}", params={"access_token": token}, json=body, timeout=timeout
+    )
+    return response.status_code
+
+
 def rt_delete(url: str, token: str, path: str, timeout: float = 30.0) -> int:
     response = requests.delete(f"{url}{path}", params={"access_token": token}, timeout=timeout)
     return response.status_code
