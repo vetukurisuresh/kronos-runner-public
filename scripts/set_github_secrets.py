@@ -24,6 +24,24 @@ API = "https://api.github.com"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+def secret_payload(source: str) -> bytes:
+    """Read a file-backed secret, otherwise treat the source as the value.
+
+    A long access token is not a filename. ``Path.is_file()`` raises ENAMETOOLONG
+    on Linux for values above the filesystem name limit, so the path probe must
+    never decide whether a token is a literal value.
+    """
+    if not source:
+        return b""
+    try:
+        candidate = Path(source)
+        if candidate.is_file():
+            return candidate.read_bytes()
+    except (OSError, ValueError):
+        pass
+    return source.encode("utf-8")
+
+
 def read_env(key: str) -> str:
     value = (os.environ.get(key) or "").strip()
     if value:
@@ -70,8 +88,7 @@ def main(argv: list[str] | None = None) -> int:
     failures = 0
     for item in args.secret:
         name, _, source = item.partition("=")
-        path = Path(source)
-        payload = path.read_bytes() if source and path.is_file() else source.encode("utf-8")
+        payload = secret_payload(source)
         encrypted = base64.b64encode(sealed.encrypt(payload)).decode("ascii")
         response = session.put(
             f"{API}/repos/{args.repo}/actions/secrets/{name}",
