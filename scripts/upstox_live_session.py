@@ -63,6 +63,7 @@ from market.option_picker import (  # noqa: E402
     gear_update,
     new_trade,
     pick_atm,
+    selection_snapshot,
 )
 from market.autopilot_readiness import (  # noqa: E402
     build_checks,
@@ -660,6 +661,13 @@ def load_predictor_plan(symbol: str, spot: float) -> dict:
     return {
         "paths_up": chosen.get("paths_up"),
         "samples": chosen.get("samples"),
+        "paths_total": chosen.get("paths_total"),
+        "paths_bearish": chosen.get("paths_bearish"),
+        "candles_analyzed": chosen.get("candles_analyzed"),
+        "buffer_total": chosen.get("buffer_total"),
+        "median_trajectory": chosen.get("median_trajectory") or [],
+        "projection_source": chosen.get("projection_source") or "",
+        "projection_ms": chosen.get("projection_ms"),
         "model_role": role,
         "median": round(p50, 2), "p10": round(p10, 2), "p50": round(p50, 2),
         "p90": round(p90, 2), "spot": round(spot, 2),
@@ -1551,12 +1559,21 @@ def main(argv: list[str] | None = None) -> int:
             except Exception:  # noqa: BLE001 - a raw chain miss must not block the tape
                 pcr_now = 0.0
             fallback_side = choose_side(plan.get("paths_up"), plan.get("samples"), plan.get("action"))
-            side = choose_watch_side(
+            smc_now = (payload.get("smc") or {}).get(name) or {}
+            smc_text = str(smc_now.get("direction") or smc_now.get("state") or "").upper()
+            smc_side = "PE" if "BEAR" in smc_text or "DOWN" in smc_text else (
+                "CE" if "BULL" in smc_text or "UP" in smc_text else ""
+            )
+            selection = selection_snapshot(
+                symbol=name, strike=atm.get("strike_price"),
                 active_trade=pinned_trade, manual=option_pin,
                 upside=bull_now, downside=bear_now, pcr=pcr_now,
                 spot=spot, vwap=float((payload["spot"].get(name) or {}).get("vwap") or 0.0),
-                obi_5=depth_now.get("obi_5"), fallback=fallback_side,
+                obi_5=depth_now.get("obi_5"), smc_side=smc_side,
+                paths_up=plan.get("paths_up"), paths_total=plan.get("paths_total"),
+                fallback=fallback_side, previous_side=prev.get("side"),
             )
+            side = selection["side"]
             selection_reason = (
                 "ACTIVE_POSITION_LOCK" if trade_pin_open
                 else f"MANUAL_PIN_{option_pin}" if option_pin in {"CE", "PE"}
@@ -1657,6 +1674,16 @@ def main(argv: list[str] | None = None) -> int:
 
             strike = float(atm.get("strike_price") or 0.0)
             symbol = contract_label(name, strike, side)
+            selection = selection_snapshot(
+                symbol=name, strike=strike, force_side=side,
+                active_trade=pinned_trade, manual=option_pin,
+                upside=bull_now, downside=bear_now, pcr=pcr_now,
+                spot=spot, vwap=float((payload["spot"].get(name) or {}).get("vwap") or 0.0),
+                obi_5=depth_now.get("obi_5"), smc_side=smc_side,
+                paths_up=plan.get("paths_up"), paths_total=plan.get("paths_total"),
+                fallback=fallback_side, previous_side=prev.get("side"),
+            )
+            selection["reason"] = selection_reason
             state = option_state.get(name) or {"symbol": "", "hist": deque(maxlen=120),
                                                "cur": None, "cum_value": 0.0, "cum_vol": 0.0,
                                                "trade": None}
@@ -1690,11 +1717,9 @@ def main(argv: list[str] | None = None) -> int:
             state["instrument_key"] = instrument_key
             state["side"] = side
             state["strike"] = strike
-            state["selection"] = {
-                "mode": option_pin, "reason": selection_reason,
-                "active_position": trade_pin_open,
-                "pcr": round(pcr_now, 4) if pcr_now else None,
-            }
+            selection["active_position"] = trade_pin_open
+            selection["pcr"] = round(pcr_now, 4) if pcr_now else None
+            state["selection"] = selection
             if instrument_key:
                 socket.subscribe([instrument_key])
             volume = float(market.get("volume") or 0.0)

@@ -95,6 +95,16 @@ class ModelForecast:
     samples: int
     #: Final close of every Monte Carlo draw, in draw order (the UI fan chart).
     paths: tuple[float, ...] = ()
+    #: Vectorized 100-way conditional projection over the last 150 candles.
+    p25: float = 0.0
+    p75: float = 0.0
+    paths_down: int = 0
+    paths_total: int = 0
+    candles_analyzed: int = 0
+    buffer_total: int = 0
+    median_trajectory: tuple[float, ...] = ()
+    projection_source: str = ""
+    projection_ms: float = 0.0
 
     @property
     def up_pct(self) -> float:
@@ -235,6 +245,102 @@ def quantiles(samples: Iterable[float]) -> tuple[float, float, float]:
     return at(0.10), at(0.50), at(0.90)
 
 
+def vectorized_path_projection(
+    candles: Any,
+    *,
+    spot: float,
+    p10: float,
+    p50: float,
+    p90: float,
+    pred_len: int = 12,
+    paths: int = 100,
+    candles_analyzed: int = 150,
+    buffer_total: int = 512,
+    futures_ratio: float = 1.0,
+    obi_5: float = 1.0,
+    seed: int = 7,
+) -> dict[str, Any]:
+    """Project 100 paths over the last 150 candles with vectorized NumPy.
+
+    The neural checkpoint supplies the p10/p50/p90 terminal cone.  This
+    projector draws the full 100 x horizon path matrix in one tensor operation,
+    conditioned on the realized 150-candle volatility, the cone's terminal
+    width, futures participation and 5-level order-book skew.  It is a
+    conditional Monte Carlo projection, not a second slow model loop; the
+    provenance is published so the UI never calls it raw neural inference.
+    """
+    import time
+    import numpy as np
+
+    started = time.perf_counter()
+    limit = max(1, int(candles_analyzed))
+    if hasattr(candles, "tail") and hasattr(candles, "columns"):
+        frame = candles.tail(limit)
+        closes = frame["close"].to_numpy(dtype=float) if "close" in frame.columns else np.asarray([])
+        total = int(len(candles))
+    else:
+        rows = list(candles or [])
+        total = len(rows)
+        closes = np.asarray([
+            float(row.get("close", row.get("c")) or 0.0)
+            for row in rows[-limit:] if isinstance(row, dict)
+        ], dtype=float)
+    closes = closes[np.isfinite(closes) & (closes > 0)]
+    last = float(spot) if float(spot or 0) > 0 else (float(closes[-1]) if len(closes) else 0.0)
+    if last <= 0:
+        raise ValueError("vectorized projection needs a positive spot")
+
+    lo, mid, hi = float(p10 or 0), float(p50 or 0), float(p90 or 0)
+    if not (0 < lo <= mid <= hi):
+        lo, mid, hi = last * 0.995, last, last * 1.005
+    # Terminal cone: the model's own 10-90 spread, not an invented confidence.
+    cone_sigma = max((np.log(hi) - np.log(lo)) / (2.0 * 1.2815515655), 1e-6)
+    if len(closes) >= 8:
+        realized = float(np.std(np.diff(np.log(closes[-80:]))))
+        realized = max(0.0, min(realized, 0.05))
+        cone_sigma = max(cone_sigma, realized * np.sqrt(max(pred_len, 1)) * 0.35)
+    drift = float(np.log(mid / last))
+    # Tiny, bounded tilt; the cone remains the primary probability source.
+    flow_tilt = float(np.clip((float(obi_5 or 1.0) - 1.0) * 0.06
+                              + (float(futures_ratio or 1.0) - 1.0) * 0.02, -0.12, 0.12))
+    steps = np.arange(1, max(int(pred_len), 1) + 1, dtype=float) / max(int(pred_len), 1)
+    count = max(int(paths), 2)
+    rng = np.random.default_rng(int(seed))
+    terminal_z = rng.standard_normal(count)
+    noise = np.cumsum(rng.standard_normal((count, len(steps))), axis=1)
+    # Brownian bridge: the noise must vanish at the terminal bar so the
+    # terminal cone, not an accumulating random walk, owns the distribution.
+    noise -= noise[:, -1:] * steps
+    logs = (drift * steps + flow_tilt * steps
+            + cone_sigma * (0.45 * noise + terminal_z[:, None] * steps))
+    matrix = last * np.exp(logs)
+    finals = matrix[:, -1]
+    p10_floor, p25_band, p50_median, p75_band, p90_ceiling = np.percentile(
+        finals, [10, 25, 50, 75, 90]
+    )
+    median_path = np.median(matrix, axis=0)
+    bullish = int(np.sum(finals > last))
+    return {
+        "paths": [[round(float(v), 2) for v in row] for row in matrix],
+        "paths_final": [round(float(v), 2) for v in finals],
+        "paths_total": count,
+        "paths_bullish": bullish,
+        "paths_bearish": count - bullish,
+        "upside_prob_pct": round(100.0 * bullish / count, 2),
+        "downside_prob_pct": round(100.0 * (count - bullish) / count, 2),
+        "p10_floor": round(float(p10_floor), 2),
+        "p25_band": round(float(p25_band), 2),
+        "p50_median_path": [round(float(v), 2) for v in median_path],
+        "p50_median": round(float(p50_median), 2),
+        "p75_band": round(float(p75_band), 2),
+        "p90_ceiling": round(float(p90_ceiling), 2),
+        "candles_analyzed": int(min(limit, total)),
+        "buffer_total": int(buffer_total or total),
+        "projection_source": "VECTORIZED_100WAY_150CANDLE",
+        "projection_ms": round((time.perf_counter() - started) * 1000.0, 3),
+    }
+
+
 # --------------------------------------------------------------------------- #
 # torch-backed ensemble
 # --------------------------------------------------------------------------- #
@@ -366,7 +472,8 @@ class KronosTrioEnsemble:
             frame["volume"] = 0.0
         return frame, stamps
 
-    def forecast(self, role: str, candles: Any) -> ModelForecast:
+    def forecast(self, role: str, candles: Any, *, obi_5: float = 1.0,
+                 futures_ratio: float = 1.0) -> ModelForecast:
         """Draw the Monte Carlo cone for one role and count upward paths."""
         if not self.loaded:
             raise EnsembleUnavailable("call load() before forecast()")
@@ -405,8 +512,15 @@ class KronosTrioEnsemble:
         batch = _collapse_path_batch(batch)
         draws_n = int(batch.shape[0])
         closes = [[float(value) for value in batch[i, :, 3]] for i in range(draws_n)]
-        finals = [path[-1] for path in closes]
-        p10, p50, p90 = quantiles(finals)
+        neural_finals = [path[-1] for path in closes]
+        p10, p50, p90 = quantiles(neural_finals)
+        projection = vectorized_path_projection(
+            candles, spot=last_close, p10=p10, p50=p50, p90=p90,
+            pred_len=pred_len, paths=100,
+            candles_analyzed=min(150, len(candles)), buffer_total=len(candles),
+            futures_ratio=futures_ratio, obi_5=obi_5,
+        )
+        finals = projection["paths_final"]
 
         median: list[dict] = []
         for bar in range(batch.shape[1]):
@@ -418,18 +532,27 @@ class KronosTrioEnsemble:
                     "c": round(statistics.median(float(batch[i, bar, 3]) for i in range(draws_n)), 2),
                 }
             )
-        self.close_paths[role] = closes
+        self.close_paths[role] = projection["paths"]
         self.median_candles[role] = median
 
         return ModelForecast(
             model=role,
             last_close=last_close,
-            p10=p10,
-            p50=p50,
-            p90=p90,
-            paths_up=sum(1 for value in finals if value > last_close),
-            samples=draws_n,
+            p10=projection["p10_floor"],
+            p50=projection["p50_median"],
+            p90=projection["p90_ceiling"],
+            paths_up=projection["paths_bullish"],
+            samples=projection["paths_total"],
             paths=tuple(finals),
+            p25=projection["p25_band"],
+            p75=projection["p75_band"],
+            paths_down=projection["paths_bearish"],
+            paths_total=projection["paths_total"],
+            candles_analyzed=projection["candles_analyzed"],
+            buffer_total=projection["buffer_total"],
+            median_trajectory=tuple(projection["p50_median_path"]),
+            projection_source=projection["projection_source"],
+            projection_ms=projection["projection_ms"],
         )
 
     def evaluate(self, frames: dict[str, Any], **gates: Any) -> TrioDecision:

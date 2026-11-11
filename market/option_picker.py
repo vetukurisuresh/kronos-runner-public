@@ -46,6 +46,7 @@ def choose_watch_side(
     spot: float | None = None,
     vwap: float | None = None,
     obi_5: float | None = None,
+    smc_side: str = "",
     fallback: str = "CE",
 ) -> str:
     """Pick the option leg the desk should watch right now.
@@ -77,14 +78,15 @@ def choose_watch_side(
     px = _f(spot)
     avg = _f(vwap)
     book = _f(obi_5)
+    smc = str(smc_side or "").upper()
     below_vwap = bool(px > 0 and avg > 0 and px < avg)
     above_vwap = bool(px > 0 and avg > 0 and px >= avg)
     put_chain = 0.0 < ratio < 0.82
     call_chain = ratio > 1.05
 
-    if down > up and (put_chain or below_vwap or (0.0 < book < 0.90)):
+    if down > up and (put_chain or below_vwap or (0.0 < book < 0.90) or smc == "PE"):
         return "PE"
-    if up >= down and (call_chain or above_vwap or book >= 1.05):
+    if up >= down and (call_chain or above_vwap or book >= 1.05 or smc == "CE"):
         return "CE"
     if put_chain and below_vwap:
         return "PE"
@@ -101,6 +103,101 @@ def contract_label(symbol: str, strike: float | int | None, side: str) -> str:
         number = 0
     leg = "PE" if str(side).upper() == "PE" else "CE"
     return f"{symbol} {number} {leg}" if number > 0 else f"{symbol} ATM {leg}"
+
+
+def selection_snapshot(
+    *,
+    symbol: str,
+    strike: float | int | None,
+    previous_side: str = "",
+    active_trade: dict | None = None,
+    manual: str = "AUTO",
+    upside: float | None = None,
+    downside: float | None = None,
+    paths_up: int | None = None,
+    paths_total: int | None = None,
+    pcr: float | None = None,
+    spot: float | None = None,
+    vwap: float | None = None,
+    obi_5: float | None = None,
+    smc_side: str = "",
+    fallback: str = "CE",
+    force_side: str = "",
+) -> dict[str, Any]:
+    """Return the watched leg plus the exact five live switch conditions.
+
+    This is presentation evidence, not an order instruction.  An open trade
+    remains locked even when the checklist has not yet filled.
+    """
+    trade = active_trade if isinstance(active_trade, dict) else {}
+    open_trade = str(trade.get("status") or "").upper() == "OPEN"
+    side = choose_watch_side(
+        active_trade=trade, manual=manual, upside=upside, downside=downside,
+        pcr=pcr, spot=spot, vwap=vwap, obi_5=obi_5, smc_side=smc_side,
+        fallback=fallback,
+    )
+    if str(force_side or "").upper() in {"CE", "PE"}:
+        side = str(force_side).upper()
+    if open_trade:
+        mode = "LOCKED_TO_OPEN_TRADE"
+    elif str(manual or "AUTO").upper() in {"CE", "PE"}:
+        mode = "MANUAL_PIN"
+    else:
+        mode = "AUTO"
+    up = float(upside or 0.0)
+    down = float(downside or 0.0)
+    total = int(paths_total or 100)
+    bullish = int(paths_up or 0)
+    bearish = max(0, total - bullish)
+    bullish_pct = 100.0 * bullish / max(total, 1)
+    bearish_pct = 100.0 * bearish / max(total, 1)
+    pcr_value = float(pcr or 0.0)
+    px, avg, book = float(spot or 0.0), float(vwap or 0.0), float(obi_5 or 0.0)
+    below = px > 0 and avg > 0 and px < avg
+    above = px > 0 and avg > 0 and px >= avg
+    conditions = [
+        {"key": "bias", "label": "100-Way Bias",
+         "pass": (bearish > bullish) if side == "PE" else (bullish >= bearish),
+         "value": (f"Bearish {bearish_pct:.0f}% ({bearish}/{total} paths ↓)"
+                   if side == "PE" else f"Bullish {bullish_pct:.0f}% ({bullish}/{total} paths ↑)")},
+        {"key": "spot_vwap", "label": "Spot vs VWAP",
+         "pass": below if side == "PE" else above,
+         "value": (f"{px:,.2f} < VWAP {avg:,.2f} ({(px - avg):+.2f} pts)"
+                   if side == "PE" else f"{px:,.2f} ≥ VWAP {avg:,.2f} ({(px - avg):+.2f} pts)")},
+        {"key": "pcr", "label": "Live PCR & ΔOI",
+         "pass": (0 < pcr_value < 0.82) if side == "PE" else (pcr_value > 1.05),
+         "value": f"PCR {pcr_value:.2f} ({'Call Writers Dominant' if pcr_value < 0.82 else 'Put Writers Dominant' if pcr_value > 1.05 else 'Neutral'})"},
+        {"key": "obi", "label": "Option Order-Book (OBI_5)",
+         "pass": (0 < book <= 0.90) if side == "PE" else (book >= 1.05),
+         "value": f"{side} OBI {book:.2f}x ({'Buyers > Sellers' if book >= 1.0 else 'Sellers > Buyers'})"},
+        {"key": "smc", "label": "SMC Structure",
+         "pass": str(smc_side or "").upper() == side,
+         "value": f"{str(smc_side or 'WAITING').upper()} structure"},
+    ]
+    label = contract_label(symbol, trade.get("strike") if open_trade else strike, side)
+    transition = bool(previous_side and str(previous_side).upper() != side and not open_trade)
+    if transition:
+        transition_te = (
+            f"🔄 {previous_side} ➔ {side} మార్పు: "
+            f"100 దారులలో {bearish if side == 'PE' else bullish}/{total} దారులు "
+            f"{'Downside' if side == 'PE' else 'Upside'} చూపిస్తున్నాయి; "
+            f"కాబట్టి చార్ట్ {label} కి మారింది"
+        )
+    else:
+        transition_te = ""
+    return {
+        "side": side, "mode": mode, "symbol": symbol, "strike": strike,
+        "contract": label, "previous_side": str(previous_side or ""),
+        "transition": transition, "transition_te": transition_te,
+        "conditions": conditions,
+        "conditions_passed": sum(1 for row in conditions if row["pass"]),
+        "reason_te": (
+            f"🔒 ఓపెన్ ట్రేడ్ కాంట్రాక్ట్ lock చేయబడింది: {label}"
+            if mode == "LOCKED_TO_OPEN_TRADE" else
+            f"📌 మాన్యువల్ pin: {label}" if mode == "MANUAL_PIN" else
+            f"🎯 AUTO: {label} ఎంపిక చేయబడింది ({side} bias)"
+        ),
+    }
 
 
 def new_trade(entry: float, risk: float, qty: int = 300) -> dict[str, Any]:

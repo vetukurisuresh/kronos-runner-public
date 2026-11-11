@@ -187,7 +187,20 @@ def _predict_role(role: str, feed: Mapping[str, Any]) -> dict[str, Any] | None:
     if len(candles) < 32:
         return None
     started = time.perf_counter()
-    forecast = ensemble.forecast(role, candles)
+    symbol = _symbol(feed)
+    spectrum = (feed.get("full_spectrum") or {}).get(symbol) or {}
+    option_row = (feed.get("option") or {}).get(symbol) or {}
+    depth = spectrum.get("depth") or {}
+    obi = option_row.get("obi_5")
+    if obi in (None, "", 0, 0.0):
+        obi = depth.get("obi_5")
+    futures = spectrum.get("futures") or {}
+    try:
+        futures_ratio = float(futures.get("volume") or 0.0) / max(float(futures.get("volume_20bar_mean") or futures.get("volume") or 1.0), 1.0)
+    except (TypeError, ValueError):
+        futures_ratio = 1.0
+    forecast = ensemble.forecast(role, candles, obi_5=float(obi or 1.0),
+                                  futures_ratio=futures_ratio)
     elapsed_ms = (time.perf_counter() - started) * 1000.0
     probability = quantile_probability(
         forecast.last_close, forecast.p10, forecast.p50, forecast.p90,
@@ -217,6 +230,16 @@ def _predict_role(role: str, feed: Mapping[str, Any]) -> dict[str, Any] | None:
         "quantile_cdf_pct": probability["quantile_cdf_pct"],
         "paths_up": int(forecast.paths_up),
         "samples": int(forecast.samples),
+        "paths_total": int(getattr(forecast, "paths_total", 100)),
+        "paths_bullish": int(getattr(forecast, "paths_up", 0)),
+        "paths_bearish": int(getattr(forecast, "paths_down", 0)),
+        "candles_analyzed": int(getattr(forecast, "candles_analyzed", 150)),
+        "buffer_total": int(getattr(forecast, "buffer_total", len(candles))),
+        "median_trajectory": list(getattr(forecast, "median_trajectory", ()) or ()),
+        "p25": round(float(getattr(forecast, "p25", 0.0) or 0.0), 2),
+        "p75": round(float(getattr(forecast, "p75", 0.0) or 0.0), 2),
+        "projection_source": str(getattr(forecast, "projection_source", "")),
+        "projection_ms": float(getattr(forecast, "projection_ms", 0.0) or 0.0),
         "target_1": round(float(target_1), 2),
         "target_2": round(float(target_2), 2),
         "p10": round(float(forecast.p10), 2),
@@ -265,6 +288,13 @@ def _publish_status() -> None:
                 "probability_pct": payload.get("probability_pct"),
                 "samples": payload.get("samples"),
                 "paths_up": payload.get("paths_up"),
+                "paths_total": payload.get("paths_total"),
+                "paths_bearish": payload.get("paths_bearish"),
+                "candles_analyzed": payload.get("candles_analyzed"),
+                "buffer_total": payload.get("buffer_total"),
+                "median_trajectory": payload.get("median_trajectory"),
+                "projection_source": payload.get("projection_source"),
+                "projection_ms": payload.get("projection_ms"),
                 "direction": payload.get("direction"),
                 "regime": payload.get("regime"),
                 "p10": payload.get("p10"),

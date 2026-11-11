@@ -186,7 +186,9 @@ class TickHub:
     def __init__(self) -> None:
         self._condition = threading.Condition()
         self._version = 0
+        self._fast_version = 0
         self._frames: dict[str, tuple[int, bytes, float]] = {}
+        self._fast_frames: dict[str, tuple[int, bytes, float]] = {}
         self._watch_started = False
         self._watch_mtime = 0
         self._watch_fast_mtime = 0
@@ -233,13 +235,22 @@ class TickHub:
             return self._frames.get(symbol)
 
     def publish_fast(self) -> None:
-        """Push a 4 Hz price/book patch without rebuilding the full snapshot."""
-        from market.live_ticks import fast_overlay
+        """Queue a lightweight named ``tick_delta`` for each open SSE stream."""
+        from market.live_ticks import fast_delta
 
-        for symbol, payload in list(self._payloads.items()):
-            patched = fast_overlay(payload)
-            if patched is not payload:
-                self.publish(symbol, patched)
+        for symbol in list(self._payloads):
+            delta = fast_delta(symbol)
+            if not delta:
+                continue
+            body = json.dumps(delta, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            with self._condition:
+                self._fast_version += 1
+                self._fast_frames[symbol] = (self._fast_version, body, time.time())
+                self._condition.notify_all()
+
+    def fast_frame(self, symbol: str) -> tuple[int, bytes, float] | None:
+        with self._condition:
+            return self._fast_frames.get(symbol)
 
     def start_watcher(self) -> None:
         with self._condition:
@@ -472,6 +483,7 @@ class Handler(SimpleHTTPRequestHandler):
                     raise RuntimeError("tick hub has no frame")
                 seen_version, body, _ = frame
                 self._sse_write(body)
+                seen_fast = 0
                 while True:
                     # Break promptly when a browser/tab closes the stream; a
                     # non-daemon request thread would otherwise delay shutdown.
@@ -481,11 +493,14 @@ class Handler(SimpleHTTPRequestHandler):
                             break
                     except OSError:
                         break
-                    next_frame = TICK_HUB.wait(symbol, seen_version, timeout=0.25)
-                    if next_frame is None:
-                        continue
-                    seen_version, body, _ = next_frame
-                    self._sse_write(body)
+                    fast = TICK_HUB.fast_frame(symbol)
+                    if fast is not None and fast[0] != seen_fast:
+                        seen_fast, fast_body, _ = fast
+                        self._sse_write(fast_body, event="tick_delta")
+                    next_frame = TICK_HUB.wait(symbol, seen_version, timeout=0.05)
+                    if next_frame is not None:
+                        seen_version, body, _ = next_frame
+                        self._sse_write(body)
             except (BrokenPipeError, ConnectionResetError, OSError):
                 self.close_connection = True
                 return
@@ -730,8 +745,9 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(page)
 
-    def _sse_write(self, payload_body: bytes) -> None:
-        body = b"data: " + payload_body + b"\n\n"
+    def _sse_write(self, payload_body: bytes, event: str | None = None) -> None:
+        prefix = (f"event: {event}\n".encode("ascii") if event else b"")
+        body = prefix + b"data: " + payload_body + b"\n\n"
         self.wfile.write(f"{len(body):X}\r\n".encode("ascii") + body + b"\r\n")
         self.wfile.flush()
 

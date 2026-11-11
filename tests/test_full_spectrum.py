@@ -285,7 +285,8 @@ def test_live_ticks_snapshot_passes_full_spectrum(tmp_path, monkeypatch) -> None
 def test_stale_full_spectrum_is_marked_and_suspends_entries(tmp_path, monkeypatch) -> None:
     now = time.time()
     feed = {
-        "updated_epoch": now - 10.0,
+        # The LKG window is deliberately 12 s; 20 s is a genuinely stale chain.
+        "updated_epoch": now - 20.0,
         "updated_at": "2026-11-10T10:00:00+05:30",
         "socket_connected": True,
         "full_spectrum": {"NIFTY": {"coverage": {"pct": 80.0}}},
@@ -293,6 +294,9 @@ def test_stale_full_spectrum_is_marked_and_suspends_entries(tmp_path, monkeypatc
     path = tmp_path / "live_feed.json"
     path.write_text(json.dumps(feed), encoding="utf-8")
     monkeypatch.setattr(live_ticks, "FEED_FILE", path)
+    # The real 4 Hz fast frame is unrelated to this stale heavy-chain probe;
+    # isolate it so a previous local session cannot turn the gate green.
+    monkeypatch.setattr(live_ticks, "FAST_FILE", tmp_path / "live_fast.json")
     snap = live_ticks.snapshot("NIFTY", now=now)
     assert snap["full_spectrum"]["NIFTY"]["stale"] is True
     assert snap["full_spectrum"]["NIFTY"]["age_ms"] >= 10_000

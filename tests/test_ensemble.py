@@ -406,10 +406,13 @@ def test_dummy_ohlcv_through_all_three_models_is_timed() -> None:
     for role in ROLES:
         payload = decision.forecasts[role]
         assert payload["p10"] <= payload["p50"] <= payload["p90"]
-        assert payload["samples"] == 2
-        assert 0 <= payload["paths_up"] <= 2
+        # The neural checkpoint may run two draws for speed, but the
+        # production forecast contract always publishes the vectorized
+        # 100-way conditional projection.
+        assert payload["samples"] == 100
+        assert 0 <= payload["paths_up"] <= 100
     assert elapsed < 900, f"inference too slow: {elapsed:.1f}s"
-    print(f"\nCHECK 2 inference latency (512 bars, 2 MC x 3 models): {elapsed:.2f}s")
+    print(f"\nCHECK 2 inference latency (512 bars, 100-way projection x 3 models): {elapsed:.2f}s")
     print(f"CHECK 2 decision: {decision.action} ({decision.confidence})")
 
 

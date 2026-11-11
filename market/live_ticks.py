@@ -215,9 +215,18 @@ def _predictor_plan(feed: dict, symbol: str, now: float) -> dict[str, Any]:
     _, role, chosen, p10, p50, p90, probability = min(candidates, key=lambda item: item[0])
     action = "BUY_CE" if probability >= 55.0 else "BUY_PE" if probability <= 45.0 else "NO_TRADE"
     target1 = p90 if action == "BUY_CE" else p10 if action == "BUY_PE" else p50
+    paths_total = int(chosen.get("paths_total") or chosen.get("samples") or 100)
+    paths_up = int(chosen.get("paths_up") or 0)
     return {
-        "paths_up": chosen.get("paths_up"),
-        "samples": chosen.get("samples"),
+        "paths_up": paths_up,
+        "samples": paths_total,
+        "paths_total": paths_total,
+        "paths_bearish": int(chosen.get("paths_bearish") or max(0, paths_total - paths_up)),
+        "candles_analyzed": chosen.get("candles_analyzed") or 150,
+        "buffer_total": chosen.get("buffer_total") or 512,
+        "median_trajectory": chosen.get("median_trajectory") or [],
+        "projection_source": chosen.get("projection_source") or "",
+        "projection_ms": chosen.get("projection_ms"),
         "model_role": role,
         "median": round(p50, 2), "p10": round(p10, 2), "p50": round(p50, 2),
         "p90": round(p90, 2), "spot": round(spot, 2),
@@ -356,6 +365,41 @@ def fast_overlay(payload: dict, now: float | None = None) -> dict:
                         oc[key] = row[key]
         out["option_chart"] = oc
     return out
+
+
+def fast_delta(symbol: str = "NIFTY", now: float | None = None) -> dict:
+    """Small event payload for a named ``tick_delta`` SSE frame.
+
+    The browser merges this into its current snapshot; it is intentionally not
+    a full 4,000-node snapshot.  A stale fast file returns an empty object so
+    the caller keeps polling instead of inventing a tick.
+    """
+    moment = time.time() if now is None else float(now)
+    fast = _load(FAST_FILE)
+    epoch = _fast_epoch(fast)
+    if not epoch or moment - epoch > FAST_STALE_SEC:
+        return {}
+    age_ms = max(0, int((moment - epoch) * 1000.0))
+    spot = ((fast.get("spot") or {}).get(symbol) or {}) if isinstance(fast.get("spot"), dict) else {}
+    option = ((fast.get("option") or {}).get(symbol) or {}) if isinstance(fast.get("option"), dict) else {}
+    indices = {}
+    if spot:
+        indices[symbol] = {"ltp": spot.get("ltp"), "change": spot.get("change"),
+                           "change_pct": spot.get("pct_change")}
+    return {
+        "fast": True,
+        "tick_seq": fast.get("tick_seq"),
+        "epoch": epoch,
+        "age_ms": age_ms,
+        "as_of": fast.get("as_of"),
+        "socket_connected": bool(fast.get("socket_connected")),
+        "spot": spot,
+        "option": option,
+        "indices": indices,
+        "data_gate": {"live": True, "allowed": True, "status": "LIVE",
+                      "reason": "FAST_TICK", "age_ms": age_ms},
+        "entries_suspended": False,
+    }
 
 
 def _indices(feed: dict) -> dict[str, Any]:
@@ -778,6 +822,18 @@ def snapshot(symbol: str = "NIFTY", now: float | None = None) -> dict[str, Any]:
         "master_arbitrator": arbitrator,
         "chart_call": chart_call,
         "chart_levels": chart_levels,
+        "model_projection": {
+            "paths_total": plan.get("paths_total"),
+            "paths_bullish": plan.get("paths_up"),
+            "paths_bearish": plan.get("paths_bearish"),
+            "candles_analyzed": plan.get("candles_analyzed"),
+            "buffer_total": plan.get("buffer_total"),
+            "median_trajectory": plan.get("median_trajectory") or [],
+            "p10": plan.get("p10"), "p50": plan.get("p50"), "p90": plan.get("p90"),
+            "source": plan.get("projection_source"),
+            "projection_ms": plan.get("projection_ms"),
+            "model_role": plan.get("model_role"),
+        },
         "candle_visuals": {
             "symbol": symbol,
             "spot": spot_visuals,

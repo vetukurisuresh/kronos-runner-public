@@ -1093,6 +1093,23 @@ body.tl-open{overflow:hidden!important}
   @media(max-width:1250px){.pro-pnl .pro-pill{min-width:104px}.pro-pill span{font-size:6px}.pro-pill em{display:none}.pro-ticker{min-width:98px}.pro-topbar .cutoff-badge{max-width:78px!important}.pro-topbar .pro-mode .mode-status{display:none}}
   @media(max-width:980px){.pro-pnl{display:none}.pro-sidebar{left:-270px;transition:left .22s ease}.pro-sidebar.open{left:0}.pro-side-title button{display:block}#proSidebarScrim.show{display:block}main{left:0!important}.pro-menu{display:inline-flex!important}#tradePill{left:-14px!important}.pro-brand small{display:none}.pro-head-right .trade-mode .mode-status{display:none}}
   @media(max-width:760px){.pro-tickers{display:none}.pro-head-right{gap:3px}.pro-conn{font-size:6.5px;padding:5px 6px}.pro-topbar .pro-mode .mode-btn{padding:4px 5px!important;font-size:7px!important}.pro-brand{font-size:14px}.pro-ai-callout{font-size:8.5px;top:44px}.pro-modal-body{padding:10px}.pro-grid,.pro-grid.three{grid-template-columns:1fr}.pro-modal-head h2{font-size:19px}.pro-levels-legend{display:none}}
+  /* Cloud-native execution proof + 100-way evidence */
+  .live-order-hud{display:none;align-items:center;gap:8px;flex-wrap:wrap;max-width:min(760px,48vw);border:1px solid #1f8f68;background:linear-gradient(180deg,#09251d,#071b17);border-radius:8px;padding:4px 7px;box-shadow:0 0 0 1px rgba(61,235,170,.08) inset}
+  .live-order-hud.show{display:flex}
+  .exec-badge{display:inline-flex;align-items:center;gap:4px;border:1px solid #2bd79a;background:#0b3b2c;color:#8affd0;border-radius:999px;padding:4px 7px;font:800 8px 'JetBrains Mono',monospace;white-space:nowrap}
+  .exec-track{display:flex;align-items:center;gap:4px;flex-wrap:wrap}
+  .exec-step{border:1px solid #29475b;background:#081722;color:#7798ad;border-radius:5px;padding:3px 5px;font:700 7.5px 'JetBrains Mono',monospace;white-space:nowrap}
+  .exec-step.done{color:#7cf2c3;border-color:#21785b;background:#09251d}.exec-step.live{color:#ffe29a;border-color:#8f7226;background:#2b2209}
+  .exec-close{margin-left:auto;border:1px solid #853947;background:#2a0b12;color:#ff9aa5;border-radius:5px;padding:4px 6px;font:800 7.5px 'JetBrains Mono',monospace;cursor:pointer}
+  .model-verdict{flex:1;min-width:220px;border:1px solid #244b62;border-radius:5px;background:#071722;color:#9ed8f5;padding:3px 6px;font:700 8px 'JetBrains Mono',monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .model-verdict.bull{color:#7cf2c3;border-color:#21785b}.model-verdict.bear{color:#ff9aa5;border-color:#853947}
+  .contract-selection{display:none;border-top:1px solid #1d3b50;border-bottom:1px solid #1d3b50;background:#07151f;padding:5px 8px;gap:8px;align-items:center;flex-wrap:wrap}
+  .contract-selection.show{display:flex}
+  .contract-badge{font:800 8.5px 'JetBrains Mono',monospace;color:#9fe6ff;border:1px solid #2b607d;background:#0a2433;border-radius:5px;padding:4px 6px;white-space:nowrap}
+  .contract-conditions{display:flex;gap:4px;flex-wrap:wrap;flex:1}
+  .contract-cond{font:700 7.5px 'JetBrains Mono',monospace;border:1px solid #29475b;border-radius:4px;padding:3px 5px;color:#8aa9bc;background:#0a1822;white-space:nowrap}
+  .contract-cond.pass{color:#7cf2c3;border-color:#21785b}.contract-cond.fail{color:#ff9aa5;border-color:#853947;opacity:.9}
+  .contract-why{font:600 8px 'JetBrains Mono',monospace;color:#8faec2;max-width:330px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   </style>
   <link rel="stylesheet" href="pro_enterprise.css">
   <link rel="stylesheet" href="command_center.css">
@@ -1117,6 +1134,11 @@ body.tl-open{overflow:hidden!important}
     <div class="trade-pod-copy"><span>ACTIVE TRADE</span><b id="tradeStage">IDLE</b><small id="tradeQty">NO POSITION</small></div>
     <div class="trade-pod-money"><b id="tradePnl">+₹0</b><small id="tradeSub">WAITING FOR ENTRY</small></div>
     <button id="topCloseBtn" class="top-close-btn" type="button" title="Close the active position at the live price" hidden>🔴 Close Position</button>
+  </div>
+  <div class="live-order-hud" id="liveOrderHud" aria-label="Paper order execution lifecycle" hidden>
+    <span class="exec-badge" id="execBadge">✅ PAPER ORDER EXECUTED</span>
+    <div class="exec-track" id="execTrack"></div>
+    <button class="exec-close" id="execCloseBtn" type="button">🔴 Close Position</button>
   </div>
   <div class="pro-head-right">
     <button type="button" id="proConnPill" class="pro-conn offline" data-pro-modal="health">🔴 Offline · Blocked</button>
@@ -1446,6 +1468,7 @@ body.tl-open{overflow:hidden!important}
           <div id="proAiCallout" class="pro-ai-callout dock-model">🟡 WAITING FOR LIVE 3-MODEL FUSION</div>
         </div>
       </div>
+    <div class="model-verdict" id="modelVerdictPill">🧠 150-Candle × 100-Ways: WAITING</div>
       <div class="chart-canvas-wrap">
         <div id="chart" class="chart-host"></div>
         <canvas id="overlaySpot" class="chart-overlay" aria-hidden="true"></canvas>
@@ -1469,6 +1492,11 @@ body.tl-open{overflow:hidden!important}
           <button class="chart-cfg-btn" type="button" data-chart-fit title="Fit visible candles">⛶</button>
           <button class="chart-cfg-btn" type="button" data-chart-studio title="Chart Studio">🎨</button>
         </div>
+      </div>
+      <div class="contract-selection" id="contractSelectionStrip" aria-live="polite">
+        <span class="contract-badge" id="contractBadge">🎯 ACTIVE WATCH: —</span>
+        <div class="contract-conditions" id="contractConditions"></div>
+        <span class="contract-why" id="contractWhy">5-condition AI selection evidence</span>
       </div>
       <div class="opt-level-strip" id="proLevelControls">
         <label class="level-field"><span class="entry">ENTRY</span><button type="button" class="level-step" data-level-step="entry" data-dir="-1">−</button><input id="optLevelEntry" type="number" step="0.05" inputmode="decimal" aria-label="Entry price"><button type="button" class="level-step" data-level-step="entry" data-dir="1">+</button></label>
@@ -2306,7 +2334,7 @@ function renderSpot(){
   applyCandles(SERIES.spot.candle, data, liveSymbol() + '|' + TF + '|' + (ts ? 'live' : 'state'));
   applyVolumes(SERIES.spot.volume, data);
   if(data.length){
-    const tail=data.slice(-100);
+    const tail=data.slice(-150);
     const vw=buildVwap(tail);
     const sig=`${TF}|${tail[0].time}|${tail[tail.length-1].time}|${vw[vw.length-1].value}`;
     if(SERIES.spot.vwap.__sig!==sig){ SERIES.spot.vwap.__sig=sig; SERIES.spot.vwap.setData(vw); }
@@ -2319,7 +2347,7 @@ function renderSpot(){
   // may only update the last bar; the human's pan/zoom is never overwritten.
   if(data.length && !SERIES.spot.candle.__focused){
     SERIES.spot.candle.__focused = true;
-    try{ CHARTS.spot.timeScale().setVisibleLogicalRange({from:Math.max(0,data.length-60), to:data.length+8}); }catch(e){}
+    try{ CHARTS.spot.timeScale().setVisibleLogicalRange({from:Math.max(0,data.length-150), to:data.length+8}); }catch(e){}
   }
   const meta = $('#spotMeta');
   const liveSpot = ts ? (ts.display != null ? ts.display : ts.ltp) : (block && block.spot);
@@ -2513,51 +2541,35 @@ function clearCone(){
   (SERIES.spot.paths||[]).forEach(s=>s.setData([]));
 }
 function renderCone(block, data){
-  // Synthetic future candles and the old p10/p90 corridor are removed.  The
-  // AI range is a toolbar pill backed by the live predictor, not a chart series.
-  if(CONE.sig !== 'CLEARED'){ clearCone(); CONE.sig = 'CLEARED'; }
-  return;
-  if(!SERIES.spot.median) return;
-  if((window.kronosPro && window.kronosPro.corridorOn && !window.kronosPro.corridorOn()) || !block || !data.length){ clearCone(); return; }
+  // The 100-way corridor is drawn only when every anchor is within 1.2% of
+  // live spot.  This keeps the Y-axis focused on candles instead of a stale
+  // model range, and it never creates synthetic candles.
+  if(!SERIES.spot.median || !block || !data.length){ clearCone(); return; }
   const f = block.forecast || {};
-  if(f.p10 == null || f.p90 == null || f.median == null){ clearCone(); return; }
+  const p = (LIVE.tick && LIVE.tick.model_projection) || {};
   const last = data[data.length-1];
-  const sig = [last.time, f.p10, f.p90, f.median, f.horizon, f.paths_up, block.spot].join('|');
+  const spot = Number(last.close) || Number(block.spot) || 0;
+  const p10 = Number(p.p10 != null ? p.p10 : f.p10);
+  const p50 = Number(p.p50 != null ? p.p50 : (f.median != null ? f.median : f.p50));
+  const p90 = Number(p.p90 != null ? p.p90 : f.p90);
+  if(!(spot > 0 && [p10,p50,p90].every(v => Number.isFinite(v) && v > 0 && Math.abs(v/spot-1) <= 0.012))){
+    clearCone(); return;
+  }
+  if(window.kronosPro && window.kronosPro.corridorOn && !window.kronosPro.corridorOn()){ clearCone(); return; }
+  const path = Array.isArray(p.median_trajectory) ? p.median_trajectory : [];
+  const n = Math.max(1, Math.min(12, Number(f.horizon) || path.length || 12));
+  const times = Array.from({length:n}, (_, i)=>last.time + TF_MINUTES[TF]*60*(i+1));
+  const med = path.length ? path.slice(0,n) : Array(n).fill(p50);
+  const sig = [last.time, spot, p10, p50, p90, med.join(',')].join('|');
   if(sig === CONE.sig) return;
   CONE.sig = sig;
-  const n = Math.max(1, Math.min(Number(f.horizon)||12, 12));
-  const step = TF_MINUTES[TF] * 60;
-  const times = Array.from({length:n}, (_, i)=>last.time + step*(i+1));
-  const mc = Array.isArray(f.median_candles) ? f.median_candles : [];
-  const median = [{time:last.time, value:last.close}];
-  times.forEach((time, i)=>{
-    const v = Number((mc[i]||{}).c);
-    median.push({time, value:Number.isFinite(v) ? v : Number(f.median)});
-  });
-  SERIES.spot.median.setData(median);
+  SERIES.spot.median.setData([{time:last.time, value:last.close}]
+    .concat(times.map((time, i)=>({time, value:Number(med[i]) || p50}))));
   SERIES.spot.p90.setData([{time:last.time, value:last.close}]
-    .concat(times.map(time=>({time, value:+f.p90}))));
+    .concat(times.map(time=>({time, value:p90}))));
   SERIES.spot.p10.setData([{time:last.time, value:last.close}]
-    .concat(times.map(time=>({time, value:+f.p10}))));
-  const paths = (f.all_paths || []).slice(0, 12);
-  const startPrice=Number(last.close)||1;
-  if(window.kronosPro){
-    (SERIES.spot.paths||[]).forEach(s=>s.setData([]));
-    return;
-  }
-  (SERIES.spot.paths||[]).forEach((s, i)=>{
-    const path = paths[i];
-    if(!Array.isArray(path) || !path.length){ s.setData([]); return; }
-    const pts = [];
-    times.forEach((time, j)=>{
-      const value = Number(path[j]);
-      if(Number.isFinite(value)) pts.push({time, value});
-    });
-    const end=Number(path[path.length-1]);
-    const color=end>startPrice*1.001?'rgba(0,230,118,.45)':end<startPrice*.999?'rgba(255,82,82,.45)':'rgba(0,229,255,.55)';
-    try{ s.applyOptions({color, lineWidth:1}); }catch(e){}
-    s.setData(pts);
-  });
+    .concat(times.map(time=>({time, value:p10}))));
+  (SERIES.spot.paths||[]).forEach(s=>s.setData([]));
 }
 
 function renderOption(){
@@ -2581,7 +2593,7 @@ function renderOption(){
     }
   }
   if(!rows.length && one.length){ rows=one; current=o.current_candle; }
-  const data = toLwcCandles((rows||[]).slice(-120));
+  const data = toLwcCandles((rows||[]).slice(-150));
   const ltp=Number(o.ltp||0);
   mergeCurrent(data,current,ltp,current && current.volume);
   CHARTS.opt.__rows = {n:data.length, first:data[0]&&data[0].time, last:data[data.length-1]&&data[data.length-1].time};
@@ -2590,7 +2602,7 @@ function renderOption(){
   // Same rule for the option pane: seed once, never auto-scroll on a tick.
   if(data.length && !SERIES.opt.candle.__focused){
     SERIES.opt.candle.__focused = true;
-    try{ CHARTS.opt.timeScale().setVisibleLogicalRange({from:Math.max(0,data.length-60), to:data.length+8}); }catch(e){}
+    try{ CHARTS.opt.timeScale().setVisibleLogicalRange({from:Math.max(0,data.length-150), to:data.length+8}); }catch(e){}
   }
   const title = $('#optTitle');
   if(title) title.textContent = o.strike_symbol || 'ATM OPTION';
@@ -3821,6 +3833,99 @@ function paintParallelRadar(){
   if(meta) meta.textContent = `ACTIVE ${Number(p.active_count || 0)}/5 · CONTRIB ${(Number(p.total_pnl_contribution || 0) >= 0 ? '+' : '-')}₹${fmt(Math.abs(Number(p.total_pnl_contribution || 0)), 2)} · ${p.stale ? 'STALE' : 'LIVE V3'}`;
 }
 
+function paintModelVerdict(t){
+  const pill = $('#modelVerdictPill');
+  if(!pill) return;
+  const p = (t && t.model_projection) || {};
+  const m = ((t && t.model_brain) || {})[liveSymbol()] || {};
+  const total = Number(p.paths_total || m.paths_total || 0);
+  const bullish = Number(p.paths_bullish != null ? p.paths_bullish : m.paths_up || 0);
+  if(!total){ pill.textContent = '🧠 150-Candle × 100-Ways: WAITING FOR PROJECTION'; pill.className='model-verdict'; return; }
+  const pct = total ? (100*bullish/total) : 0;
+  const p10 = Number(p.p10), p50 = Number(p.p50), p90 = Number(p.p90);
+  pill.textContent = `🧠 150-Candle × 100-Ways: ${bullish}/${total} BULLISH (${pct.toFixed(1)}%) · p10: ${fmt(p10,2)} | Median: ${fmt(p50,2)} | p90: ${fmt(p90,2)}`;
+  pill.title = `${p.candles_analyzed || 150} candles · ${p.buffer_total || '—'} buffer · ${p.source || 'VECTORIZED'} · ${fmt(p.projection_ms,2)}ms`;
+  pill.className = 'model-verdict ' + (pct >= 55 ? 'bull' : pct <= 45 ? 'bear' : '');
+}
+
+function paintContractSelection(t){
+  const strip = $('#contractSelectionStrip');
+  if(!strip) return;
+  const sel = (t && t.option && t.option.selection) || (t && t.option_chart && t.option_chart.selection) || null;
+  if(!sel || !sel.contract){ strip.classList.remove('show'); return; }
+  strip.classList.add('show');
+  const mode = String(sel.mode || 'AUTO');
+  const icon = mode === 'LOCKED_TO_OPEN_TRADE' ? '🔒' : mode === 'MANUAL_PIN' ? '📌' : '🎯';
+  const prefix = mode === 'LOCKED_TO_OPEN_TRADE' ? 'LOCKED TO OPEN TRADE' : mode === 'MANUAL_PIN' ? 'PINNED' : 'ACTIVE WATCH';
+  const badge = $('#contractBadge');
+  if(badge) badge.textContent = `${icon} ${prefix}: ${sel.contract} (${mode === 'AUTO' ? 'AUTO-PICKED BY AI' : mode.replaceAll('_',' ')})`;
+  const host = $('#contractConditions');
+  if(host){
+    host.replaceChildren();
+    (sel.conditions || []).forEach(c=>{
+      const el=document.createElement('span');
+      el.className='contract-cond '+(c.pass?'pass':'fail');
+      el.textContent=`${c.pass?'✅':'❌'} ${c.label}: ${c.value}`;
+      host.appendChild(el);
+    });
+  }
+  const why = $('#contractWhy');
+  if(why) why.textContent = sel.reason_te || sel.reason || '5-condition AI selection evidence';
+  const key = `${sel.previous_side}>${sel.side}:${sel.transition_te||''}`;
+  if(sel.transition && sel.transition_te && LIVE.lastSelectionKey !== key){
+    LIVE.lastSelectionKey = key;
+    toast(sel.transition_te);
+  }
+}
+
+function paintExecutionHud(t){
+  const hud = $('#liveOrderHud');
+  if(!hud) return;
+  const tr = t && t.active_trade;
+  const open = !!tr && String(tr.status || '').toUpperCase() === 'OPEN';
+  if(!open){ hud.hidden = true; hud.classList.remove('show'); return; }
+  hud.hidden = false; hud.classList.add('show');
+  const sym = String(tr.option_symbol || tr.strike_symbol || 'NIFTY ATM').toUpperCase();
+  const qty = Number(tr.qty != null ? tr.qty : tr.qty_open || 0);
+  const entry = Number(tr.entry_price || 0);
+  const sl = Number(tr.current_trailing_sl || tr.sl_price || 0);
+  const t1 = Number(tr.target_1 || tr.t1 || 0), t2 = Number(tr.target_2_p90 || tr.target_2 || 0);
+  const badge = $('#execBadge');
+  if(badge) badge.textContent = `✅ ${tr.test_order || tr.sniper_grade === 'PAPER_TEST' ? 'PAPER' : (MODE.real ? 'LIVE' : 'PAPER')} ORDER EXECUTED · BUY ${sym} @ ₹${fmt(entry,2)} (${qty} Qty)`;
+  const t1Done = !!(tr.t1_booked || tr.t1_hit || Number(tr.t1_booked_qty)>0);
+  const slDone = t1Done || !!(tr.sl_trailed_to_cost) || (sl > 0 && entry > 0 && sl >= entry - 0.01);
+  const stages = [
+    ['✅ ENTRY', `₹${fmt(entry,2)} · ${qty} Qty`, true],
+    [`${t1Done?'✅':'🎯'} T1`, `₹${fmt(t1,2)} · 50% (${Math.round(qty/2)} Qty)`, t1Done],
+    [`${slDone?'✅':'🛡️'} SL`, t1Done ? `TRAILED TO COST ₹${fmt(entry+ (entry*0.005),2)}` : `₹${fmt(sl,2)}`, slDone],
+    [`${t1Done?'🚀':'⏳'} T2`, `₹${fmt(t2,2)} · GEAR-${tr.tsl_gear||5} RUNNER`, t1Done],
+  ];
+  const track = $('#execTrack');
+  if(track) track.innerHTML = stages.map(([label,val,done],i)=>`<span class="exec-step ${done?'done':(i===1&&t1Done?'live':'')}">${label}: ${val}</span>`).join('');
+  const close = $('#execCloseBtn');
+  if(close && !close.dataset.bound){ close.dataset.bound='1'; close.addEventListener('click', ()=>{ try{ closePosition(); }catch(e){} }); }
+}
+
+function applyFastDelta(d){
+  if(!d || d.fast !== true) return;
+  const base = LIVE.tick || {ok:true, live:true};
+  const merged = Object.assign({}, base, {
+    tick_seq: d.tick_seq, epoch: d.epoch, age_ms: d.age_ms, live: true,
+    data_gate: d.data_gate || base.data_gate,
+    entries_suspended: d.entries_suspended === true ? true : base.entries_suspended,
+    spot: Object.assign({}, base.spot || {}, d.spot || {}),
+    option: Object.assign({}, base.option || {}, d.option || {}),
+    indices: Object.assign({}, base.indices || {}, d.indices || {}),
+  });
+  if(base.option_chart && d.option){
+    merged.option_chart = Object.assign({}, base.option_chart, {
+      ltp: d.option.ltp, bid: d.option.bid, ask: d.option.ask,
+      obi_5: d.option.obi_5, delta: d.option.delta, iv: d.option.iv,
+    });
+  }
+  queueTick(merged);
+}
+
 function applyTick(t){
   if(!t) return;
   LIVE.tick = t;
@@ -3857,6 +3962,9 @@ function applyTick(t){
   }
   LIVE.opt = t.option || LIVE.opt;
   LIVE.trade = t.active_trade || null;
+  paintExecutionHud(t);
+  paintModelVerdict(t);
+  paintContractSelection(t);
   LIVE.mtf = t.mtf || LIVE.mtf || {};
   LIVE.smart = t.smart_entry || LIVE.smart || {};
   LIVE.xray = t.scanner_xray || [];
@@ -3925,6 +4033,8 @@ function connectStream(){
     const es = new EventSource('/api/tick-stream?symbol='+encodeURIComponent(liveSymbol()));
     LIVE.es = es;
     es.onmessage = ev => { try{ LIVE.lastTickAt=Date.now(); queueTick(JSON.parse(ev.data)); }catch(e){} };
+    es.addEventListener('tick', ev => { try{ LIVE.lastTickAt=Date.now(); queueTick(JSON.parse(ev.data)); }catch(e){} });
+    es.addEventListener('tick_delta', ev => { try{ LIVE.lastTickAt=Date.now(); applyFastDelta(JSON.parse(ev.data)); }catch(e){} });
     es.onerror = () => { /* EventSource reconnects; polling covers the gap */ };
   }catch(e){}
 }
