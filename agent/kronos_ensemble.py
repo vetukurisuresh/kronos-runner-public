@@ -56,6 +56,24 @@ class EnsembleUnavailable(RuntimeError):
     """Raised when torch, pandas or the weights are missing."""
 
 
+def _collapse_path_batch(batch: Any) -> Any:
+    """Normalise model output to ``[paths, horizon, features]``.
+
+    Different vendored model revisions return either four or five dimensions
+    (some add a singleton batch axis). Collapsing every leading axis keeps the
+    Monte Carlo count intact and prevents ``float(array)`` from being called on
+    a non-scalar ndarray.
+    """
+    ndim = int(getattr(batch, "ndim", 0) or 0)
+    if ndim < 3:
+        raise ValueError(f"forecast batch must have at least 3 dimensions, got {ndim}")
+    if int(batch.shape[-1]) < 5:
+        raise ValueError("forecast batch is missing OHLCV features")
+    while int(batch.ndim) > 3:
+        batch = batch.reshape(-1, batch.shape[-2], batch.shape[-1])
+    return batch
+
+
 # --------------------------------------------------------------------------- #
 # value objects
 # --------------------------------------------------------------------------- #
@@ -377,10 +395,10 @@ class KronosTrioEnsemble:
                 verbose=False,
             )
 
-        # auto_regressive_inference returns [batch, draws, pred_len, 5]; collapse
-        # the batch axis so each row is one Monte Carlo path.
-        if batch.ndim == 4:
-            batch = batch.reshape(-1, batch.shape[-2], batch.shape[-1])
+        # auto_regressive_inference normally returns [batch, draws, pred_len, 5],
+        # but some checkpoints add another singleton axis. Collapse every
+        # leading axis so each row is exactly one Monte Carlo path.
+        batch = _collapse_path_batch(batch)
         draws_n = int(batch.shape[0])
         closes = [[float(value) for value in batch[i, :, 3]] for i in range(draws_n)]
         finals = [path[-1] for path in closes]

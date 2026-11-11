@@ -38,11 +38,27 @@ from agent.kronos_ensemble import (  # noqa: E402
     CONE_TIGHT_RATIO,
     KronosTrioEnsemble,
     ModelForecast,
+    _collapse_path_batch,
     decide_trio,
     quantiles,
 )
 
 HAS_TORCH = importlib.util.find_spec("torch") is not None
+
+
+def test_forecast_batch_collapses_extra_leading_axes() -> None:
+    import numpy as np
+
+    batch = np.zeros((1, 2, 1, 3, 5), dtype=float)
+    collapsed = _collapse_path_batch(batch)
+    assert collapsed.shape == (2, 3, 5)
+
+
+def test_forecast_batch_rejects_missing_ohlcv_features() -> None:
+    import numpy as np
+
+    with pytest.raises(ValueError, match="OHLCV"):
+        _collapse_path_batch(np.zeros((2, 3, 4), dtype=float))
 HAS_PANDAS = importlib.util.find_spec("pandas") is not None
 ROLES = ("base", "small", "mini")
 TOKENIZERS = ("Kronos-Tokenizer-base", "Kronos-Tokenizer-2k")

@@ -31,8 +31,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 LOG_DIR = REPO_ROOT / "state" / "logs"
+TOKEN_FILE = REPO_ROOT / "state" / "upstox_token.json"
 
 MOBILE_SELECTORS = [
+    "#mobileNum",
     "input[type=tel]",
     "input[name=mobile]",
     "input[name=mobileNumber]",
@@ -47,6 +49,7 @@ PIN_SELECTORS = [
     "input[autocomplete=current-password]",
 ]
 TOTP_SELECTORS = [
+    "#otpNum",
     "input[name=otp]",
     "input[name=totp]",
     "input[autocomplete='one-time-code']",
@@ -55,6 +58,7 @@ TOTP_SELECTORS = [
 ]
 SUBMIT_SELECTORS = [
     "button[type=submit]",
+    "button:has-text('Get OTP')",
     "button:has-text('Continue')",
     "button:has-text('Next')",
     "button:has-text('Verify')",
@@ -140,12 +144,10 @@ def _fill_totp(page, code: str) -> bool:
     if field is None:
         return False
     try:
-        if (field.get_attribute("maxlength") or "") == "1":
-            field.click()
-            for char in code:
-                page.keyboard.type(char)
-        else:
-            field.fill(code)
+        # Upstox's React OTP field needs real key events before Continue enables;
+        # fill() alone leaves the button disabled on the current login page.
+        field.click()
+        page.keyboard.type(code, delay=45)
     except Exception:  # noqa: BLE001 - fall back to a plain fill
         field.fill(code)
     _submit(page)
@@ -183,13 +185,13 @@ def run_login(mobile: str, pin: str, totp_secret: str, redirect_uri: str,
             if not _fill_first(page, MOBILE_SELECTORS, mobile, 30000):
                 raise RuntimeError("mobile/user-id field not found")
 
-            # Current Upstox web login: mobile -> PIN -> authenticator code.
-            # Some accounts skip the PIN screen and show the authenticator first.
-            _fill_first(page, PIN_SELECTORS, pin, 25000)
+            # Current Upstox web login: mobile -> OTP/TOTP -> PIN.  Some
+            # accounts show only a PIN; the TOTP attempt then times out cleanly.
             _fill_totp(
                 page,
                 pyotp.TOTP(totp_secret.replace(" ", "").replace("-", "").upper()).now(),
             )
+            _fill_first(page, PIN_SELECTORS, pin, 25000)
 
             # The OAuth consent screen can follow the 2FA screen.
             for _ in range(3):
@@ -222,6 +224,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--push-secret", action="store_true",
                         help="update UPSTOX_ACCESS_TOKEN in GitHub Actions secrets")
     parser.add_argument("--headed", action="store_true")
+    parser.add_argument("--require", action="store_true",
+                        help="fail instead of silently falling back when credentials are absent")
     args = parser.parse_args(argv)
 
     mobile = read_env("UPSTOX_MOBILE")
@@ -240,7 +244,7 @@ def main(argv: list[str] | None = None) -> int:
     ]
     if missing:
         print(f"auto-login not configured (missing: {', '.join(missing)}) - phone flow stays active")
-        return 0
+        return 2 if args.require else 0
 
     redirect = (read_env("UPSTOX_MOBILE_REDIRECT_URI")
                 or "https://vetukurisuresh.github.io/kronos-runner-public/")
@@ -253,7 +257,12 @@ def main(argv: list[str] | None = None) -> int:
         print("auto-login finished without a code")
         return 3
 
-    from market.upstox_health import exchange_code, save_access_token
+    from market.upstox_health import (
+        exchange_code,
+        record_verification,
+        save_access_token,
+        verify_token,
+    )
 
     try:
         result = exchange_code(code, api_key, api_secret, redirect)
@@ -269,6 +278,11 @@ def main(argv: list[str] | None = None) -> int:
         print("token exchange returned no access_token")
         return 3
 
+    probe = verify_token(access_token)
+    if not probe.get("ok"):
+        print(f"token minted but profile verification failed: HTTP {probe.get('status')}")
+        return 6
+
     try:
         meta = save_access_token(
             access_token,
@@ -277,6 +291,7 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:  # noqa: BLE001
         print(f"local token save failed: {type(exc).__name__}: {exc}")
         return 5
+    record_verification(True, probe.get("status"), TOKEN_FILE)
     print(f"token minted for {user or 'unknown user'} ({meta['length']} chars)")
 
     try:
@@ -315,10 +330,22 @@ def main(argv: list[str] | None = None) -> int:
         return 5
     print(f"token published to Firebase; expires {expiry.isoformat(timespec='minutes')}")
 
+    try:
+        from market.autopilot_readiness import update_auth_readiness
+
+        update_auth_readiness(
+            minted_at_ist=now.isoformat(timespec="seconds"),
+            verified=True,
+            user=str(user or ""),
+        )
+        print("premarket readiness: auth_minted=true")
+    except Exception as exc:  # noqa: BLE001 - token is already useful
+        print(f"readiness publish failed: {type(exc).__name__}: {exc}")
+
     if args.push_secret:
         repo = (os.environ.get("GITHUB_REPOSITORY")
                 or read_env("GITHUB_REPOSITORY")
-                or "vetukurisuresh/kronos-runner-public")
+                or "vetukurisuresh/kronos-trading-brain")
         sys.path.insert(0, str(REPO_ROOT / "scripts"))
         try:
             from set_github_secrets import main as upload_secret

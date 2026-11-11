@@ -134,7 +134,7 @@ def test_t1_books_half_and_moves_stop_to_breakeven() -> None:
     assert legs[0]["qty"] == 150 and legs[0]["pnl"] == 2250.0
     assert trade["qty_open"] == 150
     assert trade["realized_pnl_rs"] == 2250.0
-    assert trade["current_trailing_sl"] == 100.0     # breakeven, not the old 90
+    assert trade["current_trailing_sl"] == 101.5     # Gear-2 breakeven + Rs 1.50
     assert trade["status"] == "OPEN"
     assert trade["live_pnl_rs"] == 4500.0             # 2,250 booked + 2,250 open
     # Nothing is booked twice on the next tick.
@@ -158,10 +158,10 @@ def test_t2_books_the_remaining_half_and_closes() -> None:
 def test_stop_after_t1_only_realises_the_open_half() -> None:
     trade = new_trade(100.0, 10.0, qty=300)
     book_partials(trade, 115.0)
-    leg = close_remaining(trade, 100.0, reason="SL")
+    leg = close_remaining(trade, 101.5, reason="SL")
     assert leg is not None and leg["qty"] == 150
-    assert leg["pnl"] == 0.0                          # breakeven stop
-    assert trade["realized_pnl_rs"] == 2250.0         # T1 banked, T2 half flat
+    assert leg["pnl"] == 225.0                        # Entry + Rs 1.50 locked
+    assert trade["realized_pnl_rs"] == 2475.0         # T1 banked, T2 half locks 1.5 pts
     assert trade["status"] == "CLOSED" and trade["qty_open"] == 0
     assert trade["exit_reason"] == "SL"
     assert close_remaining(trade, 100.0) is None      # nothing left to book

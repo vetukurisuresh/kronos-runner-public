@@ -73,6 +73,7 @@ def test_five_minute_and_one_minute_bars_stay_in_sync() -> None:
     engine.on_tick(KEY, 200.0, ts_ms=(BASE + 12 * 60) * 1000)
     assert len(engine.windows(KEY, 1)) >= 12
     assert len(engine.windows(KEY, 5)) >= 2
+    assert len(engine.windows(KEY, 15)) >= 0
 
 
 def test_telemetry_ribbon_reports_quote_and_oi_change() -> None:
@@ -111,5 +112,5 @@ def test_flush_seals_open_buckets() -> None:
     engine = UpstoxTickEngine()
     engine.on_tick(KEY, 100.0, ts_ms=(BASE + 10) * 1000)
     closed = engine.flush()
-    assert len(closed) == 2  # 1m and 5m
+    assert len(closed) == 3  # 1m, 5m and 15m
     assert engine.windows(KEY, 1)[0].close == 100.0

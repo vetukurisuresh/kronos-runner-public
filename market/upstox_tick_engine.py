@@ -28,17 +28,26 @@ import json
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterable
+from datetime import datetime, timedelta, timezone
+from typing import Any, Callable, Iterable, Mapping
+from urllib.parse import quote
 
 import requests
 
 from market.upstox_stream import Candle
+from market.upstox_full_decoder import decode_frame
+from market.data_sanitizer import SanitizedTickPipeline, SanitizeResult
 
 RING_CAPACITY = 512
-INTERVALS = (1, 5)
+INTERVALS = (1, 5, 15)
 TICK_SCAN_MS = 100
 MINUTE_SCAN_SEC = 60
 MASTER_SCAN_SEC = 300
+IST = timezone(timedelta(hours=5, minutes=30))
+V3_INTRADAY_URL = "https://api.upstox.com/v3/historical-candle/intraday/{key}/minutes/{minutes}"
+V3_HISTORY_URL = (
+    "https://api.upstox.com/v3/historical-candle/{key}/minutes/{minutes}/{to_date}/{from_date}"
+)
 TELUGU_RECONNECT = "⚠️ సిగ్నల్ కట్ అయింది, మళ్లీ కనెక్ట్ చేస్తున్నాను..."
 RETRY_STATUSES = (502, 503, 504)
 
@@ -137,17 +146,60 @@ class Quote:
     vtt: float = 0.0
     bid: float = 0.0
     ask: float = 0.0
-    bid_qty: int = 0
-    ask_qty: int = 0
+    bid_qty: int = 0  # aggregate across all five levels
+    ask_qty: int = 0  # aggregate across all five levels
+    bid_qty_5lvl: int = 0
+    ask_qty_5lvl: int = 0
+    bid_qty_top: int = 0
+    ask_qty_top: int = 0
     delta: float = 0.0
+    theta: float = 0.0
+    gamma: float = 0.0
+    vega: float = 0.0
+    rho: float = 0.0
     iv: float = 0.0
+    tbq: float = 0.0
+    tsq: float = 0.0
+    ltq: int = 0
+    cp: float = 0.0
+    bids: list[dict[str, float]] = field(default_factory=list)
+    asks: list[dict[str, float]] = field(default_factory=list)
+    market_ohlc: dict[str, dict[str, float]] = field(default_factory=dict)
     ts: float = 0.0
 
     def merge(self, **fields: float) -> "Quote":
         for name, value in fields.items():
             if value is None or name not in self.__dataclass_fields__:
                 continue
-            if name in {"ts", "bid_qty", "ask_qty"}:
+            if name in {"bids", "asks"}:
+                if value:
+                    setattr(self, name, value)
+                    top = "bid_qty_top" if name == "bids" else "ask_qty_top"
+                    if not getattr(self, top):
+                        try:
+                            setattr(self, top, int(float(value[0].get("qty") or 0)))
+                        except (AttributeError, IndexError, TypeError, ValueError):
+                            pass
+            elif name == "market_ohlc":
+                if value:
+                    setattr(self, name, value)
+            elif name in {"theta", "gamma", "vega", "rho", "delta", "cp"}:
+                if value is not None:
+                    setattr(self, name, float(value))
+            elif name == "bid_qty_5":
+                if value:
+                    self.bid_qty_5lvl = int(float(value))
+            elif name == "ask_qty_5":
+                if value:
+                    self.ask_qty_5lvl = int(float(value))
+            elif name in {"bid_qty", "ask_qty"}:
+                if value:
+                    setattr(self, name, int(value))
+                    alias = "bid_qty_5lvl" if name == "bid_qty" else "ask_qty_5lvl"
+                    if not getattr(self, alias):
+                        setattr(self, alias, int(value))
+            elif name in {"ts", "bid_qty_5lvl", "ask_qty_5lvl",
+                         "bid_qty_top", "ask_qty_top", "ltq"}:
                 if value:
                     setattr(self, name, int(value))
             elif float(value) > 0:
@@ -170,7 +222,22 @@ class Quote:
             "ask": round(self.ask, 2),
             "bid_qty": self.bid_qty,
             "ask_qty": self.ask_qty,
+            "bid_qty_5lvl": self.bid_qty_5lvl or self.bid_qty,
+            "ask_qty_5lvl": self.ask_qty_5lvl or self.ask_qty,
+            "bid_qty_top": self.bid_qty_top,
+            "ask_qty_top": self.ask_qty_top,
             "delta": round(self.delta, 3),
+            "theta": round(self.theta, 4),
+            "gamma": round(self.gamma, 6),
+            "vega": round(self.vega, 4),
+            "rho": round(self.rho, 4),
+            "tbq": round(self.tbq, 2),
+            "tsq": round(self.tsq, 2),
+            "tbq_tsq": round(self.tbq / self.tsq, 4) if self.tsq else 0.0,
+            "ltq": self.ltq,
+            "cp": round(self.cp, 2),
+            "bids": list(self.bids),
+            "asks": list(self.asks),
             "iv": round(self.iv, 2),
             "spread": self.spread,
             "ts": round(self.ts, 3),
@@ -189,6 +256,9 @@ class RingBuffer:
     def append(self, candle: Candle) -> Candle:
         self._items.append(candle)
         return candle
+
+    def clear(self) -> None:
+        self._items.clear()
 
     def __len__(self) -> int:
         return len(self._items)
@@ -232,6 +302,7 @@ class InstrumentState:
     oi_history: deque[tuple[float, float]] = field(
         default_factory=lambda: deque(maxlen=RING_CAPACITY)
     )
+    market_ohlc: dict[str, dict[str, float]] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -241,6 +312,7 @@ class InstrumentState:
             "quote": self.quote.as_dict(),
             "bars": {f"{minutes}m": len(self.buffers[minutes]) for minutes in INTERVALS},
             "ring_full": all(self.buffers[minutes].full for minutes in INTERVALS),
+            "market_ohlc": self.market_ohlc,
         }
 
 
@@ -249,71 +321,198 @@ def _align(epoch: float, minutes: int) -> int:
     return int(epoch) - (int(epoch) % step)
 
 
-def _depth(payload: dict[str, Any]) -> dict[str, float]:
+def _depth(payload: dict[str, Any]) -> dict[str, Any]:
+    """Legacy five-level depth: aggregate quantities, expose the top level."""
     quotes = ((payload.get("marketLevel") or {}).get("bidAskQuote") or [])
-    if not quotes:
+    bids: list[dict[str, float]] = []
+    asks: list[dict[str, float]] = []
+    for raw in quotes[:5]:
+        row = raw or {}
+        bid_p = float(row.get("bidP") or row.get("bid") or 0.0)
+        bid_q = float(row.get("bidQ") or row.get("bidQty") or 0.0)
+        ask_p = float(row.get("askP") or row.get("ask") or 0.0)
+        ask_q = float(row.get("askQ") or row.get("askQty") or 0.0)
+        if bid_p > 0 and bid_q > 0:
+            bids.append({"price": round(bid_p, 2), "qty": round(bid_q, 2)})
+        if ask_p > 0 and ask_q > 0:
+            asks.append({"price": round(ask_p, 2), "qty": round(ask_q, 2)})
+    if not bids and not asks:
         return {}
-    top = quotes[0] or {}
     return {
-        "bid": top.get("bidP") or top.get("bid") or 0.0,
-        "bid_qty": top.get("bidQ") or top.get("bidQty") or 0,
-        "ask": top.get("askP") or top.get("ask") or 0.0,
-        "ask_qty": top.get("askQ") or top.get("askQty") or 0,
+        "bid": bids[0]["price"] if bids else 0.0,
+        "bid_qty": sum(row["qty"] for row in bids),
+        "bid_qty_top": bids[0]["qty"] if bids else 0,
+        "ask": asks[0]["price"] if asks else 0.0,
+        "ask_qty": sum(row["qty"] for row in asks),
+        "ask_qty_top": asks[0]["qty"] if asks else 0,
+        "bids": bids,
+        "asks": asks,
     }
 
 
 def parse_v3_frames(raw: str | bytes | dict) -> list[tuple[str, dict[str, Any]]]:
     """Decode one V3 frame into ``(instrument_key, tick_fields)`` pairs."""
-    if isinstance(raw, (str, bytes)):
-        try:
-            payload = json.loads(raw)
-        except (TypeError, ValueError):
-            return []
+    return decode_frame(raw).ticks
+
+
+def _candle_epoch(value: Any) -> int:
+    """Upstox returns ISO-8601 timestamps; replay fixtures sometimes use epoch."""
+    if isinstance(value, (int, float)):
+        number = float(value)
+        return int(number / 1000.0) if number > 100_000_000_000 else int(number)
+    text = str(value or "").strip()
+    if not text:
+        return 0
+    try:
+        moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=IST)
+        return int(moment.timestamp())
+    except ValueError:
+        return 0
+
+
+def parse_upstox_candle_row(row: list[Any] | tuple[Any, ...], minutes: int) -> Candle | None:
+    """Convert one official V3 candle row into the engine's sealed bar shape."""
+    try:
+        start = _candle_epoch(row[0])
+        open_, high, low, close = (float(row[index]) for index in (1, 2, 3, 4))
+        volume = float(row[5] or 0.0)
+    except (IndexError, TypeError, ValueError):
+        return None
+    if start <= 0 or min(open_, high, low, close) <= 0:
+        return None
+    return Candle(
+        start=start,
+        minutes=minutes,
+        open=open_,
+        high=high,
+        low=low,
+        close=close,
+        volume=volume,
+        ticks=0,
+    )
+
+
+def _candles_from_payload(payload: dict[str, Any], minutes: int) -> list[Candle]:
+    rows = ((payload or {}).get("data") or {}).get("candles") or []
+    parsed = [parse_upstox_candle_row(row, minutes) for row in rows]
+    return [candle for candle in parsed if candle is not None]
+
+
+def fetch_upstox_candles(
+    instrument_key: str,
+    minutes: int,
+    *,
+    access_token: str,
+    intraday: bool = True,
+    to_date: str = "",
+    from_date: str = "",
+    timeout: float = 15.0,
+    session: Any = None,
+) -> list[Candle]:
+    """Fetch one official Upstox V3 candle endpoint.
+
+    ``intraday=True`` maps to the V3 intraday path. Historical requests require
+    both dates (``YYYY-MM-DD``) and are used to fill the 512-bar ring. The HTTP
+    session is injectable so parity tests never touch the broker.
+    """
+    if not instrument_key:
+        raise ValueError("instrument_key is required")
+    if minutes not in INTERVALS:
+        raise ValueError(f"minutes must be one of {INTERVALS}")
+    if not access_token:
+        raise ValueError("UPSTOX_ACCESS_TOKEN is required")
+    key = quote(str(instrument_key), safe="")
+    if intraday:
+        url = V3_INTRADAY_URL.format(key=key, minutes=minutes)
+        params: dict[str, str] = {}
     else:
-        payload = raw
-    feeds = (payload or {}).get("feeds") or {}
-    out: list[tuple[str, dict[str, Any]]] = []
-    for key, feed in feeds.items():
-        feed = feed or {}
-        market = ((feed.get("ff") or {}).get("marketFF")) or feed.get("ltpc") or {}
-        ltpc = market.get("ltpc") or feed.get("ltpc") or market
-        price = ltpc.get("ltp", market.get("ltp"))
-        if price is None:
-            continue
-        details = market.get("eFeedDetails") or {}
-        greeks = market.get("optionGreeks") or {}
-        tick: dict[str, Any] = {
-            "price": float(price),
-            "volume": float(details.get("vtt") or ltpc.get("ltq") or 0.0),
-            "ts_ms": float(ltpc.get("ltt") or time.time() * 1000),
-            "atp": details.get("atp"),
-            "oi": details.get("oi"),
-            "vtt": details.get("vtt"),
-            "delta": greeks.get("delta"),
-            "iv": greeks.get("iv"),
-            **_depth(market),
-        }
-        out.append((key, tick))
-    return out
+        if not to_date or not from_date:
+            raise ValueError("to_date and from_date are required for historical candles")
+        url = V3_HISTORY_URL.format(
+            key=key, minutes=minutes, to_date=to_date, from_date=from_date
+        )
+        params = {}
+    client = session or requests
+    response = client.get(
+        url,
+        params=params,
+        headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+        timeout=timeout,
+    )
+    response.raise_for_status()
+    return sorted(_candles_from_payload(response.json(), minutes), key=lambda candle: candle.start)
+
+
+def fetch_official_backfill(
+    instrument_key: str,
+    minutes: int,
+    *,
+    access_token: str,
+    days: int = 30,
+    timeout: float = 15.0,
+    session: Any = None,
+    today: datetime | None = None,
+) -> list[Candle]:
+    """Seed 512 bars from official prior-day + today intraday candles.
+
+    Prior sessions are requested first, then today's intraday endpoint is merged
+    and de-duplicated. A failure on one leg does not silently fabricate data; the
+    remaining official leg is returned, and an empty result is raised to the
+    caller as an unavailable broker archive.
+    """
+    current = today or datetime.now(tz=IST)
+    end = current.date() - timedelta(days=1)
+    start = end - timedelta(days=max(int(days), 1))
+    bars: list[Candle] = []
+    try:
+        bars.extend(
+            fetch_upstox_candles(
+                instrument_key, minutes, access_token=access_token, intraday=False,
+                to_date=end.isoformat(), from_date=start.isoformat(), timeout=timeout,
+                session=session,
+            )
+        )
+    except Exception:  # noqa: BLE001 - today's intraday may still be available
+        pass
+    try:
+        bars.extend(
+            fetch_upstox_candles(
+                instrument_key, minutes, access_token=access_token, intraday=True,
+                timeout=timeout, session=session,
+            )
+        )
+    except Exception:  # noqa: BLE001 - caller may still use historical bars
+        pass
+    unique = {candle.start: candle for candle in bars}
+    ordered = sorted(unique.values(), key=lambda candle: candle.start)
+    if not ordered:
+        raise RuntimeError(f"Upstox returned no official {minutes}m candles for {instrument_key}")
+    return ordered[-RING_CAPACITY:]
 
 
 class UpstoxTickEngine:
-    """Tick -> 1m/5m candles -> three scan speeds."""
+    """Tick -> 1m/5m/15m candles -> three scan speeds."""
 
     def __init__(
         self,
         capacity: int = RING_CAPACITY,
         on_minute: Callable[[str, Candle], None] | None = None,
         on_five_minute: Callable[[str, Candle], None] | None = None,
+        on_fifteen_minute: Callable[[str, Candle], None] | None = None,
         clock: Callable[[], float] = time.time,
+        sanitizer: SanitizedTickPipeline | None = None,
     ) -> None:
         self.capacity = int(capacity)
         self.on_minute = on_minute
         self.on_five_minute = on_five_minute
+        self.on_fifteen_minute = on_fifteen_minute
         self.clock = clock
+        self.sanitizer = sanitizer or SanitizedTickPipeline(clock=clock)
         self.instruments: dict[str, InstrumentState] = {}
         self.ticks = 0
-        self.sealed: dict[str, int] = {"1m": 0, "5m": 0}
+        self.sealed: dict[str, int] = {"1m": 0, "5m": 0, "15m": 0}
         self.last_tick_scan = 0.0
         self.last_minute_scan = 0.0
         self.last_master_scan = 0.0
@@ -356,11 +555,51 @@ class UpstoxTickEngine:
 
     # -- ingest ------------------------------------------------------------
     def on_frame(self, raw: str | bytes | dict) -> dict[str, Any]:
-        """Consume one frame; returns the candles sealed by it."""
+        """Consume one protobuf frame through the sub-ms sanitizer."""
         closed: list[dict[str, Any]] = []
+        rejected = 0
         for key, tick in parse_v3_frames(raw):
-            closed.extend(self.on_tick(key, **tick))
-        return {"sealed": closed, "ticks": self.ticks}
+            result = self.ingest_tick(key, tick)
+            if not result.ok:
+                rejected += 1
+                continue
+            closed.extend(result.sealed)
+        return {
+            "sealed": closed,
+            "ticks": self.ticks,
+            "rejected": rejected,
+            "sanitizer": self.sanitizer.snapshot(),
+        }
+
+    def ingest_tick(self, key: str, tick: Any = None, **fields: Any) -> SanitizeResult:
+        """Sanitize a decoded socket tick, then update the candle rings.
+
+        Accepts either ``ingest_tick(key, decoded_tick)`` or the live session's
+        ``ingest_tick(key, price, volume=delta, ts_ms=..., **tick_fields)``.
+        The live path uses this method, not :meth:`on_tick`, so a corrupt
+        protobuf frame can never reach the 512-bar buffers or KRONOS models.
+        """
+        if isinstance(tick, Mapping):
+            payload = dict(tick)
+            payload.update(fields)
+        else:
+            payload = {"price": tick, "ltp": tick, **fields}
+        result = self.sanitizer.sanitize_tick(key, payload)
+        if not result.ok or not result.tick:
+            return result
+        clean = dict(result.tick)
+        try:
+            price = float(clean.pop("ltp", clean.pop("price", 0.0)))
+        except (TypeError, ValueError):
+            return result
+        volume = float(clean.pop("volume", 0.0) or 0.0)
+        amount = float(clean.pop("amount", 0.0) or 0.0)
+        ts_ms = clean.pop("ts_ms", clean.pop("ltt", None))
+        clean.pop("timestamp", None)
+        result.sealed = self.on_tick(
+            key, price, volume=volume, ts_ms=ts_ms, amount=amount, **clean
+        )
+        return result
 
     def on_tick(
         self,
@@ -368,13 +607,20 @@ class UpstoxTickEngine:
         price: float,
         volume: float = 0.0,
         ts_ms: float | None = None,
+        amount: float = 0.0,
         **fields: float,
     ) -> list[dict[str, Any]]:
         if price <= 0:
             return []
         epoch = float(ts_ms) / 1000.0 if ts_ms else self.clock()
         state = self.register(key)
-        state.quote.merge(ltp=price, ts=epoch, **{k: v for k, v in fields.items() if v is not None})
+        clean_fields = {
+            key: value for key, value in fields.items()
+            if value is not None and key not in {"ltp", "price", "ts_ms", "ltt"}
+        }
+        state.quote.merge(ltp=price, ts=epoch, **clean_fields)
+        if fields.get("market_ohlc"):
+            state.market_ohlc = dict(fields["market_ohlc"])
         oi_value = float(fields.get("oi") or 0.0)
         if oi_value > 0:
             state.oi_history.append((epoch, oi_value))
@@ -392,6 +638,7 @@ class UpstoxTickEngine:
                     "low": price,
                     "close": price,
                     "volume": volume,
+                    "amount": amount,
                 }
                 continue
             if current["key"] != bucket_key:
@@ -403,12 +650,14 @@ class UpstoxTickEngine:
                     "low": price,
                     "close": price,
                     "volume": volume,
+                    "amount": amount,
                 }
             else:
                 current["high"] = max(current["high"], price)
                 current["low"] = min(current["low"], price)
                 current["close"] = price
                 current["volume"] += volume
+                current["amount"] = current.get("amount", 0.0) + amount
         return closed
 
     def _seal(self, state: InstrumentState, minutes: int) -> dict[str, Any]:
@@ -422,14 +671,85 @@ class UpstoxTickEngine:
             close=float(bucket["close"]),
             volume=float(bucket["volume"]),
             ticks=1,
+            amount=float(bucket.get("amount") or 0.0),
         )
         state.buffers[minutes].append(candle)
         name = f"{minutes}m"
         self.sealed[name] = self.sealed.get(name, 0) + 1
-        callback = self.on_minute if minutes == 1 else self.on_five_minute
+        callback = {
+            1: self.on_minute,
+            5: self.on_five_minute,
+            15: self.on_fifteen_minute,
+        }.get(minutes)
         if callback is not None:
             callback(state.key, candle)
         return {"key": state.key, "minutes": minutes, "candle": candle.as_dict()}
+
+    def seed(self, key: str, minutes: int, candles: Iterable[Candle]) -> int:
+        """Replace a buffer with official REST candles (oldest first).
+
+        This is the only supported way to pre-fill the 512-bar window. It never
+        fabricates a bar, so a chart seeded from Upstox is byte-for-byte the
+        broker's OHLC instead of a local approximation.
+        """
+        if minutes not in INTERVALS:
+            raise ValueError(f"unsupported interval {minutes}; use one of {INTERVALS}")
+        state = self.register(key)
+        ring = state.buffers[minutes]
+        ring.clear()
+        rows = sorted(
+            {int(candle.start): candle for candle in candles}.values(),
+            key=lambda candle: candle.start,
+        )
+        for candle in rows[-self.capacity:]:
+            ring.append(candle)
+        return len(ring)
+
+    def current(self, key: str, minutes: int) -> dict[str, Any] | None:
+        """The forming bucket using the exchange ``ltt`` timestamp."""
+        state = self.instruments.get(key)
+        if state is None:
+            return None
+        bucket = state._open.get(minutes)
+        if not bucket:
+            return None
+        return {
+            "time": int(bucket["key"]),
+            "open": round(float(bucket["open"]), 2),
+            "high": round(float(bucket["high"]), 2),
+            "low": round(float(bucket["low"]), 2),
+            "close": round(float(bucket["close"]), 2),
+            "volume": round(float(bucket["volume"]), 2),
+            "amount": round(float(bucket.get("amount") or 0.0), 2),
+        }
+
+    def reconcile(self, key: str, minutes: int, candle: Candle) -> bool:
+        """Replace the matching official bar (or append) without inventing data.
+
+        The live session calls this after comparing the last sealed bar with the
+        broker's newest intraday candle. Returns ``True`` when the ring changed.
+        """
+        if minutes not in INTERVALS:
+            return False
+        ring = self.register(key).buffers[minutes]
+        rows = list(ring)
+        if not rows or candle.start > rows[-1].start:
+            ring.append(candle)
+            return True
+        matched = False
+        for index in range(len(rows) - 1, -1, -1):
+            if rows[index].start == candle.start:
+                rows[index] = candle
+                matched = True
+                break
+            if rows[index].start < candle.start:
+                break
+        if not matched:
+            return False
+        ring.clear()
+        for row in rows:
+            ring.append(row)
+        return True
 
     def flush(self) -> list[dict[str, Any]]:
         """Force-close open buckets (called at session close)."""

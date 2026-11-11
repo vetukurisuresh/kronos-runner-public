@@ -186,6 +186,110 @@ class StoryTeller:
         return self._say("\U0001F534", "స్టాప్ హిట్", text, "loss",
                          {"price": price, "pnl": pnl})
 
+    def manual_smart_exit(self, *, price: float, pnl: float, qty: int) -> dict:
+        """Narrate the one-click live-price exit in the trader's Telugu."""
+        text = (
+            f"\u26A1 యూజర్ స్మార్ట్ ఎగ్జిట్: ప్రస్తుత లైవ్ ధర \u20b9{price:,.2f} వద్ద "
+            f"{int(qty)} Qty పొజిషన్ మొత్తం క్లోజ్ చేసి {rupees(pnl)} లాభం లాక్ చేయబడింది! "
+            "పెండింగ్ SL మరియు టార్గెట్ ఆర్డర్లు రద్దు చేయబడ్డాయి."
+        )
+        return self._say("\u26A1", "స్మార్ట్ లైవ్ ఎగ్జిట్", text, "win",
+                         {"price": price, "pnl": pnl, "qty": qty})
+
+    # -- 5b. sniper reversal + Greek targets -------------------------------
+    def sniper_entry(self, *, symbol: str, side: str, entry: float, stop: float,
+                     target1: float, target2: float, signatures: int, reason: str,
+                     p65: float = 0.0, p90: float = 0.0,
+                     formula: dict | None = None) -> dict:
+        """Explain why the sniper fired before retail candle confirmation."""
+        formula = formula or {}
+        t1 = formula.get("t1") or {}
+        text = (
+            f"\U0001F3AF {_side_word(side)} స్నైపర్ ఎంట్రీ — {symbol} \u20b9{entry:,.2f} వద్ద. "
+            f"5/5 సిగ్నేచర్స్ కలిశాయి ({signatures}/5): {reason}. "
+            "రిటైల్ క్యాండిల్ కన్ఫర్మేషన్ కోసం ఎదురుచూడకుండా, "
+            "ఆర్డర్-ఫ్లో మరియు ఫ్యూచర్స్ వాల్యూమ్ ముందే రివర్సల్ చూపించాయి. "
+            f"స్టాప్ \u20b9{stop:,.2f}; T1 \u20b9{target1:,.2f} (p65, 50% బుక్, "
+            f"\u0394+\u0393 = \u20b9{t1.get('delta_term', 0):+.2f} + \u20b9{t1.get('gamma_term', 0):+.2f}); "
+            f"T2 \u20b9{target2:,.2f} (p90 వేవ్, ఫైనల్ ఎగ్జిట్)."
+        )
+        return self._say("\U0001F3AF", "స్నైపర్ రివర్సల్", text, "trade",
+                         {"symbol": symbol, "side": side, "entry": entry,
+                          "stop": stop, "target1": target1, "target2": target2,
+                          "signatures": signatures, "p65": p65, "p90": p90,
+                          "formula": formula})
+
+    def hero_entry(self, *, symbol: str, side: str, entry: float, stop: float,
+                   target1: float, target2: float, window: str, score: float) -> dict:
+        """Narrate the millisecond Gamma Blast entry in plain Telugu."""
+        text = (
+            f"\U0001F4A5 జీరో-టూ-హీరో ఎంట్రీ — {symbol} {_side_word(side)} \u20b9{entry:,.2f} వద్ద. "
+            f"{window}. హీరో స్కోర్ {score:.0f}/100; థీటా క్రష్కి ముందే గామా బ్లాస్ట్ "
+            f"అంచున కొన్నాం. స్టాప్ \u20b9{stop:,.2f} (₹3–₹6 మైక్రో SL), "
+            f"2x లాక్ \u20b9{target1:,.2f}, p90 హార్వెస్ట్ \u20b9{target2:,.2f}."
+        )
+        return self._say("\U0001F4A5", "జీరో-టూ-హీరో ఎంట్రీ", text, "trade",
+                         {"symbol": symbol, "side": side, "entry": entry,
+                          "stop": stop, "target1": target1, "target2": target2,
+                          "window": window, "score": score})
+
+    def hero_peak_exit(self, *, entry: float, exit_price: float, pnl: float,
+                       roi_pct: float, swept: float, vault: float,
+                       trade_no: int, max_trades: int) -> dict:
+        """The exact peak-harvest narration requested for the Hero desk."""
+        text = (
+            f"\U0001F4A5 జీరో-టూ-హీరో పీక్ ఎగ్జిట్! \u20b9{entry:,.2f} వద్ద కొన్న ఆప్షన్ "
+            f"శిఖరం \u20b9{exit_price:,.2f} వద్ద బుక్ చేయబడింది (+{roi_pct:.1f}% ROI). "
+            f"{rupees(pnl)} లాభం; {rupees(swept)} ప్రాఫిట్ వాల్ట్లో లాక్ "
+            f"({rupees(vault)} మొత్తం). హీరో ట్రేడ్ {trade_no}/{max_trades}. "
+            "తదుపరి అవకాశం కోసం సైలెంట్ వాచ్ మోడ్ ఆన్!"
+        )
+        return self._say("\U0001F4A5", "జీరో-టూ-హీరో పీక్ ఎగ్జిట్", text, "win",
+                         {"entry": entry, "exit_price": exit_price, "pnl": pnl,
+                          "roi_pct": roi_pct, "swept": swept, "vault": vault,
+                          "trade_no": trade_no, "max_trades": max_trades})
+
+    def hero_silent_watch(self, *, cooldown_min: int, next_side: str = "") -> dict:
+        side = f" {_side_word(next_side)}" if next_side else ""
+        text = (
+            f"\U0001F575\uFE0F సైలెంట్ వాచ్ మోడ్ — {cooldown_min} నిమిషాలు ఏ ట్రేడ్ తీసుకోము. "
+            f"V-రివర్సల్ వచ్చినప్పుడు{side} హీరో సెటప్ కోసం సిద్ధంగా ఉన్నాం. "
+            "అవసరం లేని థీటా ట్రేడ్లు లేవు; డిసిప్లిన్ ముఖ్యం."
+        )
+        return self._say("\U0001F575\uFE0F", "సైలెంట్ వాచ్", text, "wait",
+                         {"cooldown_min": cooldown_min, "next_side": next_side})
+
+    def top_reversal_exit(self, *, price: float, pnl: float, p90: float = 0.0) -> dict:
+        text = (
+            f"\U0001F534 p90 టాప్ వేవ్ \u20b9{p90:,.2f} దగ్గర CE పీక్ ఎగ్జిట్ చేశాం. "
+            f"లైవ్ ధర \u20b9{price:,.2f}, లాభం {rupees(pnl)}. "
+            "ఇప్పుడు PE రివర్సల్ స్నైపర్ కోసం ఎదురుచూస్తున్నాం — "
+            "మొదటి 1m, 5m, 15m మూడూ బేరిష్ అయ్యాకే PE ఎంట్రీ."
+        )
+        return self._say("\U0001F534", "p90 టాప్ ఎగ్జిట్", text, "win",
+                         {"price": price, "pnl": pnl, "p90": p90})
+
+    def vault_locked(self, *, profit: float, swept: float, vault: float,
+                     tradable: float) -> dict:
+        text = (
+            f"\U0001F512 ప్రాఫిట్ వాల్ట్ ఆటో-లాక్ — ఈ లాభం {rupees(profit)}లో 50% "
+            f"({rupees(swept)}) మార్కెట్ నుంచి శాశ్వతంగా తీసేశాం. "
+            f"మొత్తం వాల్ట్ {rupees(vault)}; ట్రేడింగ్ క్యాపిటల్ {rupees(tradable)}. "
+            "గెలిచిన డబ్బును తిరిగి మార్కెట్కి ఇవ్వము."
+        )
+        return self._say("\U0001F512", "ప్రాఫిట్ వాల్ట్ లాక్", text, "guard",
+                         {"profit": profit, "swept": swept, "vault": vault,
+                          "tradable": tradable})
+
+    def daily_lock(self, *, losses: int, realized: float) -> dict:
+        text = (
+            f"\U0001F6AB {losses} వరుస స్టాప్-లాస్లు — ఈరోజు ట్రేడింగ్ లాక్ చేశాం. "
+            f"నెట్ {rupees(realized)}. క్యాపిటల్ రక్షణే మొదటి ప్రాధాన్యం; "
+            "రేపు మళ్లీ A+ సెటప్ కోసం తాజా మనసుతో వస్తాము."
+        )
+        return self._say("\U0001F6AB", "DAILY LOCK · 2 SL", text, "guard",
+                         {"losses": losses, "realized": realized})
+
     # -- 6. periodic teacher ----------------------------------------------
     def market_update(self, *, spot: float, high: float, low: float, atr: float,
                       paths_up: int | None, samples: int | None, pnl: float,

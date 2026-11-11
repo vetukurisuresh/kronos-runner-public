@@ -80,7 +80,9 @@ jobs:
           du -sh model/weights
 
       - name: Verify ensemble (pytest)
-        run: python -m pytest tests/test_ensemble.py -v -s --durations=10
+        run: >-
+          python -m pytest -q tests/test_ensemble.py
+          --ignore=kronos-runner-public --disable-warnings --durations=10
 
       - name: Cloud summary
         if: always()

@@ -24,6 +24,7 @@ from __future__ import annotations
 import atexit
 import os
 import re
+import secrets
 import shutil
 import socket
 import subprocess
@@ -46,7 +47,10 @@ TUNNEL_LOG = LOG_DIR / "edge_tunnel.log"
 RECORD_PATHS = ("/system/live_stream_url.json", "/kronos_state/live_stream_url.json")
 RECORD_TTL = 900.0          # the session heartbeats the record every 45 s
 HEARTBEAT_SECONDS = 45.0
-RESTART_BACKOFF = 30.0
+# A dropped cloudflared/python child must be back within one second, never
+# leaving a market-hours gap until the next scheduled shift.
+RESTART_BACKOFF = 1.0
+PUSH_TOKEN_ENV = "KRONOS_EDGE_PUSH_TOKEN"
 
 TUNNEL_RE = re.compile(r"https://[a-z0-9][a-z0-9-]*\.trycloudflare\.com", re.IGNORECASE)
 DOWNLOAD = {
@@ -118,6 +122,10 @@ class CloudEdge:
     # -- lifecycle ---------------------------------------------------------
     def start(self) -> dict:
         """Start the local server, then best-effort bring up the tunnel."""
+        # This must exist before the server child is spawned, because the child
+        # inherits the environment at Popen time.
+        if not os.environ.get(PUSH_TOKEN_ENV):
+            os.environ[PUSH_TOKEN_ENV] = secrets.token_urlsafe(32)
         ok = self._start_server()
         if not ok:
             return {"ok": False, "reason": self.error}
@@ -155,6 +163,21 @@ class CloudEdge:
             return
         if now - self.last_publish >= HEARTBEAT_SECONDS:
             self._publish()
+
+    def notify_tick(self, timeout: float = 0.25) -> bool:
+        """Wake the SSE hub the instant a fresh live_feed frame is on disk."""
+        token = os.environ.get(PUSH_TOKEN_ENV, "")
+        if not token:
+            return False
+        try:
+            response = requests.post(
+                f"http://{self.host}:{self.port}/api/internal/tick",
+                headers={"X-Kronos-Edge-Token": token},
+                timeout=timeout,
+            )
+            return bool(response.ok)
+        except Exception:  # noqa: BLE001 - the file watcher is the fallback
+            return False
 
     def stop(self) -> None:
         if self._stopped:
@@ -320,19 +343,12 @@ class CloudEdge:
 
     # -- discovery record --------------------------------------------------
     def _publish(self, active: bool | None = None) -> dict:
+        from scripts.publish_edge_url import edge_payload, publish_edge_record
+
         active = bool(self.url) if active is None else bool(active and self.url)
-        body = {
-            "url": (self.url or None) if active else None,
-            "active": active,
-            "ts": round(time.time(), 3),
-            "iso": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
-            "port": self.port,
-            "host": socket.gethostname(),
-            "run_id": os.environ.get("GITHUB_RUN_ID", ""),
-            "version": 1,
-        }
-        status = {}
-        for path in RECORD_PATHS:
-            status[path] = self.publisher.put(path, body)
+        body = edge_payload(
+            self.url, active=active, port=self.port, host=socket.gethostname(),
+        )
+        status = publish_edge_record(body, self.publisher)
         self.last_publish = time.time()
         return status

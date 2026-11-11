@@ -4,6 +4,24 @@ Thumbs.db
 .vscode/
 *.iml
 
+# Secrets - never commit these
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+credentials*.json
+*service-account*.json
+
+# Runtime state
+state/*.json
+state/*.pid
+state/*.log
+state/live_feed.json
+state/upstox_token.json
+state/screenshots/
+
 mobile/build/
 mobile/.dart_tool/
 mobile/.flutter-plugins

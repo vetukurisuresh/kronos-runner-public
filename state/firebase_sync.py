@@ -41,8 +41,7 @@ PUBLIC_RULES = {
         ".read": False,
         ".write": False,
         "kronos_state": {".read": True, ".write": False},
-        # Auto-discovery record for the runner-hosted Cloudflare SSE tunnel
-        # and the public 08:40 readiness snapshot consumed by workflow 03.
+        # Auto-discovery record for the runner-hosted Cloudflare SSE tunnel.
         "system": {
             "live_stream_url": {".read": True, ".write": False},
             "premarket_readiness": {".read": True, ".write": False},

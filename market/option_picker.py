@@ -61,7 +61,8 @@ def new_trade(entry: float, risk: float, qty: int = 300) -> dict[str, Any]:
     }
 
 
-def gear_update(trade: dict, ltp: float, low_5m: float | None = None) -> dict:
+def gear_update(trade: dict, ltp: float, low_5m: float | None = None,
+                low_1m: float | None = None) -> dict:
     """Move the stop through the four gears; never move it down."""
     entry = float(trade["entry_price"])
     risk = float(trade.get("risk_points") or max(entry - float(trade["initial_sl"]), 0.5))
@@ -70,7 +71,8 @@ def gear_update(trade: dict, ltp: float, low_5m: float | None = None) -> dict:
     gear = int(trade["tsl_gear"])
 
     if r_multiple >= 3.0:
-        stop, gear = max(stop, float(ltp) - risk), 4
+        trail = float(low_1m) if low_1m else float(ltp) - risk
+        stop, gear = max(stop, trail), 4
     elif r_multiple >= 2.0:
         stop, gear = max(stop, float(low_5m) if low_5m else entry + risk * 0.5), 3
     elif r_multiple >= 1.0:
