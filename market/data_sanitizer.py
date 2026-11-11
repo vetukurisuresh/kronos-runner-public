@@ -30,7 +30,7 @@ FEED_STALE_MS = 3_000
 #: A live V3 socket frame is fast; the heavy option-chain cycle can take 4-5s.
 #: When the socket is connected the heartbeat is still the authority, but the
 #: cutoff must tolerate that scan cadence without falsely blocking entries.
-SOCKET_STALE_MS = 8_000
+SOCKET_STALE_MS = 3_000
 OPTION_MIN_LTP = 0.05
 MARKET_OPEN = clock_time(9, 15)
 MARKET_CLOSE = clock_time(15, 30)
@@ -312,8 +312,11 @@ class SanitizedTickPipeline:
             return self._reject("OUT_OF_ORDER_LTT", started, event=True)
         if previous_ltt is not None and ltt_ms == previous_ltt and previous_vtt is not None and vtt == previous_vtt:
             self.duplicates_dropped += 1
+            # Record the validation latency before building the telemetry
+            # event: timestamp formatting is logging, not tick validation.
+            result = self._finish(False, "DUPLICATE_FRAME", None, started)
             self._event("WARN", f"{key} duplicate frame dropped at LTT {ltt_ms}", ltt_ms=ltt_ms)
-            return self._finish(False, "DUPLICATE_FRAME", None, started)
+            return result
 
         price = _number(raw.get("ltp", raw.get("price")), 0.0)
         minimum = self.option_min_ltp if self._is_option_key(key) else 0.0
@@ -334,22 +337,26 @@ class SanitizedTickPipeline:
         self.last_accept_ltt_ms = ltt_ms
         self.frames_sanitized_ok += 1
         self._accepted_since_event += 1
-        if self._accepted_since_event >= 25:
+        emit_event = self._accepted_since_event >= 25
+        if emit_event:
             self._accepted_since_event = 0
-            self._event("OK", f"{key} LTT {ltt_ms} accepted", ltt_ms=ltt_ms)
         raw["ltt"] = ltt_ms
         raw["ltp"] = price
         raw["vtt"] = vtt
         raw["bid"] = bid
         raw["ask"] = ask
-        return self._finish(True, "OK", raw, started)
+        result = self._finish(True, "OK", raw, started)
+        if emit_event:
+            self._event("OK", f"{key} LTT {ltt_ms} accepted", ltt_ms=ltt_ms)
+        return result
 
     def _reject(self, reason: str, started: int, *, event: bool = False) -> SanitizeResult:
         self.corrupt_frames_rejected += 1
         self.last_reject_reason = reason
+        result = self._finish(False, reason, None, started)
         if event:
             self._event("REJECT", f"corrupt frame rejected: {reason}")
-        return self._finish(False, reason, None, started)
+        return result
 
     def _finish(self, ok: bool, reason: str, tick: dict[str, Any] | None,
                 started: int) -> SanitizeResult:

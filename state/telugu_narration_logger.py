@@ -364,6 +364,24 @@ def _option(feed: Mapping[str, Any], symbol: str) -> dict[str, Any]:
     return {}
 
 
+def _option_symbol(feed: Mapping[str, Any], symbol: str, strike: Any, side: str) -> str:
+    """The exact watched contract: strike_symbol is authoritative.
+
+    The session stores ``strike_symbol``/``strike_price``; older code read only
+    ``strike`` and printed ``0 CE`` while the real ATM was live.
+    """
+    row = _option(feed, symbol)
+    label = str(row.get("strike_symbol") or "").strip()
+    if label:
+        return label
+    number = _f(strike if strike is not None else row.get("strike_price"))
+    if number <= 0:
+        number = _f(row.get("strike"))
+    if number > 0:
+        return f"{symbol} {int(number)} {side}"
+    return f"{symbol} ATM {side}"
+
+
 def _base_target(plan: Mapping[str, Any]) -> tuple[float | None, float | None]:
     target = plan.get("p50") or plan.get("median") or plan.get("p65")
     support = plan.get("p10") or plan.get("p25")
@@ -476,6 +494,7 @@ class ProgrammaticBrainLogger:
         vix = spectrum.get("vix") or {}
         breadth = spectrum.get("breadth") or {}
         option = _option(feed, symbol)
+        option_depth = option.get("depth") if isinstance(option.get("depth"), Mapping) else {}
         base_paths = plan.get("paths_up")
         base_samples = plan.get("samples")
         if base_paths is None:
@@ -503,8 +522,23 @@ class ProgrammaticBrainLogger:
         doi_pcr = _f(pcr_block.get("doi_pcr"))
         iv = _f(greeks.get("iv"))
         theta = _f(greeks.get("theta"))
-        obi = _f(depth.get("obi_5")) if depth.get("obi_5") is not None else None
-        tbq_tsq = _f(depth.get("tbq_tsq")) if depth.get("tbq_tsq") is not None else None
+        # Prefer the watched contract's own book; fall back to the verified
+        # full-spectrum five-level book and label the provenance.
+        if _f(option.get("obi_5")) > 0:
+            obi = _f(option.get("obi_5"))
+            obi_source = "OPTION_5L"
+        elif option_depth.get("obi_5") is not None:
+            obi = _f(option_depth.get("obi_5"))
+            obi_source = "OPTION_5L"
+        else:
+            obi = _f(depth.get("obi_5")) if depth.get("obi_5") is not None else None
+            obi_source = "FUTURES_5L"
+        if _f(option.get("tbq_tsq")) > 0:
+            tbq_tsq = _f(option.get("tbq_tsq"))
+        elif option_depth.get("tbq_tsq") is not None:
+            tbq_tsq = _f(option_depth.get("tbq_tsq"))
+        else:
+            tbq_tsq = _f(depth.get("tbq_tsq")) if depth.get("tbq_tsq") is not None else None
         strike = option.get("strike") or plan.get("strike")
         side = str(option.get("side") or plan.get("action") or "CE").upper()
         option_ltp = _f(option.get("ltp") if option else 0)
@@ -547,14 +581,8 @@ class ProgrammaticBrainLogger:
                 "PCR, IV, Θ స్పష్టంగా వచ్చాక రిస్క్ గేట్ నిర్ణయం వస్తుంది."
             )
         if obi is not None or tbq_tsq is not None:
-            # Never narrate "NIFTY 0": prefer the actual watched ATM symbol.
-            _opt = feed.get("option") if isinstance(feed, Mapping) else {}
-            _row = (_opt.get(symbol) if isinstance(_opt, dict) else {}) or {}
-            strike_text = str((_row or {}).get("strike_symbol") or "")
-            if not strike_text:
-                _strike_num = int(_f(strike))
-                strike_text = (f"{symbol} {_strike_num} {side}" if _strike_num > 0
-                               else f"{symbol} ATM {side}")
+            # Never narrate "NIFTY 0": strike_symbol is the watched contract.
+            strike_text = _option_symbol(feed, symbol, strike, side)
             buyer_text = (
                 f"{strike_text} లో సెల్లర్ల కంటే బయ్యర్లు {_f(tbq_tsq):.2f} రెట్లు "
                 f"({f'TBQ/TSQ {_f(tbq_tsq):.2f}x' if tbq_tsq is not None else 'TBQ/TSQ లేదు'}). "
@@ -614,6 +642,7 @@ class ProgrammaticBrainLogger:
                 "confidence_pct": None if mini_conf is None else round(mini_conf, 1),
                 "gate_passed": _mini_decision(obi, tbq_tsq, option_ltp, vwap).startswith("🎯"),
                 "obi_5": obi,
+                "obi_source": obi_source,
                 "tbq_tsq": tbq_tsq,
                 "option_ltp": option_ltp or None,
                 "vwap": vwap or None,
@@ -648,21 +677,31 @@ class ProgrammaticBrainLogger:
         spot = _f(spot_block.get("ltp") if isinstance(spot_block, Mapping) else 0) or _f(spectrum.get("spot"))
         depth = spectrum.get("depth") or {}
         option = _option(feed, symbol)
-        strike = option.get("strike") or (plan or {}).get("strike") or "—"
-        side = str(option.get("side") or (plan or {}).get("action") or "CE").upper()
+        strike = (option.get("strike_price") or option.get("strike")
+                  or (plan or {}).get("strike") or "—")
+        side = str(option.get("side") or option.get("option_type")
+                   or (plan or {}).get("action") or "CE").upper()
+        strike_text = _option_symbol(feed, symbol, strike, side)
         verify_ms = (
             _f(sanitize_ms) if sanitize_ms is not None
             else _f(spectrum.get("sanitize_ms"))
         )
         wire_ms = _f(latency_ms)
+        # An empty option book is zero, not the verified book; fall back to the
+        # five-level depth that the arbitrator actually evaluated.
+        tick_obi = _f(option.get("obi_5"))
+        if tick_obi <= 0:
+            tick_obi = _f((option.get("depth") or {}).get("obi_5"))
+        if tick_obi <= 0:
+            tick_obi = _f(depth.get("obi_5"))
         tick_text = (
             f"Upstox V3 నుండి టిక్ వచ్చింది: {symbol} {spot:,.2f} | "
             f"Fut Vol: {futures_volume_ratio:.1f}x | "
-            f"{int(_f(strike))} {side} OBI: {_f(depth.get('obi_5')):.2f}x "
+            f"{strike_text} OBI: {tick_obi:.2f}x "
             f"(అన్నీ {verify_ms:.1f}ms లో వెరిఫై అయ్యాయి)"
             if futures_volume_ratio is not None else
             f"Upstox V3 నుండి టిక్ వచ్చింది: {symbol} {spot:,.2f} | "
-            f"{int(_f(strike))} {side} OBI: {_f(depth.get('obi_5')):.2f}x "
+            f"{strike_text} OBI: {tick_obi:.2f}x "
             f"(అన్నీ {verify_ms:.1f}ms లో వెరిఫై అయ్యాయి)"
         )
         entry_batch.append(self._append(

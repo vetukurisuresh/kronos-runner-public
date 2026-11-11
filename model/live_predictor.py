@@ -24,7 +24,9 @@ FEED_FILE = REPO_ROOT / "state" / "live_feed.json"
 STATUS_FILE = REPO_ROOT / "state" / "kronos_predictor_status.json"
 IST = timezone(timedelta(hours=5, minutes=30), name="IST")
 REFRESH_SEC = max(float(os.environ.get("KRONOS_AUDIT_REFRESH_SEC", "30") or 30), 5.0)
-MAX_PREDICT_AGE_SEC = max(float(os.environ.get("KRONOS_AUDIT_MAX_AGE_SEC", "120") or 120), 15.0)
+#: The 102M pass can take 400+ s on the 8 GB runner with two samples.  A
+#: 120/300 s cache made the base card flip to WAITING between passes.
+MAX_PREDICT_AGE_SEC = max(float(os.environ.get("KRONOS_AUDIT_MAX_AGE_SEC", "900") or 900), 15.0)
 
 _LOCK = threading.Lock()
 _ENSEMBLE: Any = None
@@ -162,7 +164,13 @@ def _refresh_once() -> None:
         feed = json.loads(FEED_FILE.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return
-    if not feed or not feed.get("socket_connected"):
+    # Never freeze inference on a stale convenience boolean: the heavy feed
+    # may carry socket_connected=False from an older cycle while the 4 Hz fast
+    # frame and the candles are live.  Require actual bars instead.
+    if not feed:
+        return
+    spot_rows = ((feed.get("spot") or {}).get(_symbol(feed)) or {}).get("candles_5m") or []
+    if not spot_rows:
         return
     for role in ("base", "small", "mini"):
         try:

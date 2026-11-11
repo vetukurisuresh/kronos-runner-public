@@ -175,6 +175,10 @@ def _model_card(
     reason = str((prediction or {}).get("reason") or "").strip()
     if not reason:
         reason = missing_reason if not prediction else "Inference returned without a reason"
+    if prediction and (inference_ms is None or inference_ms < 1.0):
+        cached_ms = prediction.get("inference_ms")
+        if cached_ms is not None:
+            inference_ms = _finite(cached_ms)
     return {
         **spec.as_dict(),
         "shape": [1, 512, 6],

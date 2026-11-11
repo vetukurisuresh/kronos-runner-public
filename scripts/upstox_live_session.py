@@ -146,6 +146,9 @@ from state.telugu_story import StoryTeller  # noqa: E402
 
 IST = timezone(timedelta(hours=5, minutes=30))
 HEARTBEAT = REPO_ROOT / "state" / "live_feed.json"
+#: Compact 4 Hz tick frame: prices, ATM quote and top-of-book.  Dashboard and
+#: predictor read this instead of waiting for the heavy chain cycle.
+FAST_TICKS = REPO_ROOT / "state" / "live_fast.json"
 EXPIRY_HERO_MODE_FILE = REPO_ROOT / "state" / "expiry_hero_mode.json"
 SCALPER_MODE_FILE = REPO_ROOT / "state" / "scalper_mode.json"
 #: 1s liveness beat driven by real V3 frames, independent of the heavy chain cycle.
@@ -226,7 +229,7 @@ class SocketHeartbeat(threading.Thread):
     inside the freshness window, never a price or a synthetic value.
     """
 
-    def __init__(self, socket: "SocketWatch", path, interval: float = 1.0) -> None:
+    def __init__(self, socket: "SocketWatch", path, interval: float = 0.4) -> None:
         super().__init__(daemon=True, name="kronos-socket-heartbeat")
         self.socket = socket
         self.path = path
@@ -419,6 +422,144 @@ class Publisher:
         self.put("/kronos_state/tick.json", payload)
 
 
+def _replace_retry(temp, target, attempts: int = 10) -> None:
+    """Atomic replace that tolerates a reader briefly holding the target.
+
+    Windows refuses os.replace when another process has the destination open
+    without FILE_SHARE_DELETE; the dashboard's 20 ms reader creates exactly
+    that window.  Retry instead of dropping the snapshot.
+    """
+    for attempt in range(attempts):
+        try:
+            os.replace(temp, target)
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(0.02 * (attempt + 1))
+
+
+class FastTickPublisher(threading.Thread):
+    """Publish a compact 4 Hz frame without touching the heavy cycle.
+
+    Reads only in-memory websocket/quote state and atomically replaces a small
+    JSON file, so a 4-6 s option-chain pass can never delay the price or the
+    liveness heartbeat.
+    """
+
+    def __init__(self, socket: "SocketWatch", engine, path, shared: dict,
+                 futures_keys: dict | None = None, interval: float = 0.25) -> None:
+        super().__init__(daemon=True, name="kronos-fast-ticks")
+        self.socket = socket
+        self.engine = engine
+        self.path = path
+        self.shared = shared
+        self.futures_keys = dict(futures_keys or {})
+        self.started = time.time()
+        self.interval = max(float(interval), 0.1)
+        self.stop = threading.Event()
+
+    @staticmethod
+    def _book(quote) -> dict:
+        bids = list(getattr(quote, "bids", []) or [])[:5] if quote else []
+        asks = list(getattr(quote, "asks", []) or [])[:5] if quote else []
+        try:
+            book = book_imbalance(bids, asks)
+        except Exception:  # noqa: BLE001 - a malformed book is not a tick
+            book = {}
+        bid_qty = float(book.get("bid_qty") or 0.0)
+        ask_qty = float(book.get("ask_qty") or 0.0)
+        # An empty book is not a balanced 1.00 book; report no edge as zero.
+        ratio = float(book.get("ratio") or 0.0) if (bid_qty + ask_qty) > 0 else 0.0
+        tbq = float(getattr(quote, "tbq", 0.0) or 0.0)
+        tsq = float(getattr(quote, "tsq", 0.0) or 0.0)
+        return {
+            "bids": bids, "asks": asks,
+            "bid_qty_5": round(bid_qty, 2), "ask_qty_5": round(ask_qty, 2),
+            "bid_qty_top": round(float(book.get("bid_qty") or 0.0), 2),
+            "ask_qty_top": round(float(book.get("ask_qty") or 0.0), 2),
+            "obi_5": ratio,
+            "tbq": tbq, "tsq": tsq,
+            "tbq_tsq": round(tbq / tsq, 4) if tsq else 0.0,
+        }
+
+    def run(self) -> None:
+        while not self.stop.is_set():
+            started = time.time()
+            try:
+                prices = {
+                    str(key): round(float(value), 2)
+                    for key, value in list(self.socket.prices.items())
+                    if value and float(value) > 0
+                }
+                spot: dict[str, dict] = {}
+                for name, key in KEYS.items():
+                    price = float(prices.get(key) or 0.0)
+                    if price <= 0:
+                        continue
+                    info = (self.shared.get("spot") or {}).get(name) or {}
+                    row = {"ltp": round(price, 2)}
+                    if info.get("change") is not None:
+                        row["change"] = info.get("change")
+                    if info.get("pct_change") is not None:
+                        row["pct_change"] = info.get("pct_change")
+                    spot[name] = row
+                option: dict[str, dict] = {}
+                for name, row in (self.shared.get("option") or {}).items():
+                    if not isinstance(row, dict):
+                        continue
+                    key = str(row.get("instrument_key") or "")
+                    state = self.engine.instruments.get(key) if key else None
+                    quote = state.quote if state else None
+                    price = float(prices.get(key) or getattr(quote, "ltp", 0.0) or 0.0)
+                    if price <= 0:
+                        continue
+                    book = self._book(quote)
+                    option[name] = {
+                        "ltp": round(price, 2),
+                        "strike_symbol": row.get("strike_symbol"),
+                        "strike_price": row.get("strike_price"),
+                        "option_type": row.get("option_type"),
+                        "instrument_key": key,
+                        "bid": float(getattr(quote, "bid", 0.0) or row.get("bid") or 0.0),
+                        "ask": float(getattr(quote, "ask", 0.0) or row.get("ask") or 0.0),
+                        "obi_5": book.get("obi_5"),
+                        "bid_qty_5": book.get("bid_qty_5"),
+                        "ask_qty_5": book.get("ask_qty_5"),
+                        "tbq": book.get("tbq"),
+                        "tsq": book.get("tsq"),
+                        "tbq_tsq": book.get("tbq_tsq"),
+                        "depth": book,
+                    }
+                depth: dict[str, dict] = {}
+                for name, key in self.futures_keys.items():
+                    state = self.engine.instruments.get(key) if key else None
+                    quote = state.quote if state else None
+                    book = self._book(quote)
+                    if quote:
+                        book["ltp"] = float(getattr(quote, "ltp", 0.0) or 0.0)
+                    depth[name] = book
+                body = {
+                    "epoch": round(time.time(), 3),
+                    "as_of": datetime.now(tz=IST).isoformat(timespec="milliseconds"),
+                    "socket_connected": bool(self.socket.streaming()),
+                    "socket_frames": int(self.socket.frames),
+                    "tick_rate": round(self.socket.frames / max(time.time() - self.started, 1.0), 2),
+                    "socket_frame_age_ms": (int(max(0.0, time.time() - self.socket.last_frame) * 1000.0)
+                                            if self.socket.last_frame else None),
+                    "prices": prices,
+                    "spot": spot,
+                    "option": option,
+                    "depth": depth,
+                }
+                temp = self.path.with_suffix(".tmp")
+                temp.write_text(json.dumps(body, separators=(",", ":")), encoding="utf-8")
+                _replace_retry(temp, self.path)
+            except Exception:  # noqa: BLE001 - a missed fast frame must never stop the tape
+                pass
+            self.stop.wait(max(0.05, self.interval - (time.time() - started)))
+
+
 def load_plan(symbol: str) -> dict:
     try:
         state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
@@ -457,7 +598,7 @@ def load_predictor_plan(symbol: str, spot: float) -> dict:
         updated = float(status.get("updated_epoch") or 0.0)
     except (OSError, ValueError, TypeError):
         return {}
-    if not updated or time.time() - updated > 30.0:
+    if not updated or time.time() - updated > 900.0:
         return {}
     roles = status.get("roles") or {}
     candidates = []
@@ -499,7 +640,18 @@ def load_live_plan(symbol: str, spot: float) -> dict:
     live = load_predictor_plan(symbol, spot)
     if live:
         plan.update(live)
-        plan["spot"] = round(spot, 2)
+    plan["spot"] = round(spot, 2)
+    # A cloud corridor cached at 24,933 must never be narrated next to a 25,29x
+    # tape.  Reuse the same live-spot anchor as the dashboard payload.
+    try:
+        from market.live_ticks import _anchored_plan
+
+        plan = _anchored_plan(
+            plan, spot, float(plan.get("atr") or 0.0),
+            action=str(plan.get("action") or "NO_TRADE").upper(),
+        )
+    except Exception:  # noqa: BLE001 - narration must never break the session
+        pass
     return plan
 
 
@@ -1063,6 +1215,11 @@ def main(argv: list[str] | None = None) -> int:
     deadline = started + args.minutes * 60
     telemetry = ProgrammaticTelemetry()
     brain_narrator = ProgrammaticBrainLogger()
+    # The fast publisher owns the 4 Hz price/depth contract.  The heavy chain
+    # below may take seconds and must never gate the tape or the UI heartbeat.
+    fast_shared: dict = {"option": {}, "spot": {}, "depth": {}}
+    fast_publisher = FastTickPublisher(socket, engine, FAST_TICKS, fast_shared, futures_keys)
+    fast_publisher.start()
     seen_frames = 0
     seen_bytes = 0
     latest_scan_ms: dict[str, float] = {}
@@ -1071,6 +1228,8 @@ def main(argv: list[str] | None = None) -> int:
     while time.time() < deadline:
         cycle = time.time()
         now_ist_dt = datetime.now(tz=IST)
+        # Used by the early test-order branch and every later lifecycle write.
+        now_iso = now_ist_dt.isoformat(timespec="seconds")
         hero_mode = load_expiry_hero_mode()
         hero_window = expiry_window(now_ist_dt)
         scalper_mode = load_scalper_mode()
@@ -1105,6 +1264,10 @@ def main(argv: list[str] | None = None) -> int:
             test_order = json.loads(test_order_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             test_order = {}
+        # Liveness is the socket frame, stamped now - not the end of the heavy
+        # pass.  The fast publisher refreshes this at 4 Hz between cycles.
+        payload["liveness_epoch"] = time.time()
+        payload["socket_connected"] = bool(socket.streaming())
 
         # Exchange ltt is the only candle clock. No local-clock tick is injected
         # while the socket is streaming, so the browser cannot drift from Upstox.
@@ -1238,7 +1401,14 @@ def main(argv: list[str] | None = None) -> int:
         for name, key in KEYS.items():
             spot = float((payload["spot"].get(name) or {}).get("ltp") or 0.0)
             if not spot:
-                continue
+                # A REST quote miss must not turn a live tape into spot=0
+                # (which used to publish basis -25,384 and a zero book).
+                spot = float(socket.prices.get(key) or 0.0)
+                if not spot and key in engine.instruments:
+                    spot = float(engine.instruments[key].quote.ltp or 0.0)
+                if not spot:
+                    continue
+                payload["spot"].setdefault(name, {})["ltp"] = round(spot, 2)
             plan = load_live_plan(name, spot)
             if key not in expiries or cycle - last_chain.get(name, 0) > 3600:
                 try:
@@ -2453,7 +2623,10 @@ def main(argv: list[str] | None = None) -> int:
                     "low_break": bool(h_ltp < h_low and h_velocity < 0),
                     "tbq": round(h_tbq, 2), "tsq": round(h_tsq, 2),
                 })
-            aligned_heavy = sum(1 for row in breadth_rows if row["bullish"])
+            # Directional breadth: how many of the five heavyweights carry a
+            # usable bullish/bearish read (not necessarily the index's side).
+            aligned_heavy = sum(1 for row in breadth_rows
+                                if row.get("bullish") or row.get("bearish"))
             # BankNifty futures are the third leg of the 3-second lead-lag basket.
             bank_lead_key = futures_keys.get("BANKNIFTY", "")
             bank_lead_state = (engine.instruments.get(bank_lead_key)
@@ -2503,10 +2676,28 @@ def main(argv: list[str] | None = None) -> int:
                 "rho": option_tick.get("rho", greeks.get("rho")),
                 "iv": option_tick.get("iv", greeks.get("iv")),
             }
-            native_ohlc = (engine.instruments.get(key).market_ohlc
-                           if key in engine.instruments else {})
+            native_ohlc = dict(engine.instruments.get(key).market_ohlc
+                               if key in engine.instruments else {})
             if not native_ohlc and fut_key in engine.instruments:
-                native_ohlc = engine.instruments[fut_key].market_ohlc
+                native_ohlc = dict(engine.instruments[fut_key].market_ohlc)
+            # V3 publishes 1m/1d (and sometimes 5m/15m) but not 30m.  Aggregate
+            # two real 15m bars so the 37-field coverage is complete without
+            # inventing a price.
+            bars_15m = engine.windows(key, 15)
+            if bars_15m:
+                first = bars_15m[-2] if len(bars_15m) >= 2 else bars_15m[-1]
+                last = bars_15m[-1]
+                native_ohlc["30m"] = {
+                    "interval": "30m",
+                    "open": float(getattr(first, "open", 0.0) or 0.0),
+                    "high": max(float(getattr(first, "high", 0.0) or 0.0),
+                                float(getattr(last, "high", 0.0) or 0.0)),
+                    "low": min(float(getattr(first, "low", 0.0) or 0.0),
+                               float(getattr(last, "low", 0.0) or 0.0)),
+                    "close": float(getattr(last, "close", 0.0) or 0.0),
+                    "volume": 0.0,
+                    "time": int(getattr(last, "start", 0) or 0),
+                }
             fut_obi = (fut_depth.get("ratio", 0.0)
                        if (fut_depth.get("bid_qty", 0.0)
                            + fut_depth.get("ask_qty", 0.0)) > 0 else 0.0)
@@ -2676,6 +2867,20 @@ def main(argv: list[str] | None = None) -> int:
                 "ask": float(market.get("ask_price") or 0.0),
                 "oi": oi,
                 "oi_change_5m_pct": oi_change,
+                "strike": strike,
+                "side": str(side).upper(),
+                "obi_5": option_obi,
+                "tbq_tsq": option_flow,
+                "tbq": float(getattr(option_quote, "tbq", 0.0) or 0.0),
+                "tsq": float(getattr(option_quote, "tsq", 0.0) or 0.0),
+                "depth": {
+                    "bids": depth_bids[:5], "asks": depth_asks[:5],
+                    "obi_5": option_obi, "tbq_tsq": option_flow,
+                    "bid_qty_5": sum(float(level.get("quantity") or level.get("qty") or 0)
+                                     for level in depth_bids[:5] if isinstance(level, dict)),
+                    "ask_qty_5": sum(float(level.get("quantity") or level.get("qty") or 0)
+                                     for level in depth_asks[:5] if isinstance(level, dict)),
+                },
                 "delta": greeks.get("delta"),
                 "iv": greeks.get("iv"),
                 "current_candle": state["cur"],
@@ -3064,6 +3269,29 @@ def main(argv: list[str] | None = None) -> int:
         payload["entries_suspended"] = bool(feed_stale) or not payload["feed_status"].get(
             "allow_order_generation", False
         )
+        # Mirror the verified full-spectrum book into the canonical depth map
+        # before sanitizer/arbitrator/narration consume it.  This is the exact
+        # 36/37 key-mapping fix: the depth was present under full_spectrum but
+        # the canonical consumers looked at the (option-only) top-level map.
+        payload.setdefault("depth", {})
+        for name, snap in (payload.get("full_spectrum") or {}).items():
+            if not isinstance(snap, dict):
+                continue
+            book = snap.get("depth") or {}
+            if not book:
+                continue
+            payload["depth"][name] = dict(book)
+            option_row = (payload.get("option") or {}).get(name)
+            if isinstance(option_row, dict):
+                option_row.setdefault("obi_5", book.get("obi_5"))
+                option_row.setdefault("tbq_tsq", book.get("tbq_tsq"))
+                option_row.setdefault("tbq", book.get("tbq"))
+                option_row.setdefault("tsq", book.get("tsq"))
+                if not option_row.get("depth"):
+                    option_row["depth"] = dict(book)
+                option_row.setdefault("strike_price", option_row.get("strike"))
+                option_row.setdefault("side", option_row.get("option_type"))
+
         narration_spot = float((payload["spot"].get("NIFTY") or {}).get("ltp") or 0.0)
         narration_plan = load_live_plan("NIFTY", narration_spot)
         oscillator_now = build_oscillator_from_feed(
@@ -3118,7 +3346,7 @@ def main(argv: list[str] | None = None) -> int:
                 age_sec = None
             fresh = bool(
                 age_sec is not None
-                and age_sec <= 120.0
+                and age_sec <= 900.0
                 and row.get("probability_pct") is not None
             )
             model_feeds[role] = {
@@ -3220,7 +3448,19 @@ def main(argv: list[str] | None = None) -> int:
         # heavy opening-burst cycle.  The socket frame age remains independent.
         payload["updated_epoch"] = time.time()
         payload["updated_at"] = datetime.now(tz=IST).isoformat(timespec="seconds")
-        HEARTBEAT.write_text(json.dumps(payload, indent=1), encoding="utf-8")
+        payload["liveness_epoch"] = time.time()
+        payload["socket_connected"] = bool(socket.streaming())
+        fast_shared["option"] = dict(payload.get("option") or {})
+        fast_shared["spot"] = dict(payload.get("spot") or {})
+        fast_shared["depth"] = dict(payload.get("depth") or {})
+        try:
+            temp = HEARTBEAT.with_suffix(".tmp")
+            temp.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+            _replace_retry(temp, HEARTBEAT)
+        except (MemoryError, OSError) as exc:
+            # A failed snapshot write must never kill the live session; the
+            # 4 Hz fast path keeps liveness alive until the next cycle.
+            print(f"feed snapshot write skipped: {type(exc).__name__}", flush=True)
         if edge:
             edge.notify_tick()
             edge.tick()
@@ -3247,6 +3487,7 @@ def main(argv: list[str] | None = None) -> int:
         time.sleep(max(0.0, 1.0 - (time.time() - cycle)))
 
     heartbeat.stop.set()
+    fast_publisher.stop.set()
     socket.stop.set()
     story.session_summary(spot=float((payload["spot"].get("NIFTY") or {}).get("ltp") or 0.0),
                           pnl=float((payload["trade"].get("NIFTY") or {}).get("live_pnl_rs") or 0.0),

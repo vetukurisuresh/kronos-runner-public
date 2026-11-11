@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import math
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -281,6 +282,9 @@ class FullSpectrumBook:
         self.iv_history: dict[str, deque[tuple[float, float]]] = {}
         self.gamma_history: dict[str, deque[tuple[float, float]]] = {}
         self._last_identity: dict[str, tuple[int, float]] = {}
+        #: The websocket thread appends while the session reads; a deque cannot
+        #: be iterated safely across threads (RuntimeError: deque mutated).
+        self._hist_lock = threading.Lock()
         self.frames = 0
 
     def update(self, key: str, tick: dict[str, Any]) -> dict[str, Any]:
@@ -301,9 +305,11 @@ class FullSpectrumBook:
         self.frames += 1
         self.ticks[key] = dict(tick)
         if _float(tick.get("iv")) > 0:
-            self.iv_history.setdefault(key, deque(maxlen=self.capacity)).append((moment, _float(tick["iv"])))
+            with self._hist_lock:
+                self.iv_history.setdefault(key, deque(maxlen=self.capacity)).append((moment, _float(tick["iv"])))
         if _float(tick.get("gamma")) != 0:
-            self.gamma_history.setdefault(key, deque(maxlen=self.capacity)).append((moment, _float(tick["gamma"])))
+            with self._hist_lock:
+                self.gamma_history.setdefault(key, deque(maxlen=self.capacity)).append((moment, _float(tick["gamma"])))
         return self.ticks[key]
 
     def ingest(self, frame: bytes | str | dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
@@ -314,10 +320,15 @@ class FullSpectrumBook:
         return dict(self.ticks.get(key) or {})
 
     def _velocity(self, history: deque[tuple[float, float]], window: float) -> float:
-        if len(history) < 2:
+        # Copy under the same lock used by the socket ingest path.  list(deque)
+        # still iterates, so copying without the lock can raise the same
+        # "deque mutated during iteration" RuntimeError.
+        with self._hist_lock:
+            items = list(history)
+        if len(items) < 2:
             return 0.0
-        latest_t, latest_v = history[-1]
-        reference = next((v for t, v in history if latest_t - t <= window), history[0][1])
+        latest_t, latest_v = items[-1]
+        reference = next((v for t, v in items if latest_t - t <= window), items[0][1])
         if not reference:
             return 0.0
         return round((latest_v / reference - 1.0) * 100.0, 3)

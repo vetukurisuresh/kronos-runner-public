@@ -651,6 +651,23 @@ def build_snapshot(
         bid_top = _level_qty(_row(depth_bids[0]))
     if ask_top <= 0 and depth_asks:
         ask_top = _level_qty(_row(depth_asks[0]))
+    # The V3 market-OHLC frame carries 1m/15m/1d (and often 5m) but not 30m.
+    # Derive the 30-minute bar from two real, contiguous 15m bars — an
+    # aggregation of broker data, never a synthetic value.
+    market_ohlc = dict(market_ohlc or {})
+    if not market_ohlc.get("30m"):
+        bars_15m = list(market_ohlc.get("15m") or []) if isinstance(market_ohlc.get("15m"), list) else []
+        if len(bars_15m) >= 2:
+            first, second = _row(bars_15m[-2]), _row(bars_15m[-1])
+            if first and second:
+                market_ohlc["30m"] = {
+                    "open": _f(first.get("open") or first.get("o")),
+                    "high": max(_f(first.get("high") or first.get("h")),
+                                _f(second.get("high") or second.get("h"))),
+                    "low": min(_f(first.get("low") or first.get("l")),
+                               _f(second.get("low") or second.get("l"))),
+                    "close": _f(second.get("close") or second.get("c")),
+                }
     snapshot: dict[str, Any] = {
         "symbol": str(symbol).upper(),
         "spot": round(_f(spot), 2),

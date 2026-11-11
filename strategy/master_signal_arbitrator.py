@@ -36,7 +36,7 @@ SLEEVE_A_ENGINES = (
     "LEAD_LAG_3S_SNIPE",
     "ADAPTIVE_VELOCITY_PING_PONG",
 )
-LIVE_STALE_AFTER_SEC = 8.0
+LIVE_STALE_AFTER_SEC = 3.0
 
 
 def _f(value: Any, default: float = 0.0) -> float:
@@ -127,6 +127,7 @@ def _data_gate(
         reason = f"HEARTBEAT_AGE_{age_sec:.3f}S"
     return {
         "allowed": live,
+        "live": live,
         "status": "LIVE" if live else "BLOCKED",
         "reason": reason,
         "age_sec": round(age_sec, 3) if age_sec is not None else None,

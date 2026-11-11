@@ -188,9 +188,12 @@ class TickHub:
         self._frames: dict[str, tuple[int, bytes, float]] = {}
         self._watch_started = False
         self._watch_mtime = 0
+        self._watch_fast_mtime = 0
+        self._payloads: dict[str, dict] = {}
 
     def publish(self, symbol: str, payload: dict, dispatch_ms: float | None = None) -> None:
         body_payload = dict(payload)
+        self._payloads[symbol] = body_payload
         if dispatch_ms is not None:
             body_payload["edge_pipe"] = {
                 "transport": "github-runner",
@@ -228,6 +231,15 @@ class TickHub:
                 self._condition.wait(timeout)
             return self._frames.get(symbol)
 
+    def publish_fast(self) -> None:
+        """Push a 4 Hz price/book patch without rebuilding the full snapshot."""
+        from market.live_ticks import fast_overlay
+
+        for symbol, payload in list(self._payloads.items()):
+            patched = fast_overlay(payload)
+            if patched is not payload:
+                self.publish(symbol, patched)
+
     def start_watcher(self) -> None:
         with self._condition:
             if self._watch_started:
@@ -236,6 +248,7 @@ class TickHub:
         threading.Thread(target=self._watch_feed, daemon=True, name="kronos-tick-hub").start()
 
     def _watch_feed(self) -> None:
+        fast_file = REPO_ROOT / "state" / "live_fast.json"
         while True:
             try:
                 mtime = LIVE_FILE.stat().st_mtime_ns if LIVE_FILE.is_file() else 0
@@ -246,6 +259,16 @@ class TickHub:
                 try:
                     self.publish_all()
                 except Exception:  # noqa: BLE001 - watcher must never die
+                    pass
+            try:
+                fast_mtime = fast_file.stat().st_mtime_ns if fast_file.is_file() else 0
+            except OSError:
+                fast_mtime = 0
+            if fast_mtime and fast_mtime != self._watch_fast_mtime:
+                self._watch_fast_mtime = fast_mtime
+                try:
+                    self.publish_fast()
+                except Exception:  # noqa: BLE001 - a bad fast frame is not fatal
                     pass
             time.sleep(0.02)
 

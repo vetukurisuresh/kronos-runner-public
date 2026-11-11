@@ -287,7 +287,7 @@ def build_model_oscillator(
     }
 
 
-def _load_predictor_roles(max_age_sec: float = 30.0) -> dict[str, Any]:
+def _load_predictor_roles(max_age_sec: float = 900.0) -> dict[str, Any]:
     """Read the real live-predictor cache written by model/live_predictor.py."""
     global PREDICTOR_STATUS_FILE
     try:

@@ -65,6 +65,9 @@ def test_snapshot_reads_live_feed(tmp_path, monkeypatch) -> None:
     path = tmp_path / "live_feed.json"
     path.write_text(json.dumps(feed), encoding="utf-8")
     monkeypatch.setattr(live_ticks, "FEED_FILE", path)
+    # The 4 Hz fast frame is external live state; isolate it so this test
+    # asserts the feed it wrote, not the machine's running session.
+    monkeypatch.setattr(live_ticks, "FAST_FILE", tmp_path / "live_fast.json")
 
     snap = live_ticks.snapshot("NIFTY")
     assert snap["live"] is True

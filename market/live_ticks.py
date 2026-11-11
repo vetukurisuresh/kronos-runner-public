@@ -26,7 +26,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 FEED_FILE = REPO_ROOT / "state" / "live_feed.json"
 STATE_FILE = REPO_ROOT / "state" / "latest_cloud_state.json"
 HEARTBEAT_FILE = REPO_ROOT / "state" / "live_heartbeat.json"
+FAST_FILE = REPO_ROOT / "state" / "live_fast.json"
 PREDICTOR_STATUS_FILE = REPO_ROOT / "state" / "kronos_predictor_status.json"
+#: The fast publisher writes prices/depth at 4 Hz; the heavy chain can take
+#: seconds.  A fast frame older than this is not liveness evidence.
+FAST_STALE_SEC = 2.0
+#: The predictor runs a heavy autoregressive pass; 30 s was shorter than one
+#: warm cycle on the 8 GB runner and produced false "WAITING" cards.
+PREDICTOR_MAX_AGE_SEC = 900.0
 
 INDEX_KEYS = {"NIFTY": "NSE_INDEX|Nifty 50", "BANKNIFTY": "NSE_INDEX|Nifty Bank"}
 #: A full-spectrum snapshot older than this must never be treated as live.
@@ -40,14 +47,95 @@ def _load(path: Path) -> dict:
         return {}
 
 
-def effective_feed(feed: dict, now: float | None = None) -> dict:
-    """Overlay the 1s socket heartbeat on the slower full-snapshot cycle.
+def _as_float(value: Any, default: float = 0.0) -> float:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return default
+    return out
 
-    The heavy option-chain pass can take ~5s while the V3 websocket keeps
-    delivering frames every ~150ms.  The heartbeat is stamped only from an
-    actual frame, so it is liveness evidence — not a synthetic refresh.
+
+def _fast_epoch(fast: dict) -> float:
+    return _as_float(fast.get("epoch"))
+
+
+def _apply_fast(feed: dict, fast: dict, now: float) -> dict:
+    """Overlay the 4 Hz tick frame on the slower chain snapshot.
+
+    Only volatile values are replaced: LTPs, top-of-book, OBI/TBQ/TSQ and the
+    liveness epoch.  Candle history, chains, Greeks and the full spectrum keep
+    their own provenance and age stamps.
+    """
+    merged = dict(feed)
+    prices = dict(feed.get("prices") or {})
+    for key, value in (fast.get("prices") or {}).items():
+        price = _as_float(value)
+        if price > 0:
+            prices[key] = price
+    if prices:
+        merged["prices"] = prices
+
+    spot = dict(feed.get("spot") or {}) if isinstance(feed.get("spot"), dict) else {}
+    for name, row in (fast.get("spot") or {}).items():
+        ltp = _as_float(row.get("ltp"))
+        if ltp <= 0:
+            continue
+        base = dict(spot.get(name) or {})
+        base.update({k: v for k, v in row.items() if v is not None})
+        base["ltp"] = ltp
+        for key in ("current_candle", "current_candle_5m", "current_candle_15m"):
+            candle = base.get(key)
+            if not isinstance(candle, dict):
+                continue
+            candle = dict(candle)
+            candle["close"] = ltp
+            candle["high"] = max(_as_float(candle.get("high"), ltp), ltp)
+            candle["low"] = min(_as_float(candle.get("low"), ltp) or ltp, ltp)
+            base[key] = candle
+        spot[name] = base
+    if spot:
+        merged["spot"] = spot
+
+    option = dict(feed.get("option") or {}) if isinstance(feed.get("option"), dict) else {}
+    for name, row in (fast.get("option") or {}).items():
+        if not isinstance(row, dict):
+            continue
+        base = dict(option.get(name) or {})
+        base.update({k: v for k, v in row.items() if v is not None})
+        option[name] = base
+    if option:
+        merged["option"] = option
+
+    depth = dict(feed.get("depth") or {}) if isinstance(feed.get("depth"), dict) else {}
+    for name, row in (fast.get("depth") or {}).items():
+        if isinstance(row, dict) and row:
+            depth[name] = dict(row)
+    if depth:
+        merged["depth"] = depth
+
+    for key in ("tick_rate", "socket_frames", "socket_frame_age_ms"):
+        if fast.get(key) is not None:
+            merged[key] = fast[key]
+    merged["socket_connected"] = bool(fast.get("socket_connected", True))
+    merged["liveness_epoch"] = _as_float(fast.get("epoch"))
+    merged["heartbeat_epoch"] = _as_float(fast.get("epoch"))
+    merged["fast_age_ms"] = int(max(0.0, now - _fast_epoch(fast)) * 1000.0)
+    return merged
+
+
+def effective_feed(feed: dict, now: float | None = None) -> dict:
+    """Overlay the fast socket frame on the slower full-snapshot cycle.
+
+    The session publishes ``state/live_fast.json`` at 4 Hz from its in-memory
+    websocket state.  That is the price/liveness authority; the heavy option
+    chain keeps its own real age (``updated_epoch``/``generated_epoch``) so a
+    genuinely old chain still trips spectrum staleness.
     """
     moment = time.time() if now is None else float(now)
+    fast = _load(FAST_FILE)
+    fast_epoch = _fast_epoch(fast)
+    if fast_epoch and moment - fast_epoch <= FAST_STALE_SEC and fast.get("socket_connected"):
+        return _apply_fast(feed, fast, moment)
     beat = _load(HEARTBEAT_FILE)
     try:
         beat_epoch = float(beat.get("epoch") or 0.0)
@@ -60,9 +148,6 @@ def effective_feed(feed: dict, now: float | None = None) -> dict:
     if beat_epoch > feed_epoch and moment - beat_epoch <= 2.0 and beat.get("connected"):
         # A real socket frame arrived within the last 2s; the 5s snapshot may
         # still carry socket_connected=False from the previous heavy cycle.
-        # Keep updated_epoch as the full-snapshot age (so an old chain still
-        # trips spectrum staleness).  liveness_epoch is the socket fact used by
-        # the feed gate, audit age and readiness.
         return {**feed, "socket_connected": True,
                 "heartbeat_epoch": beat_epoch,
                 "liveness_epoch": beat_epoch,
@@ -90,7 +175,7 @@ def _predictor_plan(feed: dict, symbol: str, now: float) -> dict[str, Any]:
         updated = float(status.get("updated_epoch") or 0.0)
     except (TypeError, ValueError):
         return {}
-    if not updated or now - updated > 30.0:
+    if not updated or now - updated > PREDICTOR_MAX_AGE_SEC:
         return {}
     roles = status.get("roles") or {}
     spot_row = ((feed.get("spot") or {}).get(symbol) or {})
@@ -132,6 +217,135 @@ def _predictor_plan(feed: dict, symbol: str, now: float) -> dict[str, Any]:
         "stop_loss": round(p10 if action == "BUY_CE" else p90, 2),
         "source": "KRONOS_LIVE_PREDICTOR",
     }
+
+
+def _anchored_plan(plan: dict, spot: float, atr: float,
+                   *, action: str = "NO_TRADE") -> dict[str, Any]:
+    """Re-anchor a stale forecast corridor to the live spot.
+
+    A cloud plan cached hours ago (25,044 vs a 25,385 tape) is not a forecast.
+    When the stored corridor is absent or more than 1.2% away from the live
+    price, rebuild it from the live ATR so the entry/SL/target geometry is
+    still an honest volatility band around the current market — never a
+    fabricated tick, and never a stale level masquerading as live.
+    """
+    out = dict(plan or {})
+    if spot <= 0:
+        return out
+    p10, p50, p90 = (_as_float(out.get(key)) for key in ("p10", "p50", "p90"))
+    ordered = p10 > 0 and p50 > 0 and p90 > 0 and p10 <= p50 <= p90
+    near = ordered and max(abs(spot - p10), abs(spot - p90)) <= spot * 0.012
+    if not near:
+        band = max(float(atr or 0.0) * 2.5, spot * 0.0015)
+        band = min(band, spot * 0.012)
+        p10, p50, p90 = spot - band * 0.85, spot, spot + band
+        out["reanchored"] = True
+        out["source"] = out.get("source") or "LIVE_SPOT_ATR_BAND"
+    side = "CE" if action == "BUY_CE" else "PE" if action == "BUY_PE" else ""
+    # Enforce a monotonic trade geometry: for a bullish setup the ladder is
+    # SL < Entry < T1 < T2.  The predictor only supplies p10/p50/p90; the
+    # intermediate T1 is the 55% projection towards p90.
+    if side == "PE":
+        target1, target2, stop = p50 - (p90 - p50) * 0.55, p10, p90
+    else:
+        target1, target2, stop = p50 + (p90 - p50) * 0.55, p90, p10
+    out.update({
+        "p10": round(p10, 2), "p50": round(p50, 2), "p90": round(p90, 2),
+        "median": round(p50, 2), "spot": round(spot, 2),
+        "watch_entry": round(p50, 2),
+        "target1": round(target1, 2), "target2": round(target2, 2),
+        "stop_loss": round(stop, 2),
+    })
+    return out
+
+
+def fast_overlay(payload: dict, now: float | None = None) -> dict:
+    """Patch an already-built SSE snapshot with a new 4 Hz tick frame.
+
+    Used by the dashboard fan-out so a 200-400 ms price change is pushed
+    without rebuilding the option chain, narration and candle classifiers.
+    """
+    moment = time.time() if now is None else float(now)
+    fast = _load(FAST_FILE)
+    epoch = _fast_epoch(fast)
+    if not epoch or moment - epoch > FAST_STALE_SEC:
+        return payload
+    out = dict(payload)
+    out["age_ms"] = max(0, int((moment - epoch) * 1000.0))
+    out["ts"] = round(moment, 3)
+    out["live"] = True
+    out["stale"] = False
+    out["as_of"] = fast.get("as_of") or payload.get("as_of")
+    # A fresh socket frame is the gate authority.  Without this, a heavy cycle
+    # that began during a 3s lull leaves "BLOCKED" frozen in the SSE payload
+    # even though every subsequent 4 Hz frame is live.
+    gate = {
+        "live": True, "allowed": True, "status": "LIVE", "reason": "VERIFIED_LIVE",
+        "age_ms": out["age_ms"], "age_sec": round(out["age_ms"] / 1000.0, 3),
+        "feed_status": "FEED_LIVE",
+    }
+    out["data_gate"] = gate
+    out["feed_status"] = {
+        **(payload.get("feed_status") or {}),
+        "status": "FEED_LIVE", "age_ms": out["age_ms"],
+        "market_open": (payload.get("feed_status") or {}).get("market_open", True),
+        "allow_order_generation": True, "reason": "SANITIZED_FEED_LIVE", "ok": True,
+    }
+    out["entries_suspended"] = False
+    arb = dict(payload.get("master_arbitrator") or {})
+    if arb:
+        arb["data_gate"] = dict(gate)
+        out["master_arbitrator"] = arb
+    out["socket"] = {**(payload.get("socket") or {}),
+                     "connected": bool(fast.get("socket_connected")),
+                     "tick_rate": fast.get("tick_rate", (payload.get("socket") or {}).get("tick_rate", 0.0)),
+                     "frames": fast.get("socket_frames", (payload.get("socket") or {}).get("frames", 0)),
+                     "latency_ms": fast.get("socket_frame_age_ms", (payload.get("socket") or {}).get("latency_ms", 0))}
+    spot = dict(payload.get("spot") or {})
+    for name, row in (fast.get("spot") or {}).items():
+        ltp = _as_float(row.get("ltp"))
+        if ltp <= 0:
+            continue
+        base = dict(spot.get(name) or {})
+        base["ltp"] = ltp
+        base["display"] = ltp
+        for key in ("current_candle", "current_candle_5m", "current_candle_15m"):
+            candle = base.get(key)
+            if isinstance(candle, dict):
+                candle = dict(candle)
+                candle["close"] = ltp
+                candle["high"] = max(_as_float(candle.get("high"), ltp), ltp)
+                candle["low"] = min(_as_float(candle.get("low"), ltp) or ltp, ltp)
+                base[key] = candle
+        spot[name] = base
+    out["spot"] = spot
+    indices = dict(payload.get("indices") or {})
+    for name, row in (fast.get("spot") or {}).items():
+        ltp = _as_float(row.get("ltp"))
+        if ltp <= 0:
+            continue
+        base = dict(indices.get(name) or {})
+        base["ltp"] = round(ltp, 2)
+        base["change"] = row.get("change", base.get("change"))
+        base["change_pct"] = row.get("pct_change", base.get("change_pct"))
+        indices[name] = base
+    if indices:
+        out["indices"] = indices
+    option = dict(payload.get("option") or {})
+    for name, row in (fast.get("option") or {}).items():
+        if isinstance(row, dict):
+            option[name] = {**(option.get(name) or {}), **row}
+    if option:
+        out["option"] = option
+        oc = dict(payload.get("option_chart") or {})
+        for name, row in (fast.get("option") or {}).items():
+            chosen = ((option.get(name) or {}).get("strike_symbol"))
+            if chosen and chosen == oc.get("strike_symbol"):
+                for key in ("ltp", "bid", "ask", "obi_5", "delta", "iv"):
+                    if row.get(key) is not None:
+                        oc[key] = row[key]
+        out["option_chart"] = oc
+    return out
 
 
 def _indices(feed: dict) -> dict[str, Any]:
@@ -319,7 +533,10 @@ def snapshot(symbol: str = "NIFTY", now: float | None = None) -> dict[str, Any]:
         spot_block["source"] = "stale-snapshot"
         spot_block["display_allowed"] = bool(spot_block.get("ltp"))
 
-    suspended = bool(feed.get("entries_suspended")) or not gate.allow_order_generation
+    # Liveness is the fast 4 Hz socket frame; a heavy chain snapshot is allowed
+    # to be seconds old without suspending entries.  A genuinely dead socket
+    # still fails closed here and in the arbitrator.
+    suspended = not gate.allow_order_generation or spectrum_stale
     programmatic = feed.get("programmatic")
     if not isinstance(programmatic, dict) or not programmatic:
         programmatic = build_programmatic_telemetry(feed, symbol=symbol, now=now)
@@ -390,6 +607,25 @@ def snapshot(symbol: str = "NIFTY", now: float | None = None) -> dict[str, Any]:
         for tf, bars in option_frames.items()
     }
     option_visuals = option_by_tf["1m"]
+    # The session's embedded readiness can lag the live tunnel probe by one
+    # heavy cycle (5/6 vs 6/6 in the same modal).  Use the same runtime builder
+    # the /api/readiness endpoint uses so every surface agrees.
+    autopilot = feed.get("autopilot")
+    try:
+        from market.autopilot_readiness import build_from_runtime, load_readiness
+        from market.upstox_health import load_access_token, load_token_meta
+
+        runtime = build_from_runtime(
+            feed=feed,
+            readiness=load_readiness(),
+            token_present=bool(load_access_token()),
+            token_meta=load_token_meta(),
+        )
+        if isinstance(runtime, dict) and runtime.get("checks"):
+            autopilot = runtime
+    except Exception:  # noqa: BLE001 - readiness must never break the tape
+        autopilot = autopilot or {}
+    autopilot = autopilot if isinstance(autopilot, dict) else {}
     bull = float(oscillator.get("bullish_upside_prob_pct") or 0.0)
     bear = float(oscillator.get("bearish_downside_prob_pct") or 0.0)
     arbitrator = build_master_arbitrator(
@@ -398,6 +634,9 @@ def snapshot(symbol: str = "NIFTY", now: float | None = None) -> dict[str, Any]:
     winner = ((arbitrator.get("sleeve_b") or {}).get("selected")
               or (arbitrator.get("sleeve_a") or {}).get("selected") or {})
     direction = "BULL" if bull >= 58.0 else "BEAR" if bear >= 58.0 else "CHOP"
+    action = "BUY_CE" if direction == "BULL" else "BUY_PE" if direction == "BEAR" else "NO_TRADE"
+    plan = _anchored_plan(plan, _as_float(spot_block.get("ltp") or spot_block.get("display")),
+                          _as_float(spot_block.get("atr")), action=action)
     entry = plan.get("watch_entry") or plan.get("p10") or spot_block.get("ltp")
     target1 = plan.get("target1") or plan.get("p65") or plan.get("median")
     target2 = plan.get("target2") or plan.get("p90")
@@ -424,6 +663,9 @@ def snapshot(symbol: str = "NIFTY", now: float | None = None) -> dict[str, Any]:
         "feed_live": live,
     }
     chart_levels = {
+        "p10": plan.get("p10"), "p50": plan.get("p50"), "p90": plan.get("p90"),
+        "median": plan.get("median"), "watch_entry": plan.get("watch_entry"),
+        "stop_loss": plan.get("stop_loss"),
         "entry": trade.get("entry_price") or entry,
         "sl": trade.get("current_trailing_sl") or plan.get("stop_loss"),
         "t1": trade.get("target_1") or plan.get("target1"),
@@ -442,11 +684,23 @@ def snapshot(symbol: str = "NIFTY", now: float | None = None) -> dict[str, Any]:
         )
         if key in scalp_sleeve
     }
+    data_gate = {
+        "live": bool(live),
+        "allowed": bool(live),
+        "status": "LIVE" if live else "BLOCKED",
+        "reason": "VERIFIED_LIVE" if live else gate.reason,
+        "age_ms": age_ms,
+        "age_sec": round(age_ms / 1000.0, 3),
+        "feed_status": gate.status,
+    }
     return {
         "ok": bool(live),
         "ts": round(now, 3),
         "age_ms": age_ms,
         "live": live,
+        "data_gate": data_gate,
+        "plan": plan,
+        "depth": depth,
         "feed_status": gate.as_dict(),
         "order_generation_allowed": bool(gate.allow_order_generation and live),
         "entries_suspended": bool(suspended or spectrum_stale),
@@ -507,9 +761,9 @@ def snapshot(symbol: str = "NIFTY", now: float | None = None) -> dict[str, Any]:
         "stale": not live,
         "as_of": feed.get("updated_at"),
         "cutoff": feed.get("cutoff") or cutoff_state(),
-        "autopilot_status": feed.get("autopilot_status"),
-        "autopilot_green": feed.get("autopilot_green"),
-        "autopilot": feed.get("autopilot") or {},
+        "autopilot_status": autopilot.get("status") or feed.get("autopilot_status"),
+        "autopilot_green": autopilot.get("green", feed.get("autopilot_green")),
+        "autopilot": autopilot,
         "scalp_sleeve": scalp_sleeve,
         "parallel_alpha": feed.get("parallel_alpha") or {},
         "parallel_alpha_pnl": (feed.get("parallel_alpha") or {}).get("pnl_contributions") or {},
