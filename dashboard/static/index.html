@@ -1465,6 +1465,7 @@ body.tl-open{overflow:hidden!important}
         <div class="chart-dock-right">
           <div class="opt-quote"><span id="bigOpt">—</span><small id="bigOptPnl">—</small></div>
           <span class="tf-btns" id="optTf"><button type="button" data-tf="1" class="on">1m</button><button type="button" data-tf="5">5m</button><button type="button" data-tf="15">15m</button></span>
+          <span class="tf-btns" id="optPinBtns" aria-label="Watch option leg"><button type="button" data-opt-pin="AUTO" class="on" title="Auto-select CE or PE from live bias">AUTO</button><button type="button" data-opt-pin="CE" title="Watch ATM CE">CE</button><button type="button" data-opt-pin="PE" title="Watch ATM PE">PE</button></span>
           <button class="chart-cfg-btn" type="button" data-chart-fit title="Fit visible candles">⛶</button>
           <button class="chart-cfg-btn" type="button" data-chart-studio title="Chart Studio">🎨</button>
         </div>
@@ -2214,7 +2215,14 @@ function applyVolumes(series, data){
     return {time:c.time, value:real>0?real:fallback,
       color:c.close>=c.open?'rgba(0,230,118,.55)':'rgba(255,23,68,.55)'};
   });
-  try{ series.setData(rows); }catch(e){}
+  if(!rows.length) return;
+  const last=rows[rows.length-1];
+  // Never reset the histogram on every tick: only append/update the tail.
+  try{
+    if(series.__volLast===last.time) series.update(last);
+    else series.setData(rows);
+    series.__volLast=last.time;
+  }catch(e){}
 }
 
 function buildVwap(data){
@@ -3994,6 +4002,28 @@ function startLive(){
   if(HOSTED){refreshEdge();startEdgeWatchdog();window.addEventListener('online',()=>{if(!LIVE.edge.open)refreshEdge()});document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!LIVE.edge.open)refreshEdge()});return}
   connectStream(); setInterval(pollTicks,1000);
 }
+
+async function loadOptionPin(){
+  try{
+    const r=await fetch(apiUrl('/api/option-pin'),{cache:'no-store'});
+    if(!r.ok) return;
+    const j=await r.json();
+    const mode=String(j.mode||'AUTO').toUpperCase();
+    document.querySelectorAll('[data-opt-pin]').forEach(b=>b.classList.toggle('on',b.dataset.optPin===mode));
+  }catch(e){}
+}
+async function setOptionPin(mode){
+  const value=String(mode||'AUTO').toUpperCase();
+  try{
+    const r=await fetch(apiUrl('/api/option-pin'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:value})});
+    const j=await r.json();
+    if(!j.ok) throw new Error(j.reason||'pin rejected');
+    document.querySelectorAll('[data-opt-pin]').forEach(b=>b.classList.toggle('on',b.dataset.optPin===value));
+    if(window.toast) window.toast(value==='AUTO'?'Option watch set to AUTO (live bias)':`Option watch pinned to ${value}`);
+  }catch(err){ if(window.toast) window.toast('Option pin failed: '+err.message); }
+}
+document.querySelectorAll('[data-opt-pin]').forEach(b=>b.addEventListener('click',()=>setOptionPin(b.dataset.optPin)));
+loadOptionPin();
 
 // Lightweight Charts paints itself; only the HTML overlays need a slow refresh.
 setInterval(()=>{ paintBadge(); bigPrices(); paintHud(); paintPill(); renderStory(); renderHero(); renderScalper(); drawOverlays(); }, 600);

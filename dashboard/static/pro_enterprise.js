@@ -148,11 +148,14 @@
     try { t = (typeof LIVE !== 'undefined' && LIVE.tick) || {}; } catch (_) {}
     const tr = (typeof LIVE !== 'undefined' && LIVE.trade) || {};
     const lv = (t && t.chart_levels) || {};
+    const open = String(tr.status || '').toUpperCase() === 'OPEN';
+    // A closed trade retains its old fill prices in the story; never let those
+    // stale numbers reappear as IDLE legend values.
     return {
-      entry: num(tr.entry_price) != null ? num(tr.entry_price) : num(lv.entry),
-      sl: num(tr.current_trailing_sl) != null ? num(tr.current_trailing_sl) : num(lv.sl),
-      t1: num(tr.target_1) != null ? num(tr.target_1) : num(lv.t1),
-      t2: num(tr.target_2_p90) != null ? num(tr.target_2_p90) : num(lv.t2),
+      entry: open && num(tr.entry_price) != null ? num(tr.entry_price) : num(lv.entry),
+      sl: open && num(tr.current_trailing_sl) != null ? num(tr.current_trailing_sl) : num(lv.sl),
+      t1: open && num(tr.target_1) != null ? num(tr.target_1) : num(lv.t1),
+      t2: open && num(tr.target_2_p90) != null ? num(tr.target_2_p90) : num(lv.t2),
     };
   }
   function effectiveLevels() {

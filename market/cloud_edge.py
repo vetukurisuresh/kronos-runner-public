@@ -181,6 +181,21 @@ class CloudEdge:
         except Exception:  # noqa: BLE001 - the file watcher is the fallback
             return False
 
+    def notify_fast(self, timeout: float = 0.10) -> bool:
+        """Push an event-driven fast tick without rebuilding the heavy chain."""
+        token = os.environ.get(PUSH_TOKEN_ENV, "")
+        if not token:
+            return False
+        try:
+            response = requests.post(
+                f"http://{self.host}:{self.port}/api/internal/fast-tick",
+                headers={"X-Kronos-Edge-Token": token},
+                timeout=timeout,
+            )
+            return bool(response.ok)
+        except Exception:  # noqa: BLE001 - the 10 ms file watcher is the fallback
+            return False
+
     def stop(self) -> None:
         if self._stopped:
             return

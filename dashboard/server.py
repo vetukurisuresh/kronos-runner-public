@@ -170,6 +170,7 @@ LOCK = threading.Lock()
 COMMAND_CENTER = CommandCenterService()
 
 PUSH_TOKEN_ENV = "KRONOS_EDGE_PUSH_TOKEN"
+OPTION_PIN_FILE = REPO_ROOT / "state" / "live_option_pin.json"
 STREAM_SYMBOLS = ("NIFTY", "BANKNIFTY")
 
 
@@ -270,7 +271,8 @@ class TickHub:
                     self.publish_fast()
                 except Exception:  # noqa: BLE001 - a bad fast frame is not fatal
                     pass
-            time.sleep(0.02)
+            # 10 ms fail-safe; the primary path is the internal fast-tick POST.
+            time.sleep(0.01)
 
 
 TICK_HUB = TickHub()
@@ -498,6 +500,16 @@ class Handler(SimpleHTTPRequestHandler):
                 pass
             self._json({"ok": True, "mode": mode,
                         "modes": ["AUTO", "PING_PONG", "VELOCITY", "TREND_ONLY"]})
+            return
+        if parsed.path == "/api/option-pin":
+            mode = "AUTO"
+            try:
+                raw = json.loads(OPTION_PIN_FILE.read_text(encoding="utf-8"))
+                value = str(raw.get("mode") or "AUTO").upper()
+                mode = value if value in {"AUTO", "CE", "PE"} else "AUTO"
+            except (OSError, ValueError, TypeError):
+                pass
+            self._json({"ok": True, "mode": mode, "modes": ["AUTO", "CE", "PE"]})
             return
         if parsed.path == "/api/expiry-hero":
             from strategy.expiry_zero_to_hero import normalize_mode
@@ -854,6 +866,17 @@ class Handler(SimpleHTTPRequestHandler):
             self._json({"ok": True, "dispatch_ms": round(elapsed_ms, 3),
                         "symbols": list(STREAM_SYMBOLS)})
             return
+        if parsed.path == "/api/internal/fast-tick":
+            expected = os.environ.get(PUSH_TOKEN_ENV, "")
+            supplied = self.headers.get("X-Kronos-Edge-Token", "")
+            if not expected or not hmac.compare_digest(expected, supplied):
+                self._json({"ok": False, "reason": "edge push token required"}, status=403)
+                return
+            started = time.perf_counter()
+            TICK_HUB.publish_fast()
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            self._json({"ok": True, "dispatch_ms": round(elapsed_ms, 3)})
+            return
         length = int(self.headers.get("Content-Length") or 0)
         body = json.loads(self.rfile.read(length) or b"{}") if length else {}
         if parsed.path == "/api/run":
@@ -884,6 +907,22 @@ class Handler(SimpleHTTPRequestHandler):
                     }, indent=1),
                     encoding="utf-8",
                 )
+            except OSError as exc:
+                self._json({"ok": False, "reason": str(exc)}, status=500)
+                return
+            self._json({"ok": True, "mode": mode})
+            return
+        if parsed.path == "/api/option-pin":
+            mode = str(body.get("mode") or "AUTO").strip().upper()
+            if mode not in {"AUTO", "CE", "PE"}:
+                self._json({"ok": False, "reason": "mode must be AUTO, CE or PE"}, status=400)
+                return
+            try:
+                OPTION_PIN_FILE.parent.mkdir(parents=True, exist_ok=True)
+                OPTION_PIN_FILE.write_text(json.dumps({
+                    "mode": mode,
+                    "updated_at": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
+                }, indent=1), encoding="utf-8")
             except OSError as exc:
                 self._json({"ok": False, "reason": str(exc)}, status=500)
                 return

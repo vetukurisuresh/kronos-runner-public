@@ -36,6 +36,73 @@ def choose_side(paths_up: int | None, samples: int | None, action: str = "") -> 
     return "CE"
 
 
+def choose_watch_side(
+    *,
+    active_trade: dict | None = None,
+    manual: str = "AUTO",
+    upside: float | None = None,
+    downside: float | None = None,
+    pcr: float | None = None,
+    spot: float | None = None,
+    vwap: float | None = None,
+    obi_5: float | None = None,
+    fallback: str = "CE",
+) -> str:
+    """Pick the option leg the desk should watch right now.
+
+    Priority is deliberate: an open position is immutable; a human pin wins
+    while flat; only then does the live directional/flow bias pick the leg.
+    A bearish model with a put-heavy chain, price below VWAP or a weak book
+    therefore watches an ATM PE instead of a stale CE.  This function only
+    selects the *watch* contract; it never creates an order.
+    """
+    trade = active_trade if isinstance(active_trade, dict) else {}
+    if str(trade.get("status") or "").upper() == "OPEN":
+        pinned = str(trade.get("option_type") or trade.get("side") or "").upper()
+        if pinned in {"CE", "PE"}:
+            return pinned
+    pin = str(manual or "AUTO").upper()
+    if pin in {"CE", "PE"}:
+        return pin
+
+    def _f(value: float | None, default: float = 0.0) -> float:
+        try:
+            return float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return default
+
+    up = _f(upside)
+    down = _f(downside)
+    ratio = _f(pcr)
+    px = _f(spot)
+    avg = _f(vwap)
+    book = _f(obi_5)
+    below_vwap = bool(px > 0 and avg > 0 and px < avg)
+    above_vwap = bool(px > 0 and avg > 0 and px >= avg)
+    put_chain = 0.0 < ratio < 0.82
+    call_chain = ratio > 1.05
+
+    if down > up and (put_chain or below_vwap or (0.0 < book < 0.90)):
+        return "PE"
+    if up >= down and (call_chain or above_vwap or book >= 1.05):
+        return "CE"
+    if put_chain and below_vwap:
+        return "PE"
+    if call_chain and above_vwap:
+        return "CE"
+    return "PE" if str(fallback).upper() == "PE" else "CE"
+
+
+def contract_label(symbol: str, strike: float | int | None, side: str) -> str:
+    """Always return a real contract label; never ``NIFTY 0 CE``."""
+    try:
+        number = int(float(strike or 0))
+    except (TypeError, ValueError):
+        number = 0
+    leg = "PE" if str(side).upper() == "PE" else "CE"
+    return f"{symbol} {number} {leg}" if number > 0 else f"{symbol} ATM {leg}"
+
+
 def new_trade(entry: float, risk: float, qty: int = 300) -> dict[str, Any]:
     risk = max(float(risk), 0.5)
     entry = float(entry)

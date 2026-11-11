@@ -393,7 +393,9 @@ def _base_target(plan: Mapping[str, Any]) -> tuple[float | None, float | None]:
 
 def _base_decision(confidence: float | None) -> str:
     if confidence is None:
-        return "⚪ WAITING FOR 512-BAR MODEL INPUT"
+        # A green 512-bar buffer is not a missing input.  Say the truth: the
+        # model prediction has not reached the narration cache yet.
+        return "⚪ 512 BARS READY · MODEL INFERENCE PENDING"
     if confidence >= 78.0:
         return f"🟢 BULLISH CONFIRMED ({confidence:.0f}%)"
     if confidence >= 60.0:

@@ -45,6 +45,68 @@ def _f(value: Any) -> float:
         return 0.0
 
 
+def quantile_probability(
+    spot: Any,
+    p10: Any,
+    p50: Any,
+    p90: Any,
+    *,
+    paths_up: Any = None,
+    samples: Any = None,
+    floor: float = 2.0,
+    cap: float = 98.0,
+) -> dict[str, float | str]:
+    """Turn a real forecast cone into a continuous directional probability.
+
+    A two-draw Monte Carlo can only report 0%, 50% or 100% from ``paths_up``.
+    That makes a 72/78 gate mathematically unreachable around the middle even
+    when the cone is genuinely trending.  The forecast quantiles carry much
+    more information than two discrete votes, so map live spot through the
+    empirical p10/p50/p90 CDF.  This is still the model's own distribution,
+    not a hand-entered sentiment score.  When at least eight paths exist the
+    empirical vote is blended in; below that the quantiles are authoritative.
+    """
+    def _f(value: Any) -> float:
+        try:
+            out = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+        return out
+
+    sx, lo, mid, hi = _f(spot), _f(p10), _f(p50), _f(p90)
+    if sx <= 0 or lo <= 0 or mid <= 0 or hi <= 0:
+        return {"upside_pct": 50.0, "source": "INSUFFICIENT_QUANTILES"}
+    if not (lo <= mid <= hi):
+        lo, mid, hi = min(lo, mid, hi), sorted((lo, mid, hi))[1], max(lo, mid, hi)
+    floor = max(0.0, min(float(floor), 49.0))
+    cap = min(100.0, max(float(cap), 51.0))
+    # P(forecast close > spot), not P(close < spot).  Spot above the whole
+    # cone means the model is bearish, so upside must be near the floor.
+    if sx <= lo:
+        raw = cap
+    elif sx >= hi:
+        raw = floor
+    elif sx <= mid:
+        span = mid - lo
+        raw = cap - ((sx - lo) / span) * (cap - 50.0) if span > 0 else 50.0
+    else:
+        span = hi - mid
+        raw = 50.0 - ((sx - mid) / span) * (50.0 - floor) if span > 0 else 50.0
+
+    n = int(_f(samples))
+    up = int(_f(paths_up))
+    source = "QUANTILE_CDF"
+    if n >= 8 and 0 <= up <= n:
+        empirical = 100.0 * up / n
+        raw = 0.70 * raw + 0.30 * empirical
+        source = "QUANTILE_CDF+PATH_VOTE"
+    return {
+        "upside_pct": round(max(floor, min(cap, raw)), 2),
+        "source": source,
+        "quantile_cdf_pct": round(raw, 2),
+    }
+
+
 def _symbol(feed: Mapping[str, Any]) -> str:
     for block_name in ("spot", "full_spectrum"):
         block = feed.get(block_name)
@@ -127,15 +189,22 @@ def _predict_role(role: str, feed: Mapping[str, Any]) -> dict[str, Any] | None:
     started = time.perf_counter()
     forecast = ensemble.forecast(role, candles)
     elapsed_ms = (time.perf_counter() - started) * 1000.0
-    up = round(float(forecast.up_pct), 2)
+    probability = quantile_probability(
+        forecast.last_close, forecast.p10, forecast.p50, forecast.p90,
+        paths_up=forecast.paths_up, samples=forecast.samples,
+    )
+    up = round(float(probability["upside_pct"]), 2)
     down = round(100.0 - up, 2)
     direction = 1 if up >= 50.0 else -1
     target_1 = forecast.p50
     target_2 = forecast.p90 if direction > 0 else forecast.p10
     return {
         "state": "LIVE_INFERENCE",
+        "probability_source": probability["source"],
+        "bars_used": len(candles),
+        "lookback": int(ensemble.role_config[role]["lookback"]),
         "reason": (
-            f"{role} · {forecast.samples} Monte Carlo paths · "
+            f"{role} · {probability['source']} · {forecast.samples} paths · "
             f"p10 {forecast.p10:.2f} / p50 {forecast.p50:.2f} / "
             f"p90 {forecast.p90:.2f} · {elapsed_ms:.0f}ms"
         ),
@@ -145,6 +214,7 @@ def _predict_role(role: str, feed: Mapping[str, Any]) -> dict[str, Any] | None:
         "upside_prob": up,
         "downside_prob": down,
         "confidence": round(float(forecast.conviction), 2),
+        "quantile_cdf_pct": probability["quantile_cdf_pct"],
         "paths_up": int(forecast.paths_up),
         "samples": int(forecast.samples),
         "target_1": round(float(target_1), 2),

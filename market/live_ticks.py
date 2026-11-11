@@ -28,8 +28,9 @@ STATE_FILE = REPO_ROOT / "state" / "latest_cloud_state.json"
 HEARTBEAT_FILE = REPO_ROOT / "state" / "live_heartbeat.json"
 FAST_FILE = REPO_ROOT / "state" / "live_fast.json"
 PREDICTOR_STATUS_FILE = REPO_ROOT / "state" / "kronos_predictor_status.json"
-#: The fast publisher writes prices/depth at 4 Hz; the heavy chain can take
-#: seconds.  A fast frame older than this is not liveness evidence.
+OPTION_PIN_FILE = REPO_ROOT / "state" / "live_option_pin.json"
+#: The fast publisher writes prices/depth on every socket tick; the heavy chain
+#: can take seconds.  A fast frame older than this is not liveness evidence.
 FAST_STALE_SEC = 2.0
 #: The predictor runs a heavy autoregressive pass; 30 s was shorter than one
 #: warm cycle on the 8 GB runner and produced false "WAITING" cards.
@@ -37,7 +38,10 @@ PREDICTOR_MAX_AGE_SEC = 900.0
 
 INDEX_KEYS = {"NIFTY": "NSE_INDEX|Nifty 50", "BANKNIFTY": "NSE_INDEX|Nifty Bank"}
 #: A full-spectrum snapshot older than this must never be treated as live.
-FULL_SPECTRUM_STALE_MS = 8000
+#: 12 s is the explicit last-known-good hold while the 4 Hz socket is live; the
+#: audit still exposes the real chain age so a lag is never disguised as fresh.
+FULL_SPECTRUM_STALE_MS = 12_000
+LKG_HOLD_MS = 12_000
 
 
 def _load(path: Path) -> dict:
@@ -53,6 +57,12 @@ def _as_float(value: Any, default: float = 0.0) -> float:
     except (TypeError, ValueError):
         return default
     return out
+
+
+def _option_pin() -> str:
+    """Human watch-leg pin: AUTO, CE or PE.  Never an order instruction."""
+    mode = str((_load(OPTION_PIN_FILE) or {}).get("mode") or "AUTO").upper()
+    return mode if mode in {"AUTO", "CE", "PE"} else "AUTO"
 
 
 def _fast_epoch(fast: dict) -> float:
@@ -417,6 +427,10 @@ def _stamp_full_spectrum(feed: dict, now: float) -> tuple[dict[str, Any], bool]:
         age_ms = int(max(0.0, now - epoch) * 1000.0) if epoch > 0 else None
         fixture = bool(snap.get("fixture") or feed.get("fixture"))
         stale = fixture or age_ms is None or age_ms > FULL_SPECTRUM_STALE_MS
+        lkg_held = bool(
+            not stale and age_ms is not None and age_ms > 5_000
+            and feed.get("socket_connected")
+        )
         snap["as_of"] = snap.get("as_of") or feed_as_of
         snap["updated_epoch"] = epoch if epoch > 0 else None
         snap["fixture"] = fixture
@@ -425,7 +439,12 @@ def _stamp_full_spectrum(feed: dict, now: float) -> tuple[dict[str, Any], bool]:
             snap.get("source") or "upstox-v3"
         )
         snap["age_ms"] = age_ms
+        snap["chain_age_ms"] = age_ms
+        snap["lkg_held"] = lkg_held
+        snap["lkg_window_ms"] = LKG_HOLD_MS
         snap["stale"] = stale
+        # LKG keeps the last verified chain visible while the socket still
+        # ticks.  A genuinely dead/old chain still suppresses entries.
         snap["entries_suspended"] = bool(snap.get("entries_suspended")) or stale
         any_stale = any_stale or stale
         stamped[symbol] = snap
@@ -662,16 +681,34 @@ def snapshot(symbol: str = "NIFTY", now: float | None = None) -> dict[str, Any]:
         "selected_engine": winner.get("engine"),
         "feed_live": live,
     }
+    trade_open = str(trade.get("status") or "").upper() == "OPEN"
+    # IDLE has no moving bracket.  The only reference line is VWAP/ATP plus one
+    # trigger zone anchored to the last *closed* 5m candle.  Showing plan-derived
+    # ENTRY/SL/T1/T2 while flat was the root cause of all four lines chasing LTP.
+    five_bars = ((feed.get("spot") or {}).get(symbol) or {}).get("candles_5m") or []
+    anchor = five_bars[-2] if len(five_bars) >= 2 else (five_bars[-1] if five_bars else {})
+    anchor_time = anchor.get("t", anchor.get("time")) if isinstance(anchor, dict) else None
+    trigger_price = None
+    if isinstance(anchor, dict):
+        trigger_price = anchor.get("high") if direction == "BULL" else anchor.get("low")
     chart_levels = {
         "p10": plan.get("p10"), "p50": plan.get("p50"), "p90": plan.get("p90"),
-        "median": plan.get("median"), "watch_entry": plan.get("watch_entry"),
-        "stop_loss": plan.get("stop_loss"),
-        "entry": trade.get("entry_price") or entry,
-        "sl": trade.get("current_trailing_sl") or plan.get("stop_loss"),
-        "t1": trade.get("target_1") or plan.get("target1"),
-        "t2": trade.get("target_2_p90") or plan.get("target2") or plan.get("p90"),
+        "median": plan.get("median"),
         "atp": option.get("atp_vwap"),
+        "levels_locked": bool(trade_open),
+        "levels_state": "POSITION_LOCKED" if trade_open else "IDLE_STATIC",
+        "trigger_zone": round(_as_float(trigger_price), 2) if _as_float(trigger_price) > 0 else None,
+        "trigger_zone_time": anchor_time,
     }
+    if trade_open:
+        # Frozen at the exact fill/exit record.  SL only changes when the trade
+        # manager books a leg or moves a gear; never from a price tick.
+        chart_levels.update({
+            "entry": trade.get("entry_price"),
+            "sl": trade.get("current_trailing_sl"),
+            "t1": trade.get("target_1"),
+            "t2": trade.get("target_2_p90"),
+        })
     scalp_sleeve = dict(feed.get("scalp_sleeve") or {})
     scalp_top = {
         key: scalp_sleeve.get(key)
@@ -684,6 +721,11 @@ def snapshot(symbol: str = "NIFTY", now: float | None = None) -> dict[str, Any]:
         )
         if key in scalp_sleeve
     }
+    chain_age_ms = max(
+        (int(snap.get("age_ms") or 0) for snap in full_spectrum.values()
+         if isinstance(snap, dict)), default=0,
+    )
+    lkg_active = bool(live and not spectrum_stale and chain_age_ms > 5_000)
     data_gate = {
         "live": bool(live),
         "allowed": bool(live),
@@ -692,6 +734,10 @@ def snapshot(symbol: str = "NIFTY", now: float | None = None) -> dict[str, Any]:
         "age_ms": age_ms,
         "age_sec": round(age_ms / 1000.0, 3),
         "feed_status": gate.status,
+        "lkg": lkg_active,
+        "chain_age_ms": chain_age_ms,
+        "chain_stale": bool(spectrum_stale),
+        "lkg_window_ms": LKG_HOLD_MS,
     }
     return {
         "ok": bool(live),
@@ -703,7 +749,11 @@ def snapshot(symbol: str = "NIFTY", now: float | None = None) -> dict[str, Any]:
         "depth": depth,
         "feed_status": gate.as_dict(),
         "order_generation_allowed": bool(gate.allow_order_generation and live),
-        "entries_suspended": bool(suspended or spectrum_stale),
+        "entries_suspended": bool(spectrum_stale),
+        "lkg_active": lkg_active,
+        "chain_age_ms": chain_age_ms,
+        "option_pin": _option_pin(),
+        "option_selection": option.get("selection") or {},
         "fixture": bool(feed.get("fixture") or any(
             isinstance(row, dict) and bool(row.get("fixture"))
             for row in full_spectrum.values()
@@ -737,6 +787,7 @@ def snapshot(symbol: str = "NIFTY", now: float | None = None) -> dict[str, Any]:
         },
         "option_chart": {
             "strike_symbol": option.get("strike_symbol"),
+            "selection": option.get("selection") or {},
             "ltp": option.get("ltp"), "delta": option.get("delta"),
             "gamma": option.get("gamma"), "iv": option.get("iv"),
             "obi_5": option.get("obi_5"), "atp_vwap": option.get("atp_vwap"),

@@ -56,7 +56,14 @@ from execution.pro_money_manager import (  # noqa: E402
     manage_hero_trade,
     manage_post_t2_super_trend,
 )
-from market.option_picker import choose_side, gear_update, new_trade, pick_atm  # noqa: E402
+from market.option_picker import (  # noqa: E402
+    choose_side,
+    choose_watch_side,
+    contract_label,
+    gear_update,
+    new_trade,
+    pick_atm,
+)
 from market.autopilot_readiness import (  # noqa: E402
     build_checks,
     publish_readiness,
@@ -89,6 +96,7 @@ from model.kronos_inputs import (  # noqa: E402
 )
 from strategy.full_spectrum_alpha import (  # noqa: E402
     build_snapshot as build_full_spectrum,
+    chain_metrics,
     greeks_gate,
     structure_gaps,
     zero_chop_gate,
@@ -151,6 +159,7 @@ HEARTBEAT = REPO_ROOT / "state" / "live_feed.json"
 FAST_TICKS = REPO_ROOT / "state" / "live_fast.json"
 EXPIRY_HERO_MODE_FILE = REPO_ROOT / "state" / "expiry_hero_mode.json"
 SCALPER_MODE_FILE = REPO_ROOT / "state" / "scalper_mode.json"
+OPTION_PIN_FILE = REPO_ROOT / "state" / "live_option_pin.json"
 #: 1s liveness beat driven by real V3 frames, independent of the heavy chain cycle.
 HEARTBEAT_FILE = REPO_ROOT / "state" / "live_heartbeat.json"
 HERO_DESK_FILE = REPO_ROOT / HERO_GUARD_FILE
@@ -279,6 +288,10 @@ class SocketWatch(threading.Thread):
         self.books = FullSpectrumBook()
         self.ws = None
         self.lock = threading.Lock()
+        #: Event-driven fast lane.  The publisher wakes on the exact decoded
+        #: tick, instead of waiting for the next 250 ms timer.
+        self.tick_seq = 0
+        self.tick_condition = threading.Condition(self.lock)
 
     def _connect(self):  # pragma: no cover - network
         import websocket
@@ -380,6 +393,8 @@ class SocketWatch(threading.Thread):
                     self.prices[key] = price
                     self.ticks[key] = dict(tick)
                     self.tick_queue.append((key, dict(tick)))
+                    self.tick_seq += 1
+                    self.tick_condition.notify_all()
         except Exception:  # noqa: BLE001
             pass
 
@@ -448,7 +463,8 @@ class FastTickPublisher(threading.Thread):
     """
 
     def __init__(self, socket: "SocketWatch", engine, path, shared: dict,
-                 futures_keys: dict | None = None, interval: float = 0.25) -> None:
+                 futures_keys: dict | None = None, interval: float = 0.05,
+                 on_frame: Any = None) -> None:
         super().__init__(daemon=True, name="kronos-fast-ticks")
         self.socket = socket
         self.engine = engine
@@ -456,7 +472,8 @@ class FastTickPublisher(threading.Thread):
         self.shared = shared
         self.futures_keys = dict(futures_keys or {})
         self.started = time.time()
-        self.interval = max(float(interval), 0.1)
+        self.interval = max(float(interval), 0.02)
+        self.on_frame = on_frame
         self.stop = threading.Event()
 
     @staticmethod
@@ -484,7 +501,16 @@ class FastTickPublisher(threading.Thread):
         }
 
     def run(self) -> None:
+        last_seq = -1
         while not self.stop.is_set():
+            with self.socket.tick_condition:
+                seq = int(self.socket.tick_seq)
+                if seq == last_seq:
+                    self.socket.tick_condition.wait(timeout=0.50)
+                    seq = int(self.socket.tick_seq)
+                if seq == last_seq:
+                    continue
+                last_seq = seq
             started = time.time()
             try:
                 prices = {
@@ -547,6 +573,10 @@ class FastTickPublisher(threading.Thread):
                     "tick_rate": round(self.socket.frames / max(time.time() - self.started, 1.0), 2),
                     "socket_frame_age_ms": (int(max(0.0, time.time() - self.socket.last_frame) * 1000.0)
                                             if self.socket.last_frame else None),
+                    "tick_seq": int(last_seq),
+                    "tick_epoch": round(time.time(), 4),
+                    "source_ltt_ms": float(self.socket.last_ltt_ms or 0.0),
+                    "publish_ms": round((time.time() - started) * 1000.0, 3),
                     "prices": prices,
                     "spot": spot,
                     "option": option,
@@ -555,9 +585,15 @@ class FastTickPublisher(threading.Thread):
                 temp = self.path.with_suffix(".tmp")
                 temp.write_text(json.dumps(body, separators=(",", ":")), encoding="utf-8")
                 _replace_retry(temp, self.path)
+                if self.on_frame is not None:
+                    try:
+                        self.on_frame()
+                    except Exception:  # noqa: BLE001 - HTTP notify is optional
+                        pass
             except Exception:  # noqa: BLE001 - a missed fast frame must never stop the tape
                 pass
-            self.stop.wait(max(0.05, self.interval - (time.time() - started)))
+            # Wake immediately on the next decoded tick; the condition wait is
+            # the pacing mechanism, not a blind 250 ms sleep.
 
 
 def load_plan(symbol: str) -> dict:
@@ -912,6 +948,52 @@ def load_scalper_mode() -> str:
         return "AUTO"
 
 
+def load_option_pin() -> str:
+    """Read the human watch-leg pin; it never routes an order by itself."""
+    try:
+        mode = str(
+            json.loads(OPTION_PIN_FILE.read_text(encoding="utf-8")).get("mode")
+            or "AUTO"
+        ).strip().upper()
+    except (OSError, ValueError, TypeError):
+        return "AUTO"
+    return mode if mode in {"AUTO", "CE", "PE"} else "AUTO"
+
+
+def merge_verified_option_depth(payload: dict) -> dict:
+    """Make the verified book authoritative over a pre-chain zero option row.
+
+    The session builds the selected option before the 11-strike snapshot.  An
+    empty selected book leaves ``obi_5=0.0``; ``setdefault`` then preserved the
+    zero and starved the 4M model while the audit showed the valid book.  Only
+    a non-zero verified value replaces the zero, and an empty option depth is
+    replaced only by a non-empty verified book.
+    """
+    payload.setdefault("depth", {})
+    for name, snap in (payload.get("full_spectrum") or {}).items():
+        if not isinstance(snap, dict):
+            continue
+        book = snap.get("depth") or {}
+        if not book:
+            continue
+        payload["depth"][name] = dict(book)
+        option_row = (payload.get("option") or {}).get(name)
+        if not isinstance(option_row, dict):
+            continue
+        for key in ("obi_5", "tbq_tsq", "tbq", "tsq"):
+            value = book.get(key)
+            if value not in (None, "", 0, 0.0):
+                option_row[key] = value
+        row_depth = option_row.get("depth") or {}
+        if not row_depth.get("bid_qty_5") and not row_depth.get("bids"):
+            option_row["depth"] = dict(book)
+        if not option_row.get("strike_price"):
+            option_row["strike_price"] = option_row.get("strike")
+        if not option_row.get("side"):
+            option_row["side"] = option_row.get("option_type")
+    return payload
+
+
 def add_scalp_hud_leg(hud: dict, leg: dict) -> None:
     """Bank a fast-scalp leg; the 50% vault sweep happens once at closure."""
     pnl = float(leg.get("pnl") or 0.0)
@@ -1218,7 +1300,10 @@ def main(argv: list[str] | None = None) -> int:
     # The fast publisher owns the 4 Hz price/depth contract.  The heavy chain
     # below may take seconds and must never gate the tape or the UI heartbeat.
     fast_shared: dict = {"option": {}, "spot": {}, "depth": {}}
-    fast_publisher = FastTickPublisher(socket, engine, FAST_TICKS, fast_shared, futures_keys)
+    fast_publisher = FastTickPublisher(
+        socket, engine, FAST_TICKS, fast_shared, futures_keys,
+        on_frame=(edge.notify_fast if edge else None),
+    )
     fast_publisher.start()
     seen_frames = 0
     seen_bytes = 0
@@ -1233,6 +1318,7 @@ def main(argv: list[str] | None = None) -> int:
         hero_mode = load_expiry_hero_mode()
         hero_window = expiry_window(now_ist_dt)
         scalper_mode = load_scalper_mode()
+        option_pin = load_option_pin()
         cutoff = cutoff_state()
         socket_age_ms = (int(max(0.0, cycle - socket.last_frame) * 1000.0)
                          if socket.last_frame else None)
@@ -1249,6 +1335,7 @@ def main(argv: list[str] | None = None) -> int:
                          "scanner": dict(last_scanner), "mtf": {}, "smart_entry": {},
                          "sniper": {}, "full_spectrum": {}, "option_chain": {},
                          "expiry_hero": {}, "scalper": {}, "kronos_inputs": {},
+                         "option_pin": option_pin,
                          "parallel_alpha": {},
                          "parity": parity, "cutoff": cutoff, "trade_mode": router.snapshot(
                              paper_capital=ledger.capital,
@@ -1444,55 +1531,77 @@ def main(argv: list[str] | None = None) -> int:
             atm = pick_atm(rows, spot)
             if not atm:
                 continue
-            side = choose_side(plan.get("paths_up"), plan.get("samples"), plan.get("action"))
-            # Stay on the current strike until spot walks a full step away; re-picking
-            # on every 50-point wobble wiped the option's candle history.
             prev = option_state.get(name) or {}
-            # An open scalp pins its strike and side; the ATM/Hero picker must
-            # never wander to another book and orphan a funded position.
-            pinned_trade = prev.get("trade")
-            scalp_pin_open = (isinstance(pinned_trade, dict)
-                              and bool(pinned_trade.get("scalp_mode"))
-                              and str(pinned_trade.get("status") or "").upper() == "OPEN")
-            if scalp_pin_open:
+            pinned_trade = prev.get("trade") if isinstance(prev.get("trade"), dict) else {}
+            trade_pin_open = bool(
+                str(pinned_trade.get("status") or "").upper() == "OPEN"
+                and str(pinned_trade.get("option_type") or "").upper() in {"CE", "PE"}
+            )
+            full_now = (payload.get("full_spectrum") or {}).get(name) or {}
+            depth_now = full_now.get("depth") or {}
+            bias = payload.get("model_oscillator") or {}
+            bull_now = float(bias.get("bullish_upside_prob_pct") or 0.0)
+            bear_now = float(bias.get("bearish_downside_prob_pct") or 0.0)
+            try:
+                pcr_now = float((chain_metrics(rows) or {}).get("pcr") or 0.0)
+            except Exception:  # noqa: BLE001 - a raw chain miss must not block the tape
+                pcr_now = 0.0
+            fallback_side = choose_side(plan.get("paths_up"), plan.get("samples"), plan.get("action"))
+            side = choose_watch_side(
+                active_trade=pinned_trade, manual=option_pin,
+                upside=bull_now, downside=bear_now, pcr=pcr_now,
+                spot=spot, vwap=float((payload["spot"].get(name) or {}).get("vwap") or 0.0),
+                obi_5=depth_now.get("obi_5"), fallback=fallback_side,
+            )
+            selection_reason = (
+                "ACTIVE_POSITION_LOCK" if trade_pin_open
+                else f"MANUAL_PIN_{option_pin}" if option_pin in {"CE", "PE"}
+                else f"AUTO_{side}_BIAS"
+            )
+            # An open position pins its exact strike and leg.  While flat, the
+            # ATM strike can follow spot, but the leg follows the live bias.
+            if trade_pin_open:
                 pinned_row = next(
                     (row for row in rows
                      if float(row.get("strike_price") or 0)
-                     == float(prev.get("strike") or 0)),
+                     == float(pinned_trade.get("strike") or prev.get("strike") or 0)),
                     None,
                 )
                 if pinned_row:
                     atm = pinned_row
-                    side = str(prev.get("side") or side)
+                side = str(pinned_trade.get("option_type") or side).upper()
             step = float(prev.get("step") or 0.0)
-            if prev.get("strike") and step and abs(spot - float(prev["strike"])) <= step:
+            if (not trade_pin_open and side == prev.get("side")
+                    and prev.get("strike") and step
+                    and abs(spot - float(prev["strike"])) <= step):
                 kept = next((row for row in rows
                              if float(row.get("strike_price") or 0) == float(prev["strike"])), None)
                 if kept:
                     atm = kept
-                    side = prev.get("side") or side
             # A confirmed reversal arms the opposite leg for the next cycle;
             # never fight the old side while the new option book is being seeded.
-            pending_side = "" if scalp_pin_open else sniper_pending.pop(name, None)
+            pending_side = "" if (trade_pin_open or option_pin in {"CE", "PE"}) else sniper_pending.pop(name, None)
             if pending_side:
                 side = pending_side
+                selection_reason = f"SNIPER_PENDING_{side}"
             # A ping-pong scalp on the other leg re-arms the chart for the next
             # cycle; never switch away from an option book that is still traded.
             prior_trade = (option_state.get(name) or {}).get("trade")
             prior_open = (isinstance(prior_trade, dict)
                           and str(prior_trade.get("status") or "").upper() == "OPEN")
-            scalp_pending_side = "" if prior_open else scalper_pending.pop(name, None)
+            scalp_pending_side = ("" if (prior_open or trade_pin_open or option_pin in {"CE", "PE"})
+                                  else scalper_pending.pop(name, None))
             if scalp_pending_side:
                 side = scalp_pending_side
-            # The #1 Hero candidate owns the right option chart.  The strike is
-            # re-checked after every 2s chain refresh, so the pane follows the
-            # gamma convexity instead of a stale ATM strike.
+                selection_reason = f"SCALPER_PENDING_{side}"
+            # The #1 Hero candidate may refine the strike only when it agrees
+            # with the live bias; it must never silently flip a PE watch to CE.
             hero_enabled = bool(
                 expiry_ctx.get("enabled")
                 and (hero_window.get("allowed") or hero_window.get("extreme_only"))
             )
             hero_pick = (hero_scan.get("hero") or {}) if hero_enabled else {}
-            if hero_pick and not scalp_pin_open:
+            if hero_pick and not trade_pin_open and str(hero_pick.get("side") or side).upper() == side:
                 picked_row = next(
                     (row for row in rows
                      if float(row.get("strike_price") or 0) == float(hero_pick.get("strike") or 0)),
@@ -1542,8 +1651,8 @@ def main(argv: list[str] | None = None) -> int:
             )
             parallel_option_move_3s = ltp - parallel_opt_base
 
-            strike = float(atm.get("strike_price"))
-            symbol = f"{name} {int(strike)} {side}"
+            strike = float(atm.get("strike_price") or 0.0)
+            symbol = contract_label(name, strike, side)
             state = option_state.get(name) or {"symbol": "", "hist": deque(maxlen=120),
                                                "cur": None, "cum_value": 0.0, "cum_vol": 0.0,
                                                "trade": None}
@@ -1554,6 +1663,7 @@ def main(argv: list[str] | None = None) -> int:
                 option_state[name] = state = {"symbol": symbol, "hist": deque(maxlen=512),
                                               "cur": None, "cum_value": 0.0, "cum_vol": 0.0,
                                               "trade": None, "strike": strike, "side": side,
+                                              "selection": {"mode": option_pin, "reason": selection_reason},
                                               "step": strike_step(rows)}
                 seeded = False
                 if instrument_key:
@@ -1574,6 +1684,13 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     state["hist"].extend(fetch_candles(instrument_key, headers))
             state["instrument_key"] = instrument_key
+            state["side"] = side
+            state["strike"] = strike
+            state["selection"] = {
+                "mode": option_pin, "reason": selection_reason,
+                "active_position": trade_pin_open,
+                "pcr": round(pcr_now, 4) if pcr_now else None,
+            }
             if instrument_key:
                 socket.subscribe([instrument_key])
             volume = float(market.get("volume") or 0.0)
@@ -2860,6 +2977,7 @@ def main(argv: list[str] | None = None) -> int:
                 "strike_symbol": symbol,
                 "strike_price": strike,
                 "option_type": side,
+                "selection": dict(state.get("selection") or {}),
                 "instrument_key": leg.get("instrument_key"),
                 "ltp": ltp,
                 "atp_vwap": atp,
@@ -3270,27 +3388,8 @@ def main(argv: list[str] | None = None) -> int:
             "allow_order_generation", False
         )
         # Mirror the verified full-spectrum book into the canonical depth map
-        # before sanitizer/arbitrator/narration consume it.  This is the exact
-        # 36/37 key-mapping fix: the depth was present under full_spectrum but
-        # the canonical consumers looked at the (option-only) top-level map.
-        payload.setdefault("depth", {})
-        for name, snap in (payload.get("full_spectrum") or {}).items():
-            if not isinstance(snap, dict):
-                continue
-            book = snap.get("depth") or {}
-            if not book:
-                continue
-            payload["depth"][name] = dict(book)
-            option_row = (payload.get("option") or {}).get(name)
-            if isinstance(option_row, dict):
-                option_row.setdefault("obi_5", book.get("obi_5"))
-                option_row.setdefault("tbq_tsq", book.get("tbq_tsq"))
-                option_row.setdefault("tbq", book.get("tbq"))
-                option_row.setdefault("tsq", book.get("tsq"))
-                if not option_row.get("depth"):
-                    option_row["depth"] = dict(book)
-                option_row.setdefault("strike_price", option_row.get("strike"))
-                option_row.setdefault("side", option_row.get("option_type"))
+        # before sanitizer/arbitrator/narration consume it.
+        merge_verified_option_depth(payload)
 
         narration_spot = float((payload["spot"].get("NIFTY") or {}).get("ltp") or 0.0)
         narration_plan = load_live_plan("NIFTY", narration_spot)
