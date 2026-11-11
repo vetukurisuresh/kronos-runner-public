@@ -3423,10 +3423,11 @@ function renderFullSpectrum(){
       if(degraded) bits.push(cov.status === 'OFFLINE_FIXTURE' ? 'NOT LIVE' : 'DEGRADED');
       if(f.chain_degraded) bits.push(`CHAIN ${fmt((f.pcr||{}).strike_count,0)}/11`);
       if(f.source) bits.push(String(f.source).toUpperCase());
-      if(stale || offline) bits.push('🚫 ENTRIES SUSPENDED');
+      if(offline) bits.push('🚫 ENTRIES SUSPENDED');
+      else if(stale) bits.push('⏳ CHAIN LAG · FAST GATE LIVE');
       coverage.textContent = bits.join(' · ');
       coverage.className = cov.status === 'OK' && !stale && !offline ? 'fs-ok' : 'fs-warn';
-      coverage.title = f.fixture_note || (stale ? 'Full-spectrum feed is older than 5s — new Paper/Real entries are suspended' : '');
+      coverage.title = f.fixture_note || (stale ? 'Heavy option chain is older than 5s; the 4 Hz fast frame keeps the gate live' : '');
     }else{
       coverage.textContent = 'WAITING FOR V3 FULL FRAME';
       coverage.className = 'fs-warn';
