@@ -547,7 +547,14 @@ class ProgrammaticBrainLogger:
                 "PCR, IV, Θ స్పష్టంగా వచ్చాక రిస్క్ గేట్ నిర్ణయం వస్తుంది."
             )
         if obi is not None or tbq_tsq is not None:
-            strike_text = f"NIFTY {int(_f(strike))} {side}" if strike else symbol
+            # Never narrate "NIFTY 0": prefer the actual watched ATM symbol.
+            _opt = feed.get("option") if isinstance(feed, Mapping) else {}
+            _row = (_opt.get(symbol) if isinstance(_opt, dict) else {}) or {}
+            strike_text = str((_row or {}).get("strike_symbol") or "")
+            if not strike_text:
+                _strike_num = int(_f(strike))
+                strike_text = (f"{symbol} {_strike_num} {side}" if _strike_num > 0
+                               else f"{symbol} ATM {side}")
             buyer_text = (
                 f"{strike_text} లో సెల్లర్ల కంటే బయ్యర్లు {_f(tbq_tsq):.2f} రెట్లు "
                 f"({f'TBQ/TSQ {_f(tbq_tsq):.2f}x' if tbq_tsq is not None else 'TBQ/TSQ లేదు'}). "

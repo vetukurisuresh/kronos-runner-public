@@ -35,6 +35,8 @@ DEAD_SPOT_MOVE_NIFTY = 4.0
 DEAD_SPOT_MOVE_BANKNIFTY = 12.0
 MIN_OPTION_ATR = 2.20
 MAX_SPREAD = 0.35
+SPREAD_FLOOR = 0.75
+SPREAD_PCT_OF_LTP = 0.004
 MIN_OBI = 1.55
 MIN_TBQ_TSQ = 1.30
 MIN_FUTURES_VOLUME_RATIO = 1.80
@@ -64,6 +66,11 @@ def _f(value: Any, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def spread_cap_for_ltp(ltp: Any) -> float:
+    """Institutional spread tolerance: max(₹0.75, 0.4% of premium)."""
+    return round(max(SPREAD_FLOOR, SPREAD_PCT_OF_LTP * max(0.0, _f(ltp))), 2)
 
 
 def _as_ist(moment: datetime | str | None) -> datetime:
@@ -208,7 +215,8 @@ def evaluate_continuous_scalp(
     main_ok = _main_is_waiting(main_state)
     dead_tape = 0.0 < spot_vol < dead_move
     volatility_ok = spot_vol >= min_move and atr_opt >= MIN_OPTION_ATR and not dead_tape
-    spread_ok = 0.0 < spread <= MAX_SPREAD
+    spread_cap = spread_cap_for_ltp(max(_f(ce_ltp), _f(pe_ltp)))
+    spread_ok = 0.0 < spread <= spread_cap
 
     candidates: list[dict[str, Any]] = []
     for side, ltp, atp, obi, tbq, tsq in (
@@ -278,7 +286,7 @@ def evaluate_continuous_scalp(
          "value": f"{moment.strftime('%H:%M:%S')} IST" if time_ok else "outside 09:16–15:00"},
         {"key": "micro_volatility", "pass": volatility_ok,
          "value": f"spot {spot_vol:.2f}pt / option ATR ₹{atr_opt:.2f}"},
-        {"key": "spread", "pass": spread_ok, "value": f"₹{spread:.2f} (max ₹{MAX_SPREAD:.2f})"},
+        {"key": "spread", "pass": spread_ok, "value": f"₹{spread:.2f} (max ₹{spread_cap:.2f})"},
         {"key": "structure", "pass": structure_ok,
          "value": (chosen or {}).get("structure_label") or "waiting for ATP/EMA5 or p10/p90"},
         {"key": "flow", "pass": flow_ok,
@@ -344,7 +352,7 @@ def select_scalp_contract(
     capital: Any = MAX_SCALP_CAPITAL,
     lot_size: Any = NIFTY_LOT_SIZE,
     expiry_day: bool = False,
-    max_spread: float = MAX_SPREAD,
+    max_spread: float | None = MAX_SPREAD,
 ) -> dict[str, Any] | None:
     """Pick the most explosive delta 0.48–0.65 strike inside the hard cap.
 
@@ -376,10 +384,12 @@ def select_scalp_contract(
         bid = _f(market.get("bid_price") or market.get("bid") or leg.get("bid_price"))
         ask = _f(market.get("ask_price") or market.get("ask") or leg.get("ask_price"))
         spread = max(0.0, ask - bid) if bid > 0 and ask > 0 else 0.0
+        allowed_spread = (spread_cap_for_ltp(ltp) if max_spread is None
+                          else _f(max_spread, MAX_SPREAD))
         strike = _f(row.get("strike_price") or row.get("strike") or leg.get("strike_price"))
         if not (low <= ltp <= high) or not (MIN_DELTA <= delta <= MAX_DELTA):
             continue
-        if spread > max_spread:
+        if spread > allowed_spread:
             continue
         qty = int(math.floor(cap / (ltp * lot))) * lot if ltp > 0 else 0
         if qty <= 0:
@@ -408,6 +418,7 @@ def select_scalp_contract(
             "delta": round(delta, 4),
             "gamma": round(gamma, 5),
             "spread": round(spread, 2),
+            "spread_cap": round(allowed_spread, 2),
             "lot_size": lot,
             "qty": qty,
             "deployed": deployed,

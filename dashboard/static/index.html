@@ -924,7 +924,7 @@ body.tl-open{overflow:hidden!important}
   :root{--pro-header:58px;--pro-side:250px;--pro-bg:#070b12;--pro-panel:#0c1420;--pro-line:#1c2a3a;--pro-text:#e6eef8;--pro-muted:#8296ab;--pro-emerald:#10b981;--pro-coral:#f43f5e;--pro-cyan:#00e5ff;--pro-gold:#ffd700;--pro-magenta:#d946ef}
   html,body{height:100%;overflow:hidden!important;background:var(--pro-bg)}
   body{padding:0!important;display:block!important}
-  .pro-topbar{position:fixed!important;left:0;right:0;top:0;height:58px;min-height:58px;z-index:1200;display:flex!important;align-items:center;gap:10px;padding:0 12px!important;flex-wrap:nowrap!important;background:linear-gradient(180deg,#0d1623,#0a111b)!important;border-bottom:1px solid var(--pro-line);box-shadow:0 6px 18px rgba(0,0,0,.28);color:var(--pro-text)}
+  .pro-topbar{position:fixed!important;left:0;right:0;top:0;height:58px!important;max-height:58px!important;overflow:hidden!important;min-height:58px!important;box-sizing:border-box!important;z-index:1200;display:flex!important;align-items:center;gap:10px;padding:0 12px!important;flex-wrap:nowrap!important;background:linear-gradient(180deg,#0d1623,#0a111b)!important;border-bottom:1px solid var(--pro-line);box-shadow:0 6px 18px rgba(0,0,0,.28);color:var(--pro-text)}
   .pro-topbar .pro-brand{font:900 17px/1 'Inter',sans-serif;letter-spacing:.08em;color:#fff;display:flex;align-items:center;gap:7px;white-space:nowrap}
   .pro-topbar .pro-brand small{font:700 7px/1 'JetBrains Mono',monospace;letter-spacing:.16em;color:#5b7792}
   .pro-menu{display:inline-flex!important;width:34px;height:32px;flex:0 0 auto}
@@ -962,7 +962,17 @@ body.tl-open{overflow:hidden!important}
   body .pro-modal-body > #autopilotBar,body .pro-modal-body > #fullSpectrum,body .pro-modal-body > #sniperStrip,body .pro-modal-body > #scalperStrip,body .pro-modal-body > #heroStrip,body .pro-modal-body > #brainAudit{display:block!important}
   #sidebar,#sidebarScrim{display:none!important}
 
-  .pro-sidebar{position:fixed;left:0;top:58px;bottom:0;width:250px;z-index:1100;background:linear-gradient(180deg,#0b1420,#080e17);border-right:1px solid var(--pro-line);display:flex;flex-direction:column;overflow:hidden}
+  .pro-engine-strip{position:fixed;left:250px;right:0;top:58px;height:36px;z-index:1300;display:flex;align-items:center;gap:12px;padding:0 12px;background:#f8fafc;color:#0f172a;border-bottom:1px solid #cbd5e1;box-shadow:0 2px 8px rgba(15,23,42,.08);font:700 10px 'JetBrains Mono',monospace;overflow:hidden;white-space:nowrap}
+  .pro-engine-strip .eng{display:flex;align-items:center;gap:6px;min-width:0;overflow:hidden;text-overflow:ellipsis}
+  .pro-engine-strip .eng b{font:800 9px 'Inter',sans-serif;color:#334155;white-space:nowrap}
+  .pro-engine-strip .eng em{font-style:normal;color:#047857;overflow:hidden;text-overflow:ellipsis}
+  .pro-engine-strip .eng.sniper em{color:#6d28d9}
+  .pro-engine-strip button{margin-left:auto;border:1px solid #0f766e;border-radius:6px;background:#0f766e;color:#fff;font:800 9px 'Inter',sans-serif;padding:6px 10px;cursor:pointer;white-space:nowrap}
+  .pro-engine-strip button:disabled{opacity:.6;cursor:wait}
+  .ai-range-pill{display:inline-flex;align-items:center;border:1px solid #1e5a45;border-radius:999px;background:#0b2119;color:#62eeb4;font:700 8px 'JetBrains Mono',monospace;padding:4px 7px;white-space:nowrap}
+  .ai-range-pill[hidden]{display:none!important}
+  @media(max-width:980px){.pro-engine-strip{left:0}.pro-engine-strip .eng.sniper{display:none}}
+  .pro-sidebar{position:fixed;left:0;top:94px;bottom:0;width:250px;z-index:1100;background:linear-gradient(180deg,#0b1420,#080e17);border-right:1px solid var(--pro-line);display:flex;flex-direction:column;overflow:hidden}
   .pro-side-title{display:flex;align-items:center;justify-content:space-between;padding:11px 14px 7px;font:800 9px 'JetBrains Mono',monospace;letter-spacing:.15em;color:#68829a}
   .pro-side-title button{display:none;border:0;background:none;color:#8aa2b8;font-size:18px}
   .pro-side-nav{flex:1;min-height:0;overflow:auto;padding:0 8px 8px;scrollbar-width:thin;scrollbar-color:#22384c transparent}
@@ -981,9 +991,9 @@ body.tl-open{overflow:hidden!important}
   .pro-nav-item .dot.blocked{background:#ff5870;box-shadow:0 0 8px #ff5870}
   .pro-side-foot{padding:8px 13px 10px;border-top:1px solid var(--pro-line);display:flex;flex-direction:column;gap:3px;font:600 8px 'JetBrains Mono',monospace;color:#6b8399;background:#08101a}
   .pro-side-foot small{font-size:6.5px;letter-spacing:.08em;color:#3f586b}
-  #proSidebarScrim{display:none;position:fixed;inset:58px 0 0;z-index:1050;background:rgba(0,0,0,.55)}
+  #proSidebarScrim{display:none;position:fixed;inset:94px 0 0;z-index:1050;background:rgba(0,0,0,.55)}
 
-  main{position:fixed!important;left:250px;right:0;top:58px;bottom:0;width:auto!important;height:calc(100vh - 58px);margin:0!important;padding:0!important;overflow:hidden!important;display:flex!important;flex-direction:column;background:#060a10}
+  main{position:fixed!important;left:250px;right:0;top:94px;bottom:0;width:auto!important;height:calc(100vh - 94px);margin:0!important;padding:0!important;overflow:hidden!important;display:flex!important;flex-direction:column;background:#060a10}
   main #panes{flex:1 1 auto;height:100%;grid-template-columns:minmax(0,1fr) minmax(0,1fr)!important;grid-template-rows:minmax(0,1fr)!important;gap:1px!important;background:var(--pro-line)!important}
   #splitter{display:none!important}
   #panes .pane{display:block!important;min-height:0;background:#070c13}
@@ -1013,7 +1023,7 @@ body.tl-open{overflow:hidden!important}
   .pro-levels-legend .entry{border-left-color:#38bdf8}.pro-levels-legend .sl{border-left-color:#fb7185}.pro-levels-legend .t1{border-left-color:#4ade80}.pro-levels-legend .t2{border-left-color:#c084fc}.pro-levels-legend .atp{border-left-color:#fbbf24}
   .pro-levels-legend .entry b{color:#7dd3fc}.pro-levels-legend .sl b{color:#fda4af}.pro-levels-legend .t1 b{color:#86efac}.pro-levels-legend .t2 b{color:#d8b4fe}.pro-levels-legend .atp b{color:#fde68a}
 
-  .pro-chart-studio{position:fixed;top:66px;right:12px;z-index:1600;width:326px;max-height:calc(100vh - 78px);overflow:auto;border:1px solid #29465d;border-radius:12px;background:linear-gradient(180deg,#0d1a27,#08121b);box-shadow:0 22px 60px rgba(0,0,0,.62);padding:0}
+  .pro-chart-studio{position:fixed;top:102px;right:12px;z-index:1600;width:326px;max-height:calc(100vh - 78px);overflow:auto;border:1px solid #29465d;border-radius:12px;background:linear-gradient(180deg,#0d1a27,#08121b);box-shadow:0 22px 60px rgba(0,0,0,.62);padding:0}
   .pro-chart-studio[hidden]{display:none}
   .cs-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;padding:12px 14px;border-bottom:1px solid #1e3448;background:#0b1723;position:sticky;top:0;z-index:2}
   .cs-head b{display:block;font:800 15px 'Inter',sans-serif;color:#f0f7fd}.cs-head small{display:block;margin-top:2px;font:500 9.5px 'Inter',sans-serif;color:#7894a9}
@@ -1123,6 +1133,12 @@ body.tl-open{overflow:hidden!important}
     <button id="ledgerHudBtn" type="button">Ledger</button>
   </div>
 </header>
+
+<div class="pro-engine-strip" id="proEngineStrip" aria-label="Live engine activity">
+  <span class="eng scalp"><b>⚡ ₹35K SCALPER</b><em id="engineScalp">🟢 స్కానింగ్ SCANNING —</em></span>
+  <span class="eng sniper"><b>🎯 ₹65K SNIPER</b><em id="engineSniper">🎯 వాచింగ్ WATCHING —</em></span>
+  <button type="button" id="testPaperBtn">⚡ Test Paper Order Now</button>
+</div>
 
 <aside id="proSidebar" class="pro-sidebar" aria-label="KRONOS feature navigation">
   <div class="pro-side-title"><span>WORKSPACE</span><button type="button" id="proSidebarClose" aria-label="Close navigation">×</button></div>
@@ -1420,6 +1436,7 @@ body.tl-open{overflow:hidden!important}
             <button type="button" data-pro-index="BANKNIFTY">BANKNIFTY</button>
           </div>
           <div class="dock-title"><span id="spotMeta">—</span></div>
+          <span id="aiRangePill" class="ai-range-pill" hidden>🎯 Live AI Range: —</span>
           <span class="tf-btns" id="spotTf"><button type="button" data-tf="1">1m</button><button type="button" data-tf="5" class="on">5m</button><button type="button" data-tf="15">15m</button></span>
           <button class="chart-cfg-btn" type="button" data-chart-fit title="Fit visible candles">⛶</button>
           <button class="chart-cfg-btn" type="button" data-chart-studio title="Chart Studio">🎨</button>
@@ -1432,7 +1449,6 @@ body.tl-open{overflow:hidden!important}
       <div class="chart-canvas-wrap">
         <div id="chart" class="chart-host"></div>
         <canvas id="overlaySpot" class="chart-overlay" aria-hidden="true"></canvas>
-        <canvas id="forecastRange" class="chart-overlay" aria-hidden="true"></canvas>
       </div>
       <div class="chart-statusbar">
         <div id="spotDateAxis" class="chart-date-axis" aria-live="polite"><b>—</b><span>—</span></div>
@@ -2290,15 +2306,12 @@ function renderSpot(){
     SERIES.spot.vwap.__sig = ''; SERIES.spot.vwap.setData([]);
   }
   renderCone(block, data);
-  const autoFollow = !!(window.kronosPro && window.kronosPro.autoFollowOn && window.kronosPro.autoFollowOn());
-  if(data.length && (!SERIES.spot.candle.__focused || (autoFollow && !CHARTS.spot.__userPanned))){
-    const first=SERIES.spot.candle.__focused;
+  try{ if(window.kronosPro && window.kronosPro.updateAiRange) window.kronosPro.updateAiRange(); }catch(e){}
+  // Seed the viewport exactly once for this (symbol, timeframe).  Live ticks
+  // may only update the last bar; the human's pan/zoom is never overwritten.
+  if(data.length && !SERIES.spot.candle.__focused){
     SERIES.spot.candle.__focused = true;
-    try{
-      if(first) CHARTS.spot.timeScale().setVisibleLogicalRange({from:Math.max(0,data.length-60), to:data.length+14});
-      else CHARTS.spot.timeScale().scrollToRealTime();
-    }catch(e){}
-    if(first) setTimeout(()=>{ try{ CHARTS.spot.timeScale().setVisibleLogicalRange({from:Math.max(0,data.length-60), to:data.length+14}); }catch(e){} },80);
+    try{ CHARTS.spot.timeScale().setVisibleLogicalRange({from:Math.max(0,data.length-60), to:data.length+8}); }catch(e){}
   }
   const meta = $('#spotMeta');
   const liveSpot = ts ? (ts.display != null ? ts.display : ts.ltp) : (block && block.spot);
@@ -2492,6 +2505,10 @@ function clearCone(){
   (SERIES.spot.paths||[]).forEach(s=>s.setData([]));
 }
 function renderCone(block, data){
+  // Synthetic future candles and the old p10/p90 corridor are removed.  The
+  // AI range is a toolbar pill backed by the live predictor, not a chart series.
+  if(CONE.sig !== 'CLEARED'){ clearCone(); CONE.sig = 'CLEARED'; }
+  return;
   if(!SERIES.spot.median) return;
   if((window.kronosPro && window.kronosPro.corridorOn && !window.kronosPro.corridorOn()) || !block || !data.length){ clearCone(); return; }
   const f = block.forecast || {};
@@ -2562,15 +2579,10 @@ function renderOption(){
   CHARTS.opt.__rows = {n:data.length, first:data[0]&&data[0].time, last:data[data.length-1]&&data[data.length-1].time};
   applyCandles(SERIES.opt.candle, data, (o.strike_symbol || 'opt') + '|' + OPT_TF);
   applyVolumes(SERIES.opt.volume, data);
-  const optAutoFollow = !!(window.kronosPro && window.kronosPro.autoFollowOn && window.kronosPro.autoFollowOn());
-  if(data.length && (!SERIES.opt.candle.__focused || (optAutoFollow && !CHARTS.opt.__userPanned))){
-    const first=SERIES.opt.candle.__focused;
+  // Same rule for the option pane: seed once, never auto-scroll on a tick.
+  if(data.length && !SERIES.opt.candle.__focused){
     SERIES.opt.candle.__focused = true;
-    try{
-      if(first) CHARTS.opt.timeScale().setVisibleLogicalRange({from:Math.max(0,data.length-60), to:data.length+8});
-      else CHARTS.opt.timeScale().scrollToRealTime();
-    }catch(e){}
-    if(first) setTimeout(()=>{ try{ CHARTS.opt.timeScale().setVisibleLogicalRange({from:Math.max(0,data.length-60), to:data.length+8}); }catch(e){} },80);
+    try{ CHARTS.opt.timeScale().setVisibleLogicalRange({from:Math.max(0,data.length-60), to:data.length+8}); }catch(e){}
   }
   const title = $('#optTitle');
   if(title) title.textContent = o.strike_symbol || 'ATM OPTION';
@@ -2601,6 +2613,7 @@ function removeOrderLines(){
 function setOrderLines(o){
   if(!SERIES.opt.candle) return;
   const tr = LIVE.trade || {};
+  const isOpen = String(tr.status || '').toUpperCase() === 'OPEN';
   const lv = (LIVE.tick && LIVE.tick.chart_levels) || {};
   const num = (v)=>Number.isFinite(Number(v)) && Number(v)>0 ? Number(v) : null;
   const ov = window.__kronosLevelOverrides || {};
@@ -2610,7 +2623,7 @@ function setOrderLines(o){
   const t1 = pick('t1', num(tr.target_1) || num(lv.t1));
   const t2 = pick('t2', num(tr.target_2_p90) || num(lv.t2));
   const atp = num(o && o.atp_vwap) || num(lv.atp);
-  const sig = JSON.stringify({entry,sl,t1,t2,atp,lines:LINES});
+  const sig = JSON.stringify({entry,sl,t1,t2,atp,lines:LINES,isOpen});
   if(sig === PL_SIG.v) return;
   PL_SIG.v = sig;
   removeOrderLines();
@@ -2626,6 +2639,8 @@ function setOrderLines(o){
     }catch(e){ return null; }
   };
   if(atp != null) PL.atp = mk(atp, {color:t.blue}, true, 'ATP', 1);
+  // IDLE means no ENTRY/SL/T1/T2 lines: only real option candles and ATP.
+  if(!isOpen) return;
   // Right-axis labels are intentionally hidden: the bold left legend is the
   // single source of truth, so the price scale never becomes noisy.
   if(entry != null && LINES.entry.on) PL.entry = mk(entry, LINES.entry, true, 'ENTRY', width + 1);

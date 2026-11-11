@@ -445,6 +445,64 @@ def load_plan(symbol: str) -> dict:
     }
 
 
+PREDICTOR_STATUS_FILE = REPO_ROOT / "state" / "kronos_predictor_status.json"
+
+
+def load_predictor_plan(symbol: str, spot: float) -> dict:
+    """Anchor the live plan to fresh 3-model output and the current spot."""
+    if str(symbol).upper() != "NIFTY" or not spot:
+        return {}
+    try:
+        status = json.loads(PREDICTOR_STATUS_FILE.read_text(encoding="utf-8"))
+        updated = float(status.get("updated_epoch") or 0.0)
+    except (OSError, ValueError, TypeError):
+        return {}
+    if not updated or time.time() - updated > 30.0:
+        return {}
+    roles = status.get("roles") or {}
+    candidates = []
+    for role_name in ("base", "small"):
+        row = roles.get(role_name) or {}
+        try:
+            p10 = float(row.get("p10") or 0.0)
+            p50 = float(row.get("p50") or 0.0)
+            p90 = float(row.get("p90") or 0.0)
+            probability = float(row.get("probability_pct"))
+        except (TypeError, ValueError):
+            continue
+        if not (p10 > 0 and p50 > 0 and p90 > 0):
+            continue
+        if max(abs(spot - p10), abs(spot - p90)) > spot * 0.025:
+            continue
+        candidates.append((abs(spot - p50), role_name, row, p10, p50, p90, probability))
+    if not candidates:
+        return {}
+    _, role, chosen, p10, p50, p90, probability = min(candidates, key=lambda item: item[0])
+    action = "BUY_CE" if probability >= 55.0 else "BUY_PE" if probability <= 45.0 else "NO_TRADE"
+    target1 = p90 if action == "BUY_CE" else p10 if action == "BUY_PE" else p50
+    return {
+        "paths_up": chosen.get("paths_up"),
+        "samples": chosen.get("samples"),
+        "model_role": role,
+        "median": round(p50, 2), "p10": round(p10, 2), "p50": round(p50, 2),
+        "p90": round(p90, 2), "spot": round(spot, 2),
+        "regime": chosen.get("regime") or "LIVE",
+        "action": action, "watch_entry": round(p50, 2),
+        "target1": round(target1, 2), "target2": round(p90, 2),
+        "stop_loss": round(p10 if action == "BUY_CE" else p90, 2),
+        "source": "KRONOS_LIVE_PREDICTOR",
+    }
+
+
+def load_live_plan(symbol: str, spot: float) -> dict:
+    plan = load_plan(symbol)
+    live = load_predictor_plan(symbol, spot)
+    if live:
+        plan.update(live)
+        plan["spot"] = round(spot, 2)
+    return plan
+
+
 CANDLE_URL = "https://api.upstox.com/v2/historical-candle/intraday/{key}/1minute"
 
 
@@ -915,6 +973,7 @@ def main(argv: list[str] | None = None) -> int:
     ready_at_ist = ""
     close_request_path = REPO_ROOT / "state" / "live_close_request.json"
     close_ack_path = REPO_ROOT / "state" / "live_close_ack.json"
+    test_order_path = REPO_ROOT / "state" / "live_test_order_request.json"
 
     def _bar_epoch(value) -> int:
         if isinstance(value, (int, float)):
@@ -1018,7 +1077,10 @@ def main(argv: list[str] | None = None) -> int:
         cutoff = cutoff_state()
         socket_age_ms = (int(max(0.0, cycle - socket.last_frame) * 1000.0)
                          if socket.last_frame else None)
-        feed_stale = socket_age_ms is None or socket_age_ms > 3000
+        # A connected V3 socket is the liveness authority.  The heavy chain
+        # cycle may take ~5s; 8s prevents a false UI lockout without allowing
+        # a genuinely dead feed to trade.
+        feed_stale = socket_age_ms is None or socket_age_ms > 8000
         gap = socket.take_gap()
         if gap >= 5.0:
             backfill_missed(gap)
@@ -1038,6 +1100,11 @@ def main(argv: list[str] | None = None) -> int:
             close_request = json.loads(close_request_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             close_request = {}
+        test_order: dict = {}
+        try:
+            test_order = json.loads(test_order_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            test_order = {}
 
         # Exchange ltt is the only candle clock. No local-clock tick is injected
         # while the socket is streaming, so the browser cannot drift from Upstox.
@@ -1132,7 +1199,8 @@ def main(argv: list[str] | None = None) -> int:
             vwap = round(sum((c["high"] + c["low"] + c["close"]) / 3 for c in hist[-80:])
                          / max(len(hist[-80:]), 1), 2) if hist else price
             prev_close = float((row.get("ohlc") or {}).get("close") or 0.0)
-            plan_now = load_plan(name)
+            plan_now = load_live_plan(name, price)
+            payload.setdefault("model_brain", {})[name] = plan_now
             mtf_now = analyze_mtf(
                 engine.windows(key, 1), engine.windows(key, 5), engine.windows(key, 15),
                 paths_up=plan_now.get("paths_up"), samples=plan_now.get("samples"),
@@ -1171,7 +1239,7 @@ def main(argv: list[str] | None = None) -> int:
             spot = float((payload["spot"].get(name) or {}).get("ltp") or 0.0)
             if not spot:
                 continue
-            plan = load_plan(name)
+            plan = load_live_plan(name, spot)
             if key not in expiries or cycle - last_chain.get(name, 0) > 3600:
                 try:
                     payload_contract = _get_json(CONTRACT_URL, params={"instrument_key": key},
@@ -1368,6 +1436,66 @@ def main(argv: list[str] | None = None) -> int:
                 state["trade"] = None
                 state["reentry_armed"] = False
                 trade = None
+            # One-click paper proof: the browser queues a request and this
+            # live cycle fills it at the actual ATM premium.  It is PAPER-only;
+            # the server rejects the endpoint in REAL mode.
+            if (isinstance(test_order, dict)
+                    and str(test_order.get("status") or "").upper() == "PENDING"
+                    and str(test_order.get("symbol") or name).upper() == name
+                    and not (isinstance(trade, dict) and str(trade.get("status") or "").upper() == "OPEN")
+                    and not scalp_sleeve.active
+                    and cutoff["new_entries_allowed"] and not feed_stale and ltp > 0):
+                lot_size = BANKNIFTY_LOT_SIZE if name == "BANKNIFTY" else NIFTY_LOT_SIZE
+                qty = int(float(scalp_sleeve.allocated or 35000.0) // (ltp * lot_size)) * lot_size
+                if qty > 0:
+                    test_side = str(test_order.get("side") or side or "CE").upper()
+                    contract = {
+                        "side": test_side, "symbol": name,
+                        "strike": float(state.get("strike") or 0.0),
+                        "instrument_key": instrument_key, "option_symbol": symbol,
+                        "ltp": round(ltp, 2), "entry": round(ltp, 2),
+                        "qty": qty, "lot_size": lot_size, "sl_points": 4.0,
+                    }
+                    trade = init_scalp_trade(contract, now=now_ist_dt)
+                    trade["trade_id"] = uuid.uuid4().hex
+                    trade["entry_at"] = now_iso
+                    trade["mfe_price"] = round(ltp, 2)
+                    trade["mae_price"] = round(ltp, 2)
+                    trade["instrument_key"] = instrument_key
+                    trade["option_symbol"] = symbol
+                    trade["sniper_grade"] = "PAPER_TEST"
+                    trade["test_order"] = True
+                    # A manual proof order gets a wider observation stop/target;
+                    # the browser must be able to see live P&L before closing it.
+                    trade["sl_points"] = 25.0
+                    trade["initial_sl"] = round(ltp - 25.0, 2)
+                    trade["current_trailing_sl"] = round(ltp - 25.0, 2)
+                    trade["target_1"] = round(ltp + 18.0, 2)
+                    trade["target_2_p90"] = round(ltp + 30.0, 2)
+                    trade["t1_label"] = "SCALP_S1_50PCT"
+                    trade["t2_label"] = "SCALP_TRAIL_50PCT"
+                    state["trade"] = trade
+                    state["risk_recorded"] = True
+                    state["story_trade"] = True
+                    state["ledger_sig"] = None
+                    scalp_sleeve.start_trade(contract, now=now_ist_dt)
+                    scalp_sleeve.sync_trade(trade, ltp=ltp)
+                    hud["continuous_scalp_trades"] = int(hud.get("continuous_scalp_trades") or 0) + 1
+                    save_hud(hud)
+                    test_order.update({"status": "FILLED", "filled_at": now_iso,
+                                       "entry": round(ltp, 2), "qty": qty})
+                    try:
+                        test_order_path.write_text(json.dumps(test_order, indent=1), encoding="utf-8")
+                    except OSError:
+                        pass
+                    print(f"TEST PAPER FILL {symbol} @ Rs{ltp:.2f} qty {qty}", flush=True)
+                elif not test_order.get("rejected_at"):
+                    test_order.update({"status": "REJECTED", "reason": "capital cannot buy one lot",
+                                       "rejected_at": now_iso})
+                    try:
+                        test_order_path.write_text(json.dumps(test_order, indent=1), encoding="utf-8")
+                    except OSError:
+                        pass
             # The 15:18 windup closes a scalp exactly once and settles it into
             # the house-money desk, not the sniper guard.
             if (isinstance(trade, dict) and str(trade.get("status") or "").upper() == "OPEN"
@@ -1836,6 +1964,7 @@ def main(argv: list[str] | None = None) -> int:
                         capital=scalp_sleeve.allocated,
                         lot_size=(BANKNIFTY_LOT_SIZE if name == "BANKNIFTY" else NIFTY_LOT_SIZE),
                         expiry_day=expiry_day,
+                        max_spread=None,
                     )
                     if contract:
                         contract["symbol"] = name
@@ -2924,7 +3053,7 @@ def main(argv: list[str] | None = None) -> int:
                 "market_open": payload["market_open"],
                 "allow_order_generation": False,
                 "reason": ("NO_V3_FRAME" if socket_age_ms is None
-                            else f"SOCKET_AGE_{socket_age_ms}MS_GT_3000MS"),
+                            else f"SOCKET_AGE_{socket_age_ms}MS_GT_8000MS"),
                 "as_of": payload.get("updated_at"),
                 "ok": False,
             }
@@ -2935,7 +3064,8 @@ def main(argv: list[str] | None = None) -> int:
         payload["entries_suspended"] = bool(feed_stale) or not payload["feed_status"].get(
             "allow_order_generation", False
         )
-        narration_plan = load_plan("NIFTY")
+        narration_spot = float((payload["spot"].get("NIFTY") or {}).get("ltp") or 0.0)
+        narration_plan = load_live_plan("NIFTY", narration_spot)
         oscillator_now = build_oscillator_from_feed(
             payload, "NIFTY", plan=narration_plan,
         )

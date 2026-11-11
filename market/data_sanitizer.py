@@ -27,6 +27,10 @@ from typing import Any, Iterable, Mapping
 IST = timezone(timedelta(hours=5, minutes=30), name="IST")
 FEATURE_NAMES = ("open", "high", "low", "close", "volume", "amount")
 FEED_STALE_MS = 3_000
+#: A live V3 socket frame is fast; the heavy option-chain cycle can take 4-5s.
+#: When the socket is connected the heartbeat is still the authority, but the
+#: cutoff must tolerate that scan cadence without falsely blocking entries.
+SOCKET_STALE_MS = 8_000
 OPTION_MIN_LTP = 0.05
 MARKET_OPEN = clock_time(9, 15)
 MARKET_CLOSE = clock_time(15, 30)
@@ -111,7 +115,7 @@ def feed_state(
     *,
     now: datetime | float | None = None,
     market_open: bool | None = None,
-    stale_ms: int = FEED_STALE_MS,
+    stale_ms: int | None = None,
 ) -> FeedState:
     """Derive the hard order gate from the feed heartbeat.
 
@@ -126,15 +130,18 @@ def feed_state(
     )
     epoch = _as_epoch(feed.get("liveness_epoch") or feed.get("updated_epoch"))
     age_ms = int(max(0.0, moment.timestamp() - epoch) * 1000.0) if epoch else None
+    limit = int(stale_ms) if stale_ms is not None else (
+        SOCKET_STALE_MS if bool(feed.get("socket_connected")) else FEED_STALE_MS
+    )
     if not opened:
         return FeedState("MARKET_CLOSED", age_ms, False, False,
                          "MARKET_CLOSED", str(feed.get("updated_at") or ""))
     if age_ms is None:
         return FeedState("FEED_OFFLINE_OR_STALE", None, True, False,
                          "NO_FEED_HEARTBEAT", str(feed.get("updated_at") or ""))
-    if age_ms > int(stale_ms):
+    if age_ms > limit:
         return FeedState("FEED_OFFLINE_OR_STALE", age_ms, True, False,
-                         f"HEARTBEAT_AGE_{age_ms}MS_GT_{int(stale_ms)}MS",
+                         f"HEARTBEAT_AGE_{age_ms}MS_GT_{limit}MS",
                          str(feed.get("updated_at") or ""))
     return FeedState("FEED_LIVE", age_ms, True, True, "SANITIZED_FEED_LIVE",
                      str(feed.get("updated_at") or ""))

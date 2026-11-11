@@ -905,6 +905,51 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception as exc:  # noqa: BLE001
                 self._json({"ok": False, "reason": str(exc)}, status=502)
             return
+        if parsed.path == "/api/paper/test-order":
+            from execution.order_router import ModeRejected, OrderRouter
+
+            symbol = str(body.get("symbol") or "NIFTY").upper()
+            try:
+                mode = OrderRouter().load()["mode"]
+            except Exception as exc:  # noqa: BLE001
+                self._json({"ok": False, "reason": f"cannot read trade mode: {exc}"}, status=500)
+                return
+            if mode != "PAPER":
+                self._json({"ok": False, "reason": "Test Paper Order is PAPER-only"}, status=409)
+                return
+            feed_path = REPO_ROOT / "state" / "live_feed.json"
+            try:
+                feed = json.loads(feed_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                feed = {}
+            fresh = bool(feed.get("socket_connected")) and (
+                time.time() - float(feed.get("updated_epoch") or 0) < 8
+            )
+            if not fresh:
+                self._json({"ok": False, "reason": "live V3 feed is not fresh enough to fill a test order"}, status=409)
+                return
+            option = (feed.get("option") or {}).get(symbol) or {}
+            ltp = float(option.get("ltp") or 0.0)
+            if ltp <= 0:
+                self._json({"ok": False, "reason": f"no live {symbol} ATM option LTP"}, status=409)
+                return
+            request = {
+                "request_id": f"test-{time.time_ns()}",
+                "status": "PENDING",
+                "symbol": symbol,
+                "side": str(option.get("option_type") or "CE").upper(),
+                "requested_at": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
+                "spot": (feed.get("spot") or {}).get(symbol, {}).get("ltp"),
+            }
+            target = REPO_ROOT / "state" / "live_test_order_request.json"
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(json.dumps(request, indent=1), encoding="utf-8")
+            except OSError as exc:
+                self._json({"ok": False, "reason": str(exc)}, status=500)
+                return
+            self._json({"ok": True, "queued": True, "request": request})
+            return
         if parsed.path == "/api/trade/close-now":
             from execution.order_router import (  # noqa: F401 - guarded by mode
                 MANUAL_CLOSE_REASON,

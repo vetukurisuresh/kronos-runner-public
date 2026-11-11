@@ -36,7 +36,7 @@ SLEEVE_A_ENGINES = (
     "LEAD_LAG_3S_SNIPE",
     "ADAPTIVE_VELOCITY_PING_PONG",
 )
-LIVE_STALE_AFTER_SEC = 3.0
+LIVE_STALE_AFTER_SEC = 8.0
 
 
 def _f(value: Any, default: float = 0.0) -> float:
@@ -98,7 +98,9 @@ def _data_gate(
     symbol: str,
     feed_live: bool,
 ) -> dict[str, Any]:
-    epoch = _f(feed.get("updated_epoch"))
+    # The 1s socket heartbeat is the liveness fact.  The full snapshot may lag
+    # the heavy chain cycle by several seconds without being stale.
+    epoch = _f(feed.get("liveness_epoch") or feed.get("updated_epoch"))
     age_sec = max(0.0, now - epoch) if epoch > 0 else None
     fixture = bool(feed.get("fixture"))
     spectrum = (feed.get("full_spectrum") or {}).get(symbol) or {}

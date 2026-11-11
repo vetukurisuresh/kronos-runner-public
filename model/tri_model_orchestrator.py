@@ -26,7 +26,7 @@ from strategy.smc_engine import (
 from strategy.full_spectrum_alpha import chain_metrics
 
 IST = timezone(timedelta(hours=5, minutes=30), name="IST")
-AUDIT_STALE_MS = 3_000
+AUDIT_STALE_MS = 8_000
 
 
 @dataclass(frozen=True)

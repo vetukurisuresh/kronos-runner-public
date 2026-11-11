@@ -290,7 +290,7 @@ def build_from_runtime(
     except (TypeError, ValueError):
         feed_updated = 0.0
     feed_age = _age_seconds(feed_updated, current)
-    feed_fresh = bool(feed) and feed_age <= 120
+    feed_fresh = bool(feed) and feed_age <= 8
     socket_ok = (
         feed_fresh
         and bool(feed.get("socket_connected"))

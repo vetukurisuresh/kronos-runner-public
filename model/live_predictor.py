@@ -147,6 +147,9 @@ def _predict_role(role: str, feed: Mapping[str, Any]) -> dict[str, Any] | None:
         "samples": int(forecast.samples),
         "target_1": round(float(target_1), 2),
         "target_2": round(float(target_2), 2),
+        "p10": round(float(forecast.p10), 2),
+        "p50": round(float(forecast.p50), 2),
+        "p90": round(float(forecast.p90), 2),
         "regime": "BULLISH" if up >= 55.0 else "BEARISH" if up <= 45.0 else "NEUTRAL",
         "inference_ms": round(elapsed_ms, 1),
         "model": role,
@@ -183,6 +186,12 @@ def _publish_status() -> None:
                 "age_sec": round(moment - _CACHE_AT.get(role, 0.0), 1),
                 "probability_pct": payload.get("probability_pct"),
                 "samples": payload.get("samples"),
+                "paths_up": payload.get("paths_up"),
+                "direction": payload.get("direction"),
+                "regime": payload.get("regime"),
+                "p10": payload.get("p10"),
+                "p50": payload.get("p50"),
+                "p90": payload.get("p90"),
             }
             for role, payload in _CACHE.items()
         }

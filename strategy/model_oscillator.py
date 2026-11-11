@@ -22,6 +22,7 @@ from typing import Any, Mapping
 
 IST = timezone(timedelta(hours=5, minutes=30), name="IST")
 MODEL_WEIGHTS = {"base": 0.40, "small": 0.25, "mini": 0.35}
+PREDICTOR_STATUS_FILE = None  # set lazily below; avoids a hard import cycle
 SNIPER_BORDER_PCT = 78.0
 SCALP_BORDER_PCT = 72.0
 
@@ -286,6 +287,25 @@ def build_model_oscillator(
     }
 
 
+def _load_predictor_roles(max_age_sec: float = 30.0) -> dict[str, Any]:
+    """Read the real live-predictor cache written by model/live_predictor.py."""
+    global PREDICTOR_STATUS_FILE
+    try:
+        import json
+        import time
+        from pathlib import Path
+
+        if PREDICTOR_STATUS_FILE is None:
+            PREDICTOR_STATUS_FILE = Path(__file__).resolve().parents[1] / "state" / "kronos_predictor_status.json"
+        status = json.loads(PREDICTOR_STATUS_FILE.read_text(encoding="utf-8"))
+        updated = float(status.get("updated_epoch") or 0.0)
+        if not updated or time.time() - updated > max_age_sec:
+            return {}
+        return dict(status.get("roles") or {})
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
 def build_oscillator_from_feed(
     feed: Mapping[str, Any] | None,
     symbol: str = "NIFTY",
@@ -323,7 +343,21 @@ def build_oscillator_from_feed(
                 match = re.search(r"(\d+)\s*/\s*(\d+)", str(row.get("value") or ""))
                 if match:
                     mini_paths, mini_samples = int(match.group(1)), int(match.group(2))
-    return build_model_oscillator(
+    predictor_inputs: dict[str, Any] = {}
+    predictor_roles = _load_predictor_roles()
+    for role, key in (("base", "base_upside_pct"), ("small", "small_probability_pct"),
+                      ("mini", "mini_probability_pct")):
+        row = predictor_roles.get(role) or {}
+        probability = _score(row.get("probability_pct"))
+        if probability is not None:
+            predictor_inputs[key] = probability
+        if role == "base" and row.get("paths_up") is not None:
+            predictor_inputs["base_paths_up"] = row.get("paths_up")
+            predictor_inputs["base_samples"] = row.get("samples")
+        if role == "mini" and row.get("paths_up") is not None:
+            predictor_inputs["mini_paths_up"] = row.get("paths_up")
+            predictor_inputs["mini_samples"] = row.get("samples")
+    inputs: dict[str, Any] = dict(
         base_paths_up=base_paths,
         base_samples=base_samples,
         pcr=pcr_block.get("pcr"),
@@ -337,6 +371,10 @@ def build_oscillator_from_feed(
         futures_volume_ratio=plan.get("futures_volume_ratio"),
         trend_slope=plan.get("trend_slope"),
     )
+    # Real live-predictor probabilities/paths override the stale cloud plan,
+    # without ever passing the same keyword twice.
+    inputs.update(predictor_inputs)
+    return build_model_oscillator(**inputs)
 
 
 # Public aliases for dashboards/agents that use the shorter name.

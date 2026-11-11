@@ -26,10 +26,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 FEED_FILE = REPO_ROOT / "state" / "live_feed.json"
 STATE_FILE = REPO_ROOT / "state" / "latest_cloud_state.json"
 HEARTBEAT_FILE = REPO_ROOT / "state" / "live_heartbeat.json"
+PREDICTOR_STATUS_FILE = REPO_ROOT / "state" / "kronos_predictor_status.json"
 
 INDEX_KEYS = {"NIFTY": "NSE_INDEX|Nifty 50", "BANKNIFTY": "NSE_INDEX|Nifty Bank"}
 #: A full-spectrum snapshot older than this must never be treated as live.
-FULL_SPECTRUM_STALE_MS = 5000
+FULL_SPECTRUM_STALE_MS = 8000
 
 
 def _load(path: Path) -> dict:
@@ -78,6 +79,75 @@ def pick_price(feed: dict, symbol: str) -> float:
         if value:
             return float(value)
     return 0.0
+
+
+def _predictor_plan(feed: dict, symbol: str, now: float) -> dict[str, Any]:
+    """Use the live 3-model forecast cache, never a stale cloud plan."""
+    if str(symbol).upper() != "NIFTY":
+        return {}
+    status = _load(PREDICTOR_STATUS_FILE)
+    try:
+        updated = float(status.get("updated_epoch") or 0.0)
+    except (TypeError, ValueError):
+        return {}
+    if not updated or now - updated > 30.0:
+        return {}
+    roles = status.get("roles") or {}
+    spot_row = ((feed.get("spot") or {}).get(symbol) or {})
+    spot = float(spot_row.get("ltp") or pick_price(feed, symbol) or 0.0)
+    if spot <= 0:
+        return {}
+    # Use the fresh model whose median is closest to live spot.  The 102M model
+    # remains the primary; the 25M is selected only when its median is closer
+    # and the forecast is still inside a sane 2.5% band.  Never use cloud levels.
+    candidates: list[tuple[float, str, dict, float, float, float, float]] = []
+    for role_name in ("base", "small"):
+        row = roles.get(role_name) or {}
+        try:
+            p10 = float(row.get("p10") or 0.0)
+            p50 = float(row.get("p50") or 0.0)
+            p90 = float(row.get("p90") or 0.0)
+            probability = float(row.get("probability_pct"))
+        except (TypeError, ValueError):
+            continue
+        if not (p10 > 0 and p50 > 0 and p90 > 0):
+            continue
+        if max(abs(spot - p10), abs(spot - p90)) > spot * 0.025:
+            continue
+        candidates.append((abs(spot - p50), role_name, row, p10, p50, p90, probability))
+    if not candidates:
+        return {}
+    _, role, chosen, p10, p50, p90, probability = min(candidates, key=lambda item: item[0])
+    action = "BUY_CE" if probability >= 55.0 else "BUY_PE" if probability <= 45.0 else "NO_TRADE"
+    target1 = p90 if action == "BUY_CE" else p10 if action == "BUY_PE" else p50
+    return {
+        "paths_up": chosen.get("paths_up"),
+        "samples": chosen.get("samples"),
+        "model_role": role,
+        "median": round(p50, 2), "p10": round(p10, 2), "p50": round(p50, 2),
+        "p90": round(p90, 2), "spot": round(spot, 2),
+        "regime": chosen.get("regime"), "action": action,
+        "watch_entry": round(p50, 2), "target1": round(target1, 2),
+        "target2": round(p90, 2),
+        "stop_loss": round(p10 if action == "BUY_CE" else p90, 2),
+        "source": "KRONOS_LIVE_PREDICTOR",
+    }
+
+
+def _indices(feed: dict) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    spot = feed.get("spot") if isinstance(feed.get("spot"), dict) else {}
+    for name in ("NIFTY", "BANKNIFTY"):
+        row = spot.get(name) if isinstance(spot.get(name), dict) else {}
+        ltp = row.get("ltp") or pick_price(feed, name)
+        if not ltp:
+            continue
+        out[name] = {
+            "ltp": round(float(ltp), 2),
+            "change": row.get("change"),
+            "change_pct": row.get("pct_change"),
+        }
+    return out
 
 
 def _zone(price: float, vwap: float) -> str:
@@ -253,9 +323,10 @@ def snapshot(symbol: str = "NIFTY", now: float | None = None) -> dict[str, Any]:
     programmatic = feed.get("programmatic")
     if not isinstance(programmatic, dict) or not programmatic:
         programmatic = build_programmatic_telemetry(feed, symbol=symbol, now=now)
+    predictor_plan = _predictor_plan(feed, symbol, now)
     oscillator = feed.get("model_oscillator")
     if not isinstance(oscillator, dict) or not oscillator:
-        oscillator = build_oscillator_from_feed(feed, symbol)
+        oscillator = build_oscillator_from_feed(feed, symbol, plan=predictor_plan or None)
     thoughts = feed.get("model_thoughts_te")
     brain_log = feed.get("brain_log_te")
     if not isinstance(thoughts, list) or not thoughts or not isinstance(brain_log, list):
@@ -274,7 +345,9 @@ def snapshot(symbol: str = "NIFTY", now: float | None = None) -> dict[str, Any]:
         thoughts, brain_log = narration["thoughts"], narration["log"]
 
     state_block = (state.get("symbols") or {}).get(symbol) or {}
-    plan = state_block.get("plan") or {}
+    plan = dict(state_block.get("plan") or {})
+    if predictor_plan:
+        plan.update(predictor_plan)
     live_spot = ((feed.get("spot") or {}).get(symbol) or {}) if isinstance(feed.get("spot"), dict) else {}
     source_bars = (
         live_spot.get("candles_5m") or spot_block.get("candles_5m")
@@ -344,6 +417,8 @@ def snapshot(symbol: str = "NIFTY", now: float | None = None) -> dict[str, Any]:
         "target_1": round(float(target1 or 0.0), 2),
         "target_2": round(float(target2 or 0.0), 2),
         "text": call_text,
+        "p10": round(float(plan.get("p10") or 0.0), 2),
+        "p90": round(float(plan.get("p90") or 0.0), 2),
         "source": "MASTER_ARBITRATOR" if winner else "MODEL_FUSION",
         "selected_engine": winner.get("engine"),
         "feed_live": live,
@@ -386,6 +461,7 @@ def snapshot(symbol: str = "NIFTY", now: float | None = None) -> dict[str, Any]:
             "latency_ms": round(float(feed.get("socket_last_frame_age") or 0) * 1000),
         },
         "spot": spot_block,
+        "indices": _indices(feed),
         "option": option or None,
         "active_trade": trade or None,
         "scanner_xray": scanner,

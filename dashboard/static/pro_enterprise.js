@@ -304,22 +304,17 @@
     return k.SERIES.spot.forecast;
   }
   function updateForecast() {
-    const series = ensureForecast();
-    if (!series) return;
-    const rows = forecastRows();
-    const sig = JSON.stringify(rows);
-    if (sig !== FORECAST.sig) {
-      FORECAST.sig = sig;
-      try { series.setData(rows); } catch (_) {}
+    // Broker-grade charts never contain a future series.  Clear the old
+    // forecast series and range canvas once, then leave the live candles alone.
+    const k = window.__kronos;
+    if (k && k.SERIES && k.SERIES.spot && k.SERIES.spot.forecast) {
+      try { k.SERIES.spot.forecast.setData([]); } catch (_) {}
     }
-    const badge = $('proAiCallout');
-    if (badge) {
-      const f = (activeBlock() || {}).forecast || {};
-      if (badge.dataset.direction === '') {
-        // leave the canonical model text from pro_workspace.updateHeader
-      }
+    const cv = $('forecastRange');
+    if (cv) {
+      const ctx = cv.getContext('2d');
+      if (ctx) ctx.clearRect(0, 0, cv.width, cv.height);
     }
-    drawForecastRange();
   }
   function rangeContext() {
     const cv = $('forecastRange');
@@ -415,6 +410,8 @@
     const layer = levelContext();
     const k = window.__kronos;
     if (!layer || !k || !k.SERIES.opt.candle) return;
+    const tr = (typeof LIVE !== 'undefined' && LIVE.trade) || {};
+    if (String(tr.status || '').toUpperCase() !== 'OPEN') return;
     const values = effectiveLevels();
     const colors = { entry: '#0369a1', sl: '#dc2626', t1: '#059669', t2: '#7c3aed' };
     const labels = { entry: 'ENTRY', sl: 'SL', t1: 'T1', t2: 'T2' };

@@ -230,7 +230,9 @@
   function gate() {
     const t = pending || {};
     const g = (t.master_arbitrator && t.master_arbitrator.data_gate) || {};
-    return { live: !!g.live, allowed: g.allowed !== false && !!g.live, reason: g.reason || 'LIVE DATA REQUIRED' };
+    // The arbitrator publishes allowed/status; older payloads also carried live.
+    const live = g.live != null ? !!g.live : (g.allowed === true || String(g.status || '').toUpperCase() === 'LIVE');
+    return { live, allowed: g.allowed !== false && live, reason: g.reason || 'LIVE DATA REQUIRED' };
   }
 
   function selectedCandidate(t) {
@@ -413,12 +415,15 @@
   function updateHeader(t) {
     t = t || {};
     const block = (STATE && STATE.symbols) || {};
-    const bank = block.BANKNIFTY || {};
-    const nifty = block.NIFTY || {};
+    const idx = t.indices || {};
+    const bank = idx.BANKNIFTY || block.BANKNIFTY || {};
+    const nifty = idx.NIFTY || block.NIFTY || {};
     const liveSpot = t.spot ? (t.spot.display != null ? t.spot.display : t.spot.ltp) : null;
-    const niftyLtp = symbol() === 'NIFTY' && liveSpot != null ? liveSpot : nifty.spot;
+    const niftyLtp = nifty.ltp != null ? nifty.ltp
+      : (symbol() === 'NIFTY' && liveSpot != null ? liveSpot : block.NIFTY && block.NIFTY.spot);
     if ($('bigSpot') && niftyLtp != null) $('bigSpot').textContent = n(niftyLtp, 2);
-    const bankLtp = symbol() === 'BANKNIFTY' && liveSpot != null ? liveSpot : bank.spot;
+    const bankLtp = bank.ltp != null ? bank.ltp
+      : (symbol() === 'BANKNIFTY' && liveSpot != null ? liveSpot : block.BANKNIFTY && block.BANKNIFTY.spot);
     if ($('proBankLtp')) $('proBankLtp').textContent = bankLtp == null ? '—' : n(bankLtp, 2);
     if ($('proBankDelta')) {
       const ch = Number(bank.change_pct != null ? bank.change_pct : bank.chg_pct);
@@ -426,7 +431,8 @@
       el.textContent = Number.isFinite(ch) ? `${ch >= 0 ? '+' : ''}${ch.toFixed(2)}%` : '—';
       el.className = Number.isFinite(ch) ? (ch >= 0 ? 'up' : 'down') : '';
     }
-    const niftyCh = Number(t.spot && t.spot.change_pct != null ? t.spot.change_pct : (nifty.change_pct != null ? nifty.change_pct : nifty.chg_pct));
+    const niftyCh = Number(nifty.change_pct != null ? nifty.change_pct
+      : (t.spot && t.spot.change_pct != null ? t.spot.change_pct : (block.NIFTY && block.NIFTY.change_pct)));
     const nd = $('bigSpotDelta');
     if (nd && Number.isFinite(niftyCh)) {
       nd.textContent = `${niftyCh >= 0 ? '+' : ''}${niftyCh.toFixed(2)}%`;
@@ -466,22 +472,62 @@
       !!(t.programmatic && t.programmatic.speed_telemetry), !!(t.model_oscillator), g.live,
     ].filter(Boolean).length;
     const pill = $('proConnPill');
+    const readyCount = Number(t.autopilot_green || 0);
+    const online = g.live && (readyCount >= 6 || checks >= 6);
     if (pill) {
       const direct = !!(LIVE.edge && LIVE.edge.open && edgeBase());
-      const online = g.live && checks >= 6;
       pill.className = 'pro-conn ' + (direct || online ? 'online' : 'offline');
       pill.textContent = direct
         ? edgeBadgeText()
         : online ? '🟢 6/6 LIVE CONNECTED' : `🔴 ${checks}/6 STALE / OFFLINE`;
     }
     const feed = $('proSideFeed');
-    if (feed) feed.textContent = g.live ? '● LIVE V3 · SANITIZER OK' : '● STALE / OFFLINE · ENTRIES BLOCKED';
+    if (feed) feed.textContent = online ? '● LIVE V3 · 6/6 READY · SANITIZER OK' : '● STALE / OFFLINE · ENTRIES BLOCKED';
     const ml = $('proModalLive');
-    if (ml) ml.textContent = g.live ? '🟢 LIVE V3 · ZERO-DUMMY GATE PASS' : '🔴 BLOCKED_BY_DATA_GATE';
+    if (ml) ml.textContent = online ? '🟢 LIVE V3 · ZERO-DUMMY GATE PASS' : '🔴 BLOCKED_BY_DATA_GATE';
+    updateEngineStrip(t);
+    updateAiRange(t);
 
     const sym = symbol();
     document.querySelectorAll('[data-pro-index]').forEach((b) => b.classList.toggle('on', b.dataset.proIndex === sym));
     updateDots(t, g);
+  }
+
+  function updateAiRange(t) {
+    const pill = $('aiRangePill');
+    if (!pill) return;
+    t = t || (typeof LIVE !== 'undefined' && LIVE.tick) || {};
+    const call = t.chart_call || {};
+    const p10 = Number(call.p10), p90 = Number(call.p90);
+    const spot = Number(t.spot && (t.spot.display != null ? t.spot.display : t.spot.ltp));
+    if (!(p10 > 0 && p90 > 0 && spot > 0) || Math.max(Math.abs(spot - p10), Math.abs(spot - p90)) > spot * 0.025) {
+      pill.hidden = true;
+      return;
+    }
+    pill.hidden = false;
+    pill.textContent = `🎯 Live AI Range: ${n(Math.min(p10, p90), 0)} – ${n(Math.max(p10, p90), 0)}`;
+  }
+
+  function updateEngineStrip(t) {
+    t = t || (typeof LIVE !== 'undefined' && LIVE.tick) || {};
+    const opt = t.option || {};
+    const sleeve = t.scalp_sleeve || {};
+    const stats = sleeve.scalp_stats || {};
+    const spread = opt.spread != null ? Number(opt.spread) : (Number(opt.ask) - Number(opt.bid));
+    const rows = candidateRows(t);
+    const edgeRow = rows.find((r) => String(r.sleeve).indexOf('A') >= 0) || rows[0] || {};
+    const edge = edgeRow.edge_score != null ? Number(edgeRow.edge_score).toFixed(0) : '—';
+    const optSymbol = opt.strike_symbol || `${symbol()} ATM`;
+    const state = stats.engine_state || (sleeve.scalp_active ? 'AUTO_SCALPING' : 'SCANNING');
+    const scalpText = `🟢 స్కానింగ్ ${state} · ${optSymbol} @ ₹${n(opt.ltp, 2)} · Spread ₹${n(spread, 2)} ${spread <= 1.0 ? '✅' : '⚠️'} · Edge ${edge}/72`;
+    const call = t.chart_call || {};
+    const p10 = call.p10 != null ? n(call.p10, 0) : '—';
+    const p90 = call.p90 != null ? n(call.p90, 0) : '—';
+    const bull = Number((t.model_oscillator || {}).bullish_upside_prob_pct || 0);
+    const sniperText = `🎯 వాచింగ్ SMC ${p10}–${p90} · Upside ${bull.toFixed(0)}% / Need 78%`;
+    const a = $('engineScalp'), b = $('engineSniper');
+    if (a) a.textContent = scalpText;
+    if (b) b.textContent = sniperText;
   }
 
   function updateModalStats(t) {
@@ -505,6 +551,11 @@
       ['sniper', 'scalp', 'parallel', 'hero', 'brain', 'speed'].forEach((k) => set(k, 'blocked'));
       set('health', 'blocked');
       ['audit', 'ledger', 'journal'].forEach((k) => set(k, 'active'));
+      return;
+    }
+    if (Number(t.autopilot_green || 0) >= 6 || g.allowed) {
+      ['sniper', 'scalp', 'parallel', 'hero', 'brain', 'speed', 'health',
+       'audit', 'ledger', 'journal'].forEach((k) => set(k, 'active'));
       return;
     }
     const a = t.master_arbitrator || {};
@@ -730,6 +781,7 @@
   window.kronosPro = {
     open,
     close,
+    updateAiRange,
     drawSpot,
     drawOption,
     fitCharts,
@@ -750,8 +802,30 @@
     },
     isOpen,
   };
+  function bindTestPaper() {
+    const btn = $('testPaperBtn');
+    if (!btn) return;
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      try {
+        const r = await fetch(edgeApi('/api/paper/test-order'), {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ symbol: symbol() }),
+        });
+        const j = await r.json();
+        if (!j.ok) throw new Error(j.reason || 'test order rejected');
+        if (window.toast) window.toast('⚡ Paper test order queued — fills on the next live tick');
+      } catch (err) {
+        if (window.toast) window.toast('Test paper order failed: ' + err.message);
+      } finally {
+        setTimeout(() => { btn.disabled = false; }, 1800);
+      }
+    });
+  }
+
   window.kronosProTick = paint;
   bindChartStudio();
+  bindTestPaper();
   applyChartStyle();
   if (typeof LIVE !== 'undefined' && LIVE.tick) paint(LIVE.tick);
   paint(null);
