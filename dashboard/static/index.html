@@ -1892,10 +1892,13 @@ const TF_MINUTES={'1m':1,'5m':5,'15m':15};
 const MODE={mode:'PAPER',real:false,confirmed:false,available_margin:0,used_margin:0,
   paper_capital:100000,paper_realized:0,label:'PAPER TRADE'};
 let MODE_PENDING='PAPER';
-const LIVE = {tick:null, opt:null, trade:null, xray:[], story:[], es:null, lastTickAt:0, lastPaint:0,
-  mtf:{}, smart:{}, edge:{es:null, url:'', open:false, last:0, retryAt:0, recovering:false, rttMs:null, dispatchMs:null}};
+const LIVE = {tick:null, opt:null, trade:null, xray:[], story:[], es:null, polling:false, lastTickAt:0, lastPaint:0,
+  mtf:{}, smart:{}, edge:{es:null, url:'', open:false, last:0, retryAt:0, recovering:false, failures:0, rttMs:null, dispatchMs:null}};
 // Firebase Hosting / GitHub Pages have no local API: those buttons must not 404.
-const HOSTED = !/^(localhost|127\.0\.0\.1)$/.test(location.hostname);
+// The edge tunnel serves the dashboard and API from the same origin, so it
+// must use the direct stream rather than the remote-shell recovery path.
+const HOSTED = !/^(localhost|127\.0\.0\.1)$/.test(location.hostname)
+  && !/(^|\.)trycloudflare\.com$/i.test(location.hostname);
 const LOCAL_ONLY = 'This action runs on your laptop \u2014 open http://localhost:8080';
 function hostedGuard(){ if(HOSTED && !EDGE_BASE_URL){ toast('⚡ GitHub runner tunnel being discovered — live action unavailable'); return true; } return false; }
 
@@ -4197,13 +4200,27 @@ function connectStream(){
   }catch(e){}
 }
 async function pollTicks(){
+  if(HOSTED && !EDGE_BASE_URL) return;
+  if(LIVE.polling) return;
+  LIVE.polling=true;
+  let timer=null;
   try{
-    const r = await fetch('/api/live-ticks?symbol='+encodeURIComponent(liveSymbol()),{cache:'no-store'});
+    const ctl=new AbortController(); timer=setTimeout(()=>ctl.abort(),2500);
+    const r = await fetch(apiUrl('/api/live-ticks?symbol='+encodeURIComponent(liveSymbol())),{cache:'no-store',signal:ctl.signal});
     if(r.ok){ LIVE.lastTickAt=Date.now(); queueTick(await r.json()); }
-  }catch(e){}
+  }catch(e){} finally { if(timer)clearTimeout(timer); LIVE.polling=false; }
 }
 /* ---- direct GitHub runner edge: no Firebase tick polling ---- */
 const EDGE_DISCOVERY_TIMEOUT_MS=2500;
+let EDGE_POLL=null;
+function startEdgePolling(){
+  if(!HOSTED||EDGE_POLL)return;
+  EDGE_POLL=setInterval(()=>{
+    if(!HOSTED||LIVE.edge.open||!EDGE_BASE_URL)return;
+    pollTicks(); loadLive();
+  },1000);
+}
+function stopEdgePolling(){if(EDGE_POLL){clearInterval(EDGE_POLL);EDGE_POLL=null}}
 function edgeFresh(rec,allowAny){
   if(!rec||rec.active===false)return false;
   const url=normalizeEdgeUrl(rec.edge_url||rec.url);
@@ -4243,31 +4260,41 @@ function closeEdge(keepBase){if(LIVE.edge.es){try{LIVE.edge.es.close()}catch(e){
 async function probeEdgeLatency(url){try{const t=performance.now();const r=await fetch(url+'/api/ping',{cache:'no-store'});if(r.ok)LIVE.edge.rttMs=Math.round((performance.now()-t)*10)/10}catch(e){}}
 function scheduleEdgeRecovery(){
   if(!HOSTED||LIVE.edge.recovering)return;
-  LIVE.edge.recovering=true; closeEdge(false); edgeChip('⚡ RUNNER HANDOFF — REDISCOVERING…','yellow');
-  setTimeout(async()=>{LIVE.edge.recovering=false;await refreshEdge()},1500);
+  LIVE.edge.recovering=true; closeEdge(true); edgeChip('⚡ RUNNER HANDOFF — REDISCOVERING…','yellow');
+  const delay=Math.min(15000,1500*Math.pow(2,Math.min(LIVE.edge.failures||0,3)));
+  setTimeout(async()=>{LIVE.edge.recovering=false;await refreshEdge()},delay);
 }
 async function connectEdge(rec){
   if(!rec||!HOSTED)return false;
   const url=normalizeEdgeUrl(rec.url||rec.edge_url); if(!url)return false;
   if(LIVE.edge.es&&LIVE.edge.url===url)return true;
-  closeEdge(true); setEdgeBase(url); LIVE.edge.url=url; edgeChip('⚡ DIRECT PIPE — CONNECTING…','yellow');
+  closeEdge(true); setEdgeBase(url); LIVE.edge.url=url; LIVE.edge.retryAt=0; edgeChip('⚡ DIRECT PIPE — CONNECTING…','yellow'); startEdgePolling();
   try{
     const es=new EventSource(apiUrl('/api/tick-stream?symbol='+encodeURIComponent(liveSymbol())));
     LIVE.edge.es=es;
-    es.onopen=()=>{LIVE.edge.open=true;LIVE.edge.retryAt=0;LIVE.edge.last=Date.now();edgeChip(edgeBadgeText(),'green');probeEdgeLatency(url);loadLive();loadHealth();loadTradeMode();loadAutopilotHealth();loadHeroMode();loadScalperMode()};
+    es.onopen=()=>{LIVE.edge.open=true;LIVE.edge.failures=0;LIVE.edge.retryAt=0;LIVE.edge.last=Date.now();stopEdgePolling();edgeChip(edgeBadgeText(),'green');probeEdgeLatency(url);loadLive();loadHealth();loadTradeMode();loadAutopilotHealth();loadHeroMode();loadScalperMode()};
     es.onmessage=ev=>{LIVE.edge.open=true;LIVE.edge.last=Date.now();LIVE.lastTickAt=Date.now();try{const t=JSON.parse(ev.data);if(t&&t.edge_pipe&&t.edge_pipe.dispatch_ms!=null)LIVE.edge.dispatchMs=Number(t.edge_pipe.dispatch_ms);queueTick(t)}catch(e){}};
-    es.onerror=()=>{if(LIVE.edge.es===es){try{es.close()}catch(e){}if(LIVE.edge.es===es)LIVE.edge.es=null;LIVE.edge.open=false;scheduleEdgeRecovery()}};
+    es.addEventListener('tick_delta',ev=>{LIVE.edge.open=true;LIVE.edge.last=Date.now();LIVE.lastTickAt=Date.now();try{applyFastDelta(JSON.parse(ev.data))}catch(e){}});
+    es.onerror=()=>{if(LIVE.edge.es!==es)return;LIVE.edge.open=false;LIVE.edge.failures=(LIVE.edge.failures||0)+1;edgeChip('⚡ DIRECT PIPE — RECONNECTING · POLLING…','yellow');startEdgePolling();if(es.readyState===2||LIVE.edge.failures>=3){try{es.close()}catch(e){}if(LIVE.edge.es===es)LIVE.edge.es=null;scheduleEdgeRecovery()}};
     return true;
-  }catch(e){scheduleEdgeRecovery();return false}
+  }catch(e){startEdgePolling();scheduleEdgeRecovery();return false}
 }
 async function refreshEdge(){
   const rec=await resolveLiveRunnerEdgeUrl();
   if(rec)return connectEdge(rec);
-  closeEdge(false); edgeChip('⛔ RUNNER OFFLINE — NO FIREBASE TICK POLL','red'); return false;
+  closeEdge(true); edgeChip('⛔ RUNNER OFFLINE — LIVE TICK POLL','red'); startEdgePolling(); return false;
 }
-function startEdgeWatchdog(){setInterval(()=>{if(!HOSTED)return;if(LIVE.edge.open&&Date.now()-(LIVE.edge.last||0)<1500)return;scheduleEdgeRecovery()},250)}
+function startEdgeWatchdog(){
+  setInterval(()=>{
+    if(!HOSTED||!LIVE.edge.url)return;
+    const stale=Date.now()-(LIVE.edge.last||0);
+    if(LIVE.edge.open&&stale<=10000)return;
+    if(LIVE.edge.open&&stale>10000){LIVE.edge.open=false;startEdgePolling()}
+    if(!LIVE.edge.open&&stale>20000&&!LIVE.edge.recovering)scheduleEdgeRecovery();
+  },1000)
+}
 function startLive(){
-  if(HOSTED){refreshEdge();startEdgeWatchdog();window.addEventListener('online',()=>{if(!LIVE.edge.open)refreshEdge()});document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!LIVE.edge.open)refreshEdge()});return}
+  if(HOSTED){refreshEdge();startEdgeWatchdog();startEdgePolling();window.addEventListener('online',()=>{if(!LIVE.edge.open)refreshEdge()});document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!LIVE.edge.open)refreshEdge()});return}
   connectStream(); setInterval(pollTicks,1000);
 }
 
