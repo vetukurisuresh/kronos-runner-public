@@ -1869,7 +1869,21 @@ def main(argv: list[str] | None = None) -> int:
                 if picked_row:
                     atm = picked_row
                     side = str(hero_pick.get("side") or side)
-            # Subscribe the entire ATM +/- 5 window (11 CE + 11 PE), not only
+            # Smart 1-strike ITM anchor.  The chart, the book, the subscription
+            # and the traded label must all describe ONE contract: resolving the
+            # ITM row here (instead of only relabelling an ATM row afterwards)
+            # is what kept BANKNIFTY printing an ATM delta beside an ITM strike.
+            itm = None
+            anchor_locked = bool(trade_pin_open or hero_pick)
+            if not anchor_locked and side in {"CE", "PE"}:
+                itm = pick_itm_strike(
+                    rows, spot, side, symbol=name,
+                    strike_step=index_strike_step(name),
+                )
+                anchor_row = (itm or {}).get("row")
+                if anchor_row:
+                    atm = anchor_row
+            # Subscribe the entire ITM +/- 5 window (11 CE + 11 PE), not only
             # the one leg that happens to be traded.  The overlay below uses
             # the same full frames for OI, depth and Greeks.
             window = select_option_window(rows, float(atm.get("strike_price") or 0), 5)
@@ -1910,18 +1924,9 @@ def main(argv: list[str] | None = None) -> int:
             )
             parallel_option_move_3s = ltp - parallel_opt_base
 
-            # Smart 1-strike ITM: a CE sits one grid step below spot and a PE
-            # one step above, so delta stays in the 0.54-0.66 institutional
-            # band and the intrinsic value carries the afternoon theta.
-            itm = pick_itm_strike(
-                rows, spot, side, symbol=name,
-                strike_step=index_strike_step(name),
-            ) if side in {"CE", "PE"} else None
-            strike = float(
-                (itm or {}).get("strike")
-                or atm.get("strike_price")
-                or 0.0
-            )
+            # The resolved row is authoritative: label, Greeks, LTP and the
+            # option chart all describe the same 1-step ITM contract.
+            strike = float(atm.get("strike_price") or (itm or {}).get("strike") or 0.0)
             symbol = contract_label(name, strike, side)
             selection = selection_snapshot(
                 symbol=name, strike=strike, force_side=side,
@@ -2707,6 +2712,8 @@ def main(argv: list[str] | None = None) -> int:
                         chain_cache.get(name) or [], side,
                         capital=scalp_sleeve.allocated,
                         lot_size=index_lot_size(name),
+                        spot=spot,
+                        strike_step=index_strike_step(name),
                         expiry_day=expiry_day,
                         max_spread=None,
                     )

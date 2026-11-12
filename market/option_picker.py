@@ -131,6 +131,20 @@ def chain_greek(row: dict, side: str, name: str = "delta") -> float:
         return 0.0
 
 
+def itm_target_strike(spot: float, side: str, strike_step: float) -> float:
+    """The structural 1-step ITM strike for a directional leg.
+
+    A bullish ``CE`` buys the strike one grid step *below* spot and a bearish
+    ``PE`` one step *above*, which is where intrinsic value starts to dominate
+    theta.  Pure function: no chain, no Greeks, no network.
+    """
+    px = float(spot or 0.0)
+    step = float(strike_step or 0.0) or 50.0
+    if px <= 0:
+        return 0.0
+    return round(px - step if str(side).upper() != "PE" else px + step, 2)
+
+
 def pick_itm_strike(
     rows: list[dict],
     spot: float,
@@ -159,8 +173,10 @@ def pick_itm_strike(
     if px <= 0:
         return None
     step = float(strike_step or index_strike_step(symbol)) or 50.0
-    target = px - step if leg_side == "CE" else px + step
-    candidates: list[tuple[float, float, float, dict]] = []
+    target = itm_target_strike(px, leg_side, step)
+    # A chain row carries both legs; a row that is missing the requested leg
+    # must never win on strike distance and then report an invented delta of 0.
+    candidates: list[tuple[int, float, float, float, dict]] = []
     for row in rows or []:
         if not isinstance(row, dict):
             continue
@@ -175,18 +191,22 @@ def pick_itm_strike(
             continue
         if leg_side == "PE" and strike <= px:
             continue
+        leg_key = "call_options" if leg_side == "CE" else "put_options"
+        leg_present = int(isinstance(row.get(leg_key), dict))
         delta = abs(chain_greek(row, leg_side, "delta"))
-        candidates.append((abs(strike - target), strike, delta, row))
+        candidates.append((leg_present, abs(strike - target), strike, delta, row))
     if not candidates:
         return None
-    in_band = [c for c in candidates if delta_low <= c[2] <= delta_high]
+    # Prefer a row that actually carries the leg, then the Greek band.
+    with_leg = [c for c in candidates if c[0]] or candidates
+    in_band = [c for c in with_leg if delta_low <= c[3] <= delta_high]
     if in_band:
-        chosen = min(in_band, key=lambda c: (abs(c[2] - delta_target), c[0]))
+        chosen = min(in_band, key=lambda c: (abs(c[3] - delta_target), c[1]))
         source = "GREEK_BAND"
     else:
-        chosen = min(candidates, key=lambda c: c[0])
+        chosen = min(with_leg, key=lambda c: c[1])
         source = "STRUCTURAL"
-    _, strike, delta, row = chosen
+    _, _, strike, delta, row = chosen
     intrinsic = round(max(0.0, px - strike if leg_side == "CE" else strike - px), 2)
     return {
         "symbol": symbol,
@@ -197,7 +217,7 @@ def pick_itm_strike(
         "strike_step": step,
         "itm_steps": 1,
         "intrinsic_points": intrinsic,
-        "delta": round(delta, 4),
+        "delta": round(delta, 4) if delta > 0 else None,
         "delta_band": [delta_low, delta_high],
         "delta_source": source,
         "row": row,

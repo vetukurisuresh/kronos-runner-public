@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
 from typing import Any
 
+from market.option_picker import itm_target_strike
+
 IST = timezone(timedelta(hours=5, minutes=30))
 
 SCALP_SLEEVE_CAPITAL = 35_000.0
@@ -379,8 +381,16 @@ def select_scalp_contract(
     lot_size: Any = NIFTY_LOT_SIZE,
     expiry_day: bool = False,
     max_spread: float | None = MAX_SPREAD,
+    spot: Any = 0.0,
+    strike_step: Any = None,
 ) -> dict[str, Any] | None:
-    """Pick the most explosive delta 0.48–0.65 strike inside the hard cap.
+    """Pick the most explosive in-the-money strike inside the hard cap.
+
+    When ``spot`` is supplied the candidate set is restricted to the **1-step
+    ITM** strike (and its immediate ITM neighbours), so the ₹35K sleeve can no
+    longer buy a cheap OTM strike that merely scored well on premium distance.
+    Without ``spot`` the legacy whole-chain scoring is preserved for callers
+    that only have a chain.
 
     Quantity is lot-aligned and can never exceed ``MAX_SCALP_CAPITAL``.  A
     strike outside the preferred premium band is never substituted with a
@@ -391,6 +401,9 @@ def select_scalp_contract(
         return None
     cap = max(0.0, min(_f(capital, MAX_SCALP_CAPITAL), MAX_SCALP_CAPITAL))
     lot = max(1, int(_f(lot_size, NIFTY_LOT_SIZE)))
+    px = _f(spot)
+    step = _f(strike_step) or (100.0 if px > 20_000 else 50.0)
+    target = itm_target_strike(px, side, step) if px > 0 else 0.0
     low, high = (EXPIRY_LTP_MIN, EXPIRY_LTP_MAX) if expiry_day else (
         PREFERRED_LTP_MIN, PREFERRED_LTP_MAX
     )
@@ -415,6 +428,17 @@ def select_scalp_contract(
         strike = _f(row.get("strike_price") or row.get("strike") or leg.get("strike_price"))
         if ltp <= 0 or spread > allowed_spread:
             continue
+        # Hard ITM filter: a CE must sit below spot and a PE above it, and the
+        # strike must be within three grid steps of the 1-step ITM target.
+        if px > 0:
+            itm_depth = (px - strike) if side == "CE" else (strike - px)
+            if itm_depth <= 0:
+                continue
+            gap = abs(strike - target)
+            if gap > step * 3.01:
+                continue
+        else:
+            gap = 0.0
         qty = int(math.floor(cap / (ltp * lot))) * lot if ltp > 0 else 0
         if qty <= 0 and cap >= ltp * lot:
             qty = lot
@@ -424,11 +448,20 @@ def select_scalp_contract(
         if deployed > MAX_SCALP_CAPITAL:
             continue
         preferred = bool(low <= ltp <= high and MIN_DELTA <= delta <= MAX_DELTA)
+        # Distance-ranked ITM tier.  A flat bonus let the "preferred premium"
+        # term pull the sleeve back to a nearly-ATM strike (delta 0.50) one grid
+        # step away from the true 1-step ITM target, so the reward now shrinks
+        # with every step of distance and always outweighs a premium preference.
+        itm_tier = 0.0
+        if px > 0:
+            itm_steps = gap / step
+            itm_tier = max(0.0, 60_000.0 - itm_steps * 20_000.0)
         # Gamma is the explosive component; delta proximity to 0.56 and a tight
         # spread break ties.  If no strike is inside the narrow preferred band,
         # a real affordable lot is still returned rather than 0 Qty.
         score = round(
             gamma * 10_000.0
+            + itm_tier
             + (MAX_DELTA - abs(delta - 0.56)) * 100.0
             + (1.0 / (1.0 + spread))
             - abs(ltp - 105.0) / 100.0
@@ -456,6 +489,11 @@ def select_scalp_contract(
             "preferred_band": preferred,
             "min_one_lot_enforced": qty >= lot,
             "expiry_day": bool(expiry_day),
+            "spot": round(px, 2) if px > 0 else None,
+            "itm_target": round(target, 2) if target > 0 else None,
+            "itm_gap_steps": round(gap / step, 3) if (px > 0 and step) else None,
+            "selection_basis": "ONE_STEP_ITM" if (px > 0 and gap <= step * 1.01)
+                               else ("ITM_NEIGHBOUR" if px > 0 else "CHAIN_SCORE"),
         }
         if best is None or candidate["score"] > best["score"]:
             best = candidate

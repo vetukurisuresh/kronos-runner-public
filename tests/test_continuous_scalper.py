@@ -146,6 +146,66 @@ def test_position_sizer_stays_under_35000_and_picks_delta_sweet_spot():
     assert no_eligible is None
 
 
+def _itm_chain(spot: float, step: int, strikes) -> list[dict]:
+    """Two-leg chain whose delta falls as the strike moves away from spot."""
+    rows: list[dict] = []
+    for strike in strikes:
+        # One step ITM ~0.58 delta, two ~0.66, six ~0.97: the real shape of an
+        # index option chain, so the Greek band is exercised honestly.
+        delta_ce = max(0.02, min(0.98, 0.5 + 0.08 * ((spot - strike) / step)))
+        for side, delta in (("CE", delta_ce), ("PE", 1.0 - delta_ce)):
+            leg = {
+                "instrument_key": f"NSE_FO|{int(strike)}{side}",
+                "market_data": {
+                    "ltp": round(max(20.0, abs(spot - strike) * 0.55 + 90.0), 2),
+                    "bid_price": 100.0,
+                    "ask_price": 100.2,
+                },
+                "option_greeks": {"delta": delta, "gamma": 0.002},
+            }
+            rows.append({
+                "strike_price": strike,
+                "call_options" if side == "CE" else "put_options": leg,
+            })
+    return rows
+
+
+@pytest.mark.parametrize(
+    "symbol,spot,step,lot",
+    [
+        ("NIFTY", 25_268.55, 50, 75),
+        ("BANKNIFTY", 61_481.95, 100, 30),
+        ("SENSEX", 81_948.04, 100, 20),
+    ],
+)
+def test_scalp_contract_routes_every_index_to_the_one_step_itm_strike(
+    symbol: str, spot: float, step: int, lot: int,
+) -> None:
+    """NIFTY, BANKNIFTY and SENSEX must all buy the contract the desk shows.
+
+    The regression this locks: BANKNIFTY used to be filled on a cheap OTM
+    strike (60900 CE, delta 0.4756) because the resolver scored the whole chain
+    on premium distance instead of the 1-step ITM target.
+    """
+    strikes = range(int(spot) - 6 * step, int(spot) + 7 * step, step)
+    rows = _itm_chain(spot, step, strikes)
+    target_ce = spot - step
+    target_pe = spot + step
+
+    for side, target in (("CE", target_ce), ("PE", target_pe)):
+        contract = select_scalp_contract(
+            rows, side, capital=SCALP_SLEEVE_CAPITAL, lot_size=lot,
+            spot=spot, strike_step=step,
+        )
+        assert contract is not None, f"{symbol} {side} produced no contract"
+        assert contract["selection_basis"] == "ONE_STEP_ITM"
+        assert abs(contract["strike"] - target) <= step
+        assert 0.54 <= contract["delta"] <= 0.66, (symbol, side, contract["delta"])
+        # Intrinsic value is positive on the traded leg, never an OTM lottery.
+        assert (spot - contract["strike"]) > 0 if side == "CE" else (contract["strike"] - spot) > 0
+        assert contract["qty"] % lot == 0 and contract["qty"] >= lot
+
+
 def test_management_locks_breakeven_books_half_and_trails_tick_by_tick():
     engine = ContinuousScalpEngine()
     assert engine.open({
