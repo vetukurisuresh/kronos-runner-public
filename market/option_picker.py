@@ -8,6 +8,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from config.settings import (
+    ITM_DELTA_HIGH,
+    ITM_DELTA_LOW,
+    ITM_DELTA_TARGET,
+    index_strike_step,
+)
+
 
 def pick_atm(rows: list[dict], spot: float) -> dict | None:
     """Nearest strike to spot (ties resolve to the lower strike)."""
@@ -103,6 +110,98 @@ def contract_label(symbol: str, strike: float | int | None, side: str) -> str:
         number = 0
     leg = "PE" if str(side).upper() == "PE" else "CE"
     return f"{symbol} {number} {leg}" if number > 0 else f"{symbol} ATM {leg}"
+
+
+def chain_greek(row: dict, side: str, name: str = "delta") -> float:
+    """Read one Greek from either leg of an option-chain row.
+
+    Upstox publishes ``call_options``/``put_options`` with ``option_greeks``
+    nested inside ``market_data``'s sibling object.  A missing Greek is 0.0, never
+    a guessed value, so the delta band stays an honest filter.
+    """
+    leg = (row or {}).get("call_options" if str(side).upper() == "CE" else "put_options")
+    if not isinstance(leg, dict):
+        return 0.0
+    greeks = leg.get("option_greeks") or (leg.get("market_data") or {}).get("option_greeks") or {}
+    if not isinstance(greeks, dict):
+        return 0.0
+    try:
+        return float(greeks.get(name) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def pick_itm_strike(
+    rows: list[dict],
+    spot: float,
+    side: str,
+    *,
+    symbol: str = "NIFTY",
+    strike_step: float | None = None,
+    delta_low: float = ITM_DELTA_LOW,
+    delta_high: float = ITM_DELTA_HIGH,
+    delta_target: float = ITM_DELTA_TARGET,
+) -> dict[str, Any] | None:
+    """Select the 1-strike ITM contract an institutional buyer would hold.
+
+    For a bullish ``CE`` the strike one grid step *below* spot carries real
+    intrinsic value (delta ~0.54-0.66) instead of the 0.50 coin-flip of ATM, so
+    afternoon theta decay is smaller and the move pays from the first tick.  A
+    bearish ``PE`` mirrors it: one step *above* spot.
+
+    The Greek band is a preference, not a veto.  When the chain has not yet
+    streamed Greeks the structural strike is still returned with
+    ``delta_source="STRUCTURAL"`` so the desk can render the contract; the
+    candle/quorum gate remains the only thing that can authorise an order.
+    """
+    leg_side = "PE" if str(side).upper() == "PE" else "CE"
+    px = float(spot or 0.0)
+    if px <= 0:
+        return None
+    step = float(strike_step or index_strike_step(symbol)) or 50.0
+    target = px - step if leg_side == "CE" else px + step
+    candidates: list[tuple[float, float, float, dict]] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            strike = float(row.get("strike_price") or row.get("strike") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if strike <= 0:
+            continue
+        # Intrinsic value must be positive on the selected leg.
+        if leg_side == "CE" and strike >= px:
+            continue
+        if leg_side == "PE" and strike <= px:
+            continue
+        delta = abs(chain_greek(row, leg_side, "delta"))
+        candidates.append((abs(strike - target), strike, delta, row))
+    if not candidates:
+        return None
+    in_band = [c for c in candidates if delta_low <= c[2] <= delta_high]
+    if in_band:
+        chosen = min(in_band, key=lambda c: (abs(c[2] - delta_target), c[0]))
+        source = "GREEK_BAND"
+    else:
+        chosen = min(candidates, key=lambda c: c[0])
+        source = "STRUCTURAL"
+    _, strike, delta, row = chosen
+    intrinsic = round(max(0.0, px - strike if leg_side == "CE" else strike - px), 2)
+    return {
+        "symbol": symbol,
+        "side": leg_side,
+        "strike": round(strike, 2),
+        "contract": contract_label(symbol, strike, leg_side),
+        "spot": round(px, 2),
+        "strike_step": step,
+        "itm_steps": 1,
+        "intrinsic_points": intrinsic,
+        "delta": round(delta, 4),
+        "delta_band": [delta_low, delta_high],
+        "delta_source": source,
+        "row": row,
+    }
 
 
 def selection_snapshot(

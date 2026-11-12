@@ -237,6 +237,10 @@ def build_data_pipe_health(
         if _f(greeks.get(name)) != 0
     )
     greeks_valid = bool(_f(greeks.get("iv")) > 0 and greek_count >= 3)
+    # Upstox publishes IV as a decimal (0.1718); the audit must read 17.18%.
+    iv_display = _f(greeks.get("iv"))
+    if 0 < iv_display <= 3.0:
+        iv_display *= 100.0
     greeks_present = bool(_f(greeks.get("iv")) > 0 or greek_count > 0)
     depth_valid = bool(
         len(bids) >= 5
@@ -258,7 +262,7 @@ def build_data_pipe_health(
         (chain_valid, chain_present,
          f"{strike_count}/11 strikes · PCR {_f(pcr.get('pcr')):.2f} · ΔOI PCR {_f(pcr.get('doi_pcr')):+.2f}"),
         (greeks_valid, greeks_present,
-         f"IV {_f(greeks.get('iv')):.2f}% · Δ {_f(greeks.get('delta')):.3f} · Θ {_f(greeks.get('theta')):.2f}"),
+         f"IV {iv_display:.2f}% · Δ {_f(greeks.get('delta')):.3f} · Θ {_f(greeks.get('theta')):.2f}"),
         (depth_valid, depth_present,
          f"{len(bids)} bids / {len(asks)} asks · OBI {_f(depth.get('obi_5')):.2f} · TBQ/TSQ {_f(depth.get('tbq_tsq')):.2f}x"),
         (vix_valid, vix_present,

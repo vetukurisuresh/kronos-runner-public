@@ -103,7 +103,10 @@ def chain_metrics(rows: Iterable[Any]) -> dict[str, Any]:
         "pcr": round(pe_oi / ce_oi, 4) if ce_oi else 0.0,
         "ce_doi": round(ce_doi, 2),
         "pe_doi": round(pe_doi, 2),
-        "doi_pcr": round(pe_doi / ce_doi, 4) if ce_doi else 0.0,
+        # A near-zero CE ΔOI denominator produced absurd readings (ΔOI PCR 12x
+        # or 41x) that then leaked into the model card.  The desk only ever
+        # reasons about a 5x book imbalance, so the ratio is clamped to ±5.
+        "doi_pcr": max(-5.0, min(5.0, round(pe_doi / ce_doi, 4))) if ce_doi else 0.0,
         "max_pain": pain,
     }
 

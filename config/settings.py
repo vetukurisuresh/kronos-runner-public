@@ -12,6 +12,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -38,8 +39,70 @@ EXPIRY_ENTRY_CUTOFF = time(14, 0)
 # Market universe
 # --------------------------------------------------------------------------- #
 
-INDEX_SYMBOLS = {"NIFTY": "NIFTY 50", "BANKNIFTY": "BANK NIFTY"}
+#: The full three-index desk.  Every module derives its universe from this
+#: table, so the websocket subscription, the 1m/5m/15m warmup, the option-chain
+#: resolver and the dashboard toolbar can never drift apart again.
+INDEX_SPECS: dict[str, dict[str, Any]] = {
+    "NIFTY": {
+        "label": "NIFTY 50",
+        "instrument_key": "NSE_INDEX|Nifty 50",
+        "exchange": "NSE",
+        "option_exchange": "NSE_FO",
+        "lot_size": 75,
+        "strike_step": 50.0,
+        "futures_underlying": "NIFTY",
+    },
+    "BANKNIFTY": {
+        "label": "BANKNIFTY",
+        "instrument_key": "NSE_INDEX|Nifty Bank",
+        "exchange": "NSE",
+        "option_exchange": "NSE_FO",
+        "lot_size": 30,
+        "strike_step": 100.0,
+        "futures_underlying": "BANKNIFTY",
+    },
+    "SENSEX": {
+        "label": "SENSEX",
+        "instrument_key": "BSE_INDEX|SENSEX",
+        "exchange": "BSE",
+        "option_exchange": "BSE_FO",
+        "lot_size": 20,
+        "strike_step": 100.0,
+        "futures_underlying": "SENSEX",
+    },
+}
+INDEX_SYMBOLS = {name: str(spec["label"]) for name, spec in INDEX_SPECS.items()}
+DEFAULT_INDEX = "NIFTY"
+#: Smart 1-strike ITM band.  Below 0.54 the contract is effectively ATM and an
+#: afternoon theta bleed; above 0.66 it costs too much premium for the sleeve.
+ITM_DELTA_LOW = 0.54
+ITM_DELTA_HIGH = 0.66
+ITM_DELTA_TARGET = 0.60
+#: Structural readiness floors for the candle-formation gate.
+SPOT_MIN_5M_CANDLES = 150
+OPTION_MIN_CANDLES = 30
+QUORUM_CONFIDENCE_FLOOR = 62.0
 HEAVY_WEIGHT_SYMBOLS = ("RELIANCE", "HDFCBANK", "ICICIBANK", "INFY", "TCS")
+
+
+def index_spec(name: str) -> dict[str, Any]:
+    """Resolve one index spec; an unknown label falls back to NIFTY."""
+    return dict(INDEX_SPECS.get(str(name or "").upper(), INDEX_SPECS[DEFAULT_INDEX]))
+
+
+def index_lot_size(name: str) -> int:
+    """Exchange lot size for the index (NIFTY 75, BANKNIFTY 30, SENSEX 20)."""
+    return int(index_spec(name)["lot_size"])
+
+
+def index_strike_step(name: str) -> float:
+    """Strike grid for the index in points."""
+    return float(index_spec(name)["strike_step"])
+
+
+def index_instrument_key(name: str) -> str:
+    """Upstox V3 instrument key used by the websocket subscription."""
+    return str(index_spec(name)["instrument_key"])
 
 # --------------------------------------------------------------------------- #
 # Model trio

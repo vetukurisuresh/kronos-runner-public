@@ -172,7 +172,7 @@ COMMAND_CENTER = CommandCenterService()
 
 PUSH_TOKEN_ENV = "KRONOS_EDGE_PUSH_TOKEN"
 OPTION_PIN_FILE = REPO_ROOT / "state" / "live_option_pin.json"
-STREAM_SYMBOLS = ("NIFTY", "BANKNIFTY")
+STREAM_SYMBOLS = ("NIFTY", "BANKNIFTY", "SENSEX")
 
 
 class TickHub:

@@ -14,6 +14,9 @@ import time
 from pathlib import Path
 from typing import Any
 
+from datetime import datetime
+
+from config.settings import IST
 from execution.trading_cutoff import cutoff_state
 from market.data_sanitizer import feed_state
 from market.programmatic_telemetry import build_programmatic_telemetry
@@ -36,7 +39,12 @@ FAST_STALE_SEC = 2.0
 #: warm cycle on the 8 GB runner and produced false "WAITING" cards.
 PREDICTOR_MAX_AGE_SEC = 900.0
 
-INDEX_KEYS = {"NIFTY": "NSE_INDEX|Nifty 50", "BANKNIFTY": "NSE_INDEX|Nifty Bank"}
+from config.settings import INDEX_SPECS
+
+#: All three cash indices the desk streams: NIFTY 50 (NSE), BANKNIFTY (NSE) and
+#: SENSEX (BSE).  Kept as a mapping so every consumer iterates instead of
+#: hardcoding a two-index tuple.
+INDEX_KEYS = {name: str(spec["instrument_key"]) for name, spec in INDEX_SPECS.items()}
 #: A full-spectrum snapshot older than this must never be treated as live.
 #: 12 s is the explicit last-known-good hold while the 4 Hz socket is live; the
 #: audit still exposes the real chain age so a lag is never disguised as fresh.
@@ -404,7 +412,13 @@ def fast_overlay(payload: dict, now: float | None = None) -> dict:
     option = dict(payload.get("option") or {})
     for name, row in (fast.get("option") or {}).items():
         if isinstance(row, dict):
-            option[name] = {**(option.get(name) or {}), **row}
+            merged = {**(option.get(name) or {}), **row}
+            if merged.get("iv") is not None:
+                merged["iv_pct"] = iv_percent(merged.get("iv"))
+            option[name] = merged
+    for name, row in option.items():
+        if isinstance(row, dict) and row.get("iv") is not None:
+            row["iv_pct"] = iv_percent(row.get("iv"))
     if option:
         out["option"] = option
         oc = dict(payload.get("option_chart") or {})
@@ -414,6 +428,9 @@ def fast_overlay(payload: dict, now: float | None = None) -> dict:
                 for key in ("ltp", "bid", "ask", "obi_5", "delta", "iv"):
                     if row.get(key) is not None:
                         oc[key] = row[key]
+        oc["iv_raw"] = oc.get("iv")
+        if oc.get("iv") is not None:
+            oc["iv"] = iv_percent(oc.get("iv"))
         out["option_chart"] = oc
     return out
 
@@ -453,10 +470,28 @@ def fast_delta(symbol: str = "NIFTY", now: float | None = None) -> dict:
     }
 
 
+def iv_percent(value: Any) -> float | None:
+    """Normalise an option IV to percent for display.
+
+    Upstox publishes IV as a decimal (``0.1718``).  Formatting that straight
+    into the UI produced the infamous ``IV 0.2%``.  A value at or below 3.0 is
+    therefore scaled by 100; anything larger is already a percentage.
+    """
+    try:
+        raw = float(value)
+    except (TypeError, ValueError):
+        return None
+    if raw <= 0:
+        return 0.0 if raw == 0 else None
+    if raw <= 3.0:
+        raw *= 100.0
+    return round(raw, 2)
+
+
 def _indices(feed: dict) -> dict[str, Any]:
     out: dict[str, Any] = {}
     spot = feed.get("spot") if isinstance(feed.get("spot"), dict) else {}
-    for name in ("NIFTY", "BANKNIFTY"):
+    for name in INDEX_KEYS:
         row = spot.get(name) if isinstance(spot.get(name), dict) else {}
         ltp = row.get("ltp") or pick_price(feed, name)
         if not ltp:
@@ -554,6 +589,28 @@ def countdown(now: float | None = None) -> dict[str, int]:
 
 
 _QUORUM_FALLBACK_CACHE: dict[tuple[Any, str], dict[str, Any]] = {}
+
+
+def _today_proof(rows: Any) -> list[dict[str, Any]]:
+    """Keep only today's proof records.
+
+    The session appends to one ledger file, and a trade left ``OPEN`` on a
+    previous session survived forever as an orphan row in the public proof
+    board.  Rows are dated in IST by the detector, so only today's date is
+    published; an undated row is kept because it is an in-flight record.
+    """
+    if not isinstance(rows, list):
+        return []
+    today = datetime.now(tz=IST).date().isoformat()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        stamp = str(row.get("date") or "")
+        if stamp and stamp != today:
+            continue
+        out.append(row)
+    return out
 
 
 def _ensure_live_quorum(feed: dict[str, Any], symbol: str) -> dict[str, Any]:
@@ -966,7 +1023,12 @@ def snapshot(symbol: str = "NIFTY", now: float | None = None) -> dict[str, Any]:
             "strike_symbol": option.get("strike_symbol"),
             "selection": option.get("selection") or {},
             "ltp": option.get("ltp"), "delta": option.get("delta"),
-            "gamma": option.get("gamma"), "iv": option.get("iv"),
+            "gamma": option.get("gamma"),
+            "iv": iv_percent(option.get("iv")),
+            "iv_raw": option.get("iv"),
+            "iv_unit": "percent",
+            "candles_1m": option.get("candles_1m") or [],
+            "candles_5m": option.get("candles_5m") or [],
             "obi_5": option.get("obi_5"), "atp_vwap": option.get("atp_vwap"),
             "visuals": option_visuals, "by_tf": option_by_tf,
         },
@@ -996,7 +1058,7 @@ def snapshot(symbol: str = "NIFTY", now: float | None = None) -> dict[str, Any]:
         "intra_candle": feed.get("intra_candle") or {},
         "regime": feed.get("regime") or {},
         "auto_regime": feed.get("auto_regime") or {},
-        "proof_ledger": feed.get("proof_ledger") or [],
+        "proof_ledger": _today_proof(feed.get("proof_ledger")),
         "trigger_badge": (
             (feed.get("trade") or {}).get(symbol, {}) or {}
         ).get("trigger_label") or ((quorum or {}).get(symbol, {}) or {}).get("trigger_label") or "",

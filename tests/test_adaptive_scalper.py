@@ -203,7 +203,9 @@ def test_house_money_locks_half_then_scales_only_from_profit() -> None:
     assert settled["house_money_pool"] == 1_500
     assert settled["house_money_mode"] is True
     assert desk.status(now) == "DIAGNOSTIC_COOLDOWN"
-    assert desk.can_open(now + timedelta(seconds=30), sl_points=4.0)["ok"] is False
+    # The fast sleeve re-arms after 15s, not 90s: a 90s lock skipped the whole
+    # ping-pong re-entry leg on a 5m candle.
+    assert desk.can_open(now + timedelta(seconds=10), sl_points=4.0)["ok"] is False
 
     after_cooldown = desk.can_open(now + timedelta(seconds=91), sl_points=4.0)
     assert after_cooldown["ok"] is True

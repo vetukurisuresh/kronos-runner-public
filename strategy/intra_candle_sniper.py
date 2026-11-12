@@ -21,6 +21,42 @@ DEFAULT_OBI_FLOOR = 1.25
 DEFAULT_TBQ_FLOOR = 1.25
 DEFAULT_MIN_ELAPSED = 5.0
 DEFAULT_MAX_ELAPSED = 290.0
+#: An option chart with fewer formed candles than this is not a chart at all:
+#: placing an order against it is a blind fill, not a technical entry.
+OPTION_MIN_CANDLES = 30
+
+
+def option_candle_readiness(option: Mapping[str, Any]) -> dict[str, Any]:
+    """Count the option's *formed* candles before any entry is allowed.
+
+    A candle counts only when it is a real OHLC print: ``high > low`` and
+    ``close > 0``.  A warm-up row of zeros (common on a freshly selected ITM
+    contract) is deliberately excluded, so a brand-new contract reports
+    ``0`` and the desk holds instead of firing into an empty chart.
+    """
+    option = option or {}
+    for key in ("candles_1m", "candles_5m", "candles_15m"):
+        rows = option.get(key) or []
+        valid = 0
+        last = 0.0
+        for raw in rows:
+            bar = _bar(raw)
+            if bar["h"] > bar["l"] > 0 and bar["c"] > 0 and bar["o"] > 0:
+                valid += 1
+                last = bar["t"]
+        if valid:
+            return {
+                "ready": valid >= OPTION_MIN_CANDLES,
+                "timeframe": key.replace("candles_", ""),
+                "formed": valid,
+                "required": OPTION_MIN_CANDLES,
+                "last_candle_time": last,
+                "reason": ("OPTION_CHART_FORMED" if valid >= OPTION_MIN_CANDLES
+                           else f"OPTION_CHART_LOADING_{valid}_OF_{OPTION_MIN_CANDLES}"),
+            }
+    return {"ready": False, "timeframe": "", "formed": 0,
+            "required": OPTION_MIN_CANDLES, "last_candle_time": 0.0,
+            "reason": "OPTION_CHART_EMPTY"}
 
 
 def _f(value: Any, default: float = 0.0) -> float:
@@ -383,7 +419,11 @@ class IntraCandleEarlyDetector:
             micro_ok = False
         ignition = bool(aligned and book_ok and micro_ok)
         approved = bool(quorum.get("approved"))
-        ready = bool(approved and in_window and ignition and option_ltp > 0 and candle_time > 0)
+        chart = option_candle_readiness(option)
+        ready = bool(
+            approved and in_window and ignition and option_ltp > 0
+            and candle_time > 0 and chart["ready"]
+        )
 
         self._settle_pending(
             symbol=symbol,
@@ -423,6 +463,15 @@ class IntraCandleEarlyDetector:
             if ignition else
             "Waiting for the forming 5m candle to sweep a level with accelerating book flow."
         )
+        if ignition and not chart["ready"]:
+            reason_en = (
+                f"Setup confirmed, holding until the ITM option chart forms: "
+                f"{chart['formed']}/{chart['required']} candles loaded."
+            )
+            reason_te = (
+                f"సెటప్ సిద్ధం, కానీ ఆప్షన్ చార్ట్ ఇంకా లోడ్ అవుతోంది — "
+                f"{chart['formed']}/{chart['required']} క్యాండిల్స్. ఆర్డర్ ఇవ్వము."
+            )
         return {
             "ok": True,
             "symbol": symbol,
@@ -442,6 +491,8 @@ class IntraCandleEarlyDetector:
             "prior_5m_low": round(prior_low, 2),
             "obi_5": round(obi, 3),
             "tbq_tsq": round(tbq, 3),
+            "option_candles": chart["formed"],
+            "option_candle_gate": chart,
             "micro_direction": "DOWN" if micro_down else "UP" if micro_up else "FLAT",
             "reason_te": reason_te,
             "reason_en": reason_en,

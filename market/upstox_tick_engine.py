@@ -34,6 +34,7 @@ from urllib.parse import quote
 
 import requests
 
+from config.settings import index_strike_step
 from market.upstox_stream import Candle
 from market.upstox_full_decoder import decode_frame
 from market.data_sanitizer import SanitizedTickPipeline, SanitizeResult
@@ -134,6 +135,7 @@ def reconnect_forever(
 INDEX_KEYS = {
     "NIFTY": "NSE_INDEX|Nifty 50",
     "BANKNIFTY": "NSE_INDEX|Nifty Bank",
+    "SENSEX": "BSE_INDEX|SENSEX",
 }
 HEAVYWEIGHT_KEYS = {
     name: f"NSE_EQ|{name}" for name in ("HDFCBANK", "RELIANCE", "ICICIBANK", "INFY", "TCS")
@@ -542,9 +544,15 @@ class UpstoxTickEngine:
         return state
 
     def register_universe(
-        self, spot: dict[str, float] | None = None, strike_step: int = 50
+        self, spot: dict[str, float] | None = None, strike_step: int | float | None = None
     ) -> list[str]:
-        """Indices + top-5 heavyweights + ATM/ATM+50/ATM-50 CE & PE."""
+        """Indices + top-5 heavyweights + ITM/ATM/OTM CE & PE per index.
+
+        The strike grid is per index (NIFTY 50, BANKNIFTY 100, SENSEX 100), so a
+        single ``strike_step`` argument is only a fallback.  Each index also
+        subscribes one step in-the-money on both legs, which is the contract the
+        smart picker actually trades.
+        """
         keys: list[str] = []
         for name, key in INDEX_KEYS.items():
             self.register(key, name, "index")
@@ -555,11 +563,17 @@ class UpstoxTickEngine:
         for index, price in (spot or {}).items():
             if price <= 0:
                 continue
-            step = strike_step if price > 20_000 else max(strike_step, 100)
-            atm = int(round(price / step) * step)
-            for strike in (atm - step, atm, atm + step):
+            if strike_step:
+                step = float(strike_step)
+            else:
+                step = float(index_strike_step(index) or 50.0)
+            if price <= 20_000 and step < 100:
+                step = max(step, 100.0)
+            grid = int(step)
+            atm = int(round(price / grid) * grid)
+            for strike in (atm - grid, atm, atm + grid, atm + 2 * grid):
                 for side in ("CE", "PE"):
-                    label = f"{index} {strike} {side}"
+                    label = f"{index} {int(strike)} {side}"
                     self.register(label, label, "option")
                     keys.append(label)
         return keys

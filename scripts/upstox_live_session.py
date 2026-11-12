@@ -87,7 +87,13 @@ from market.option_picker import (  # noqa: E402
     gear_update,
     new_trade,
     pick_atm,
+    pick_itm_strike,
     selection_snapshot,
+)
+from config.settings import (  # noqa: E402
+    INDEX_SPECS,
+    index_lot_size,
+    index_strike_step,
 )
 from market.autopilot_readiness import (  # noqa: E402
     build_checks,
@@ -198,9 +204,11 @@ QUOTES_URL = "https://api.upstox.com/v2/market-quote/quotes"
 CHAIN_URL = "https://api.upstox.com/v2/option/chain"
 CONTRACT_URL = "https://api.upstox.com/v2/option/contract"
 
-KEYS = {"NIFTY": "NSE_INDEX|Nifty 50", "BANKNIFTY": "NSE_INDEX|Nifty Bank"}
+#: Three-index universe: NIFTY 50 + BANKNIFTY (NSE) and SENSEX (BSE).
+KEYS = {name: str(spec["instrument_key"]) for name, spec in INDEX_SPECS.items()}
 INDIA_VIX = "NSE_INDEX|India VIX"
 INSTRUMENTS_URL = "https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz"
+BSE_INSTRUMENTS_URL = "https://assets.upstox.com/market-quote/instruments/exchange/BSE.json.gz"
 HEAVYWEIGHTS = {
     "HDFCBANK": "NSE_EQ|INE040A01034",
     "RELIANCE": "NSE_EQ|INE002A01018",
@@ -208,6 +216,22 @@ HEAVYWEIGHTS = {
     "INFY": "NSE_EQ|INE009A01021",
     "TCS": "NSE_EQ|INE467B01029",
 }
+
+
+def load_bse_instruments(timeout: float = 15.0) -> list[dict]:
+    """Read the official BSE instruments master (gzip JSON) for SENSEX."""
+    import gzip
+
+    response = requests.get(BSE_INSTRUMENTS_URL, timeout=timeout,
+                            headers={"User-Agent": "kronos-institutional"})
+    response.raise_for_status()
+    raw = response.content
+    try:
+        raw = gzip.decompress(raw)
+    except (OSError, ValueError):
+        pass
+    rows = json.loads(raw.decode("utf-8"))
+    return rows if isinstance(rows, list) else []
 
 
 def load_nse_instruments(timeout: float = 15.0) -> list[dict]:
@@ -227,18 +251,32 @@ def load_nse_instruments(timeout: float = 15.0) -> list[dict]:
 
 
 def resolve_futures(token: str) -> dict[str, dict]:
-    """Resolve NIFTY/BANKNIFTY front-month futures from the Upstox master."""
+    """Resolve NIFTY / BANKNIFTY / SENSEX front-month futures.
+
+    NSE indices come from the NSE master and SENSEX from the BSE master.  A
+    master outage removes only that leg's futures flow; the cash index, the
+    option chain and the socket subscription keep working.
+    """
     del token  # The public master does not require the access token.
     try:
         rows = load_nse_instruments()
     except Exception as exc:  # noqa: BLE001 - the desk remains usable without it
         print(f"futures master unavailable: {type(exc).__name__}", flush=True)
-        return {}
-    return {
-        name: row
-        for name in KEYS
-        if (row := select_front_month_futures(rows, name))
-    }
+        rows = []
+    found: dict[str, dict] = {}
+    for name in KEYS:
+        row = select_front_month_futures(rows, name) if rows else None
+        if row:
+            found[name] = row
+    if "SENSEX" in KEYS and "SENSEX" not in found:
+        try:
+            bse_rows = load_bse_instruments()
+            row = select_front_month_futures(bse_rows, "SENSEX")
+            if row:
+                found["SENSEX"] = row
+        except Exception as exc:  # noqa: BLE001
+            print(f"BSE futures master unavailable: {type(exc).__name__}", flush=True)
+    return found
 
 
 def roll(cur: dict | None, price: float, now: float, minutes: int = 1,
@@ -1872,7 +1910,18 @@ def main(argv: list[str] | None = None) -> int:
             )
             parallel_option_move_3s = ltp - parallel_opt_base
 
-            strike = float(atm.get("strike_price") or 0.0)
+            # Smart 1-strike ITM: a CE sits one grid step below spot and a PE
+            # one step above, so delta stays in the 0.54-0.66 institutional
+            # band and the intrinsic value carries the afternoon theta.
+            itm = pick_itm_strike(
+                rows, spot, side, symbol=name,
+                strike_step=index_strike_step(name),
+            ) if side in {"CE", "PE"} else None
+            strike = float(
+                (itm or {}).get("strike")
+                or atm.get("strike_price")
+                or 0.0
+            )
             symbol = contract_label(name, strike, side)
             selection = selection_snapshot(
                 symbol=name, strike=strike, force_side=side,
@@ -1961,7 +2010,7 @@ def main(argv: list[str] | None = None) -> int:
                     and not (isinstance(trade, dict) and str(trade.get("status") or "").upper() == "OPEN")
                     and not scalp_sleeve.active
                     and cutoff["new_entries_allowed"] and not feed_stale and ltp > 0):
-                lot_size = BANKNIFTY_LOT_SIZE if name == "BANKNIFTY" else NIFTY_LOT_SIZE
+                lot_size = index_lot_size(name)
                 qty = int(float(scalp_sleeve.allocated or 35000.0) // (ltp * lot_size)) * lot_size
                 if qty > 0:
                     test_side = str(test_order.get("side") or side or "CE").upper()
@@ -2657,7 +2706,7 @@ def main(argv: list[str] | None = None) -> int:
                     contract = select_scalp_contract(
                         chain_cache.get(name) or [], side,
                         capital=scalp_sleeve.allocated,
-                        lot_size=(BANKNIFTY_LOT_SIZE if name == "BANKNIFTY" else NIFTY_LOT_SIZE),
+                        lot_size=index_lot_size(name),
                         expiry_day=expiry_day,
                         max_spread=None,
                     )

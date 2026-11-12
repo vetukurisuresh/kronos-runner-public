@@ -26,7 +26,10 @@ BASE_QTY = 300
 LOT_SIZE = 75
 BASE_RISK_PCT = 0.012
 MAX_SCALPS = 6
-COOLDOWN_SECONDS = 90
+#: 15s, not 90s: the fast sleeve is a ping-pong scalper and a 90-second lock
+#: missed the entire re-entry leg on a 5m candle.  Matches the continuous
+#: scalp engine's own COOLDOWN_SECONDS.
+COOLDOWN_SECONDS = 15
 DEFAULT_SL_POINTS = 4.0
 VAULT_LOCK_PCT = 0.50
 HOUSE_MONEY_FILE = "state/house_money_compounder.json"

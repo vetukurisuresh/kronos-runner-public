@@ -21,7 +21,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
+from config.settings import OPTION_MIN_CANDLES, QUORUM_CONFIDENCE_FLOOR, SPOT_MIN_5M_CANDLES
 from model.tri_model_orchestrator import build_model_quorum
+from strategy.intra_candle_sniper import option_candle_readiness
 from strategy.multi_angle_playbook_engine import evaluate_playbooks
 
 IST = timezone(timedelta(hours=5, minutes=30), name="IST")
@@ -315,6 +317,126 @@ def _scalp_candidate(feed: Mapping[str, Any], symbol: str) -> dict[str, Any]:
     )
 
 
+def _spot_candles_5m(feed: Mapping[str, Any], symbol: str) -> list:
+    spot = ((feed.get("spot") or {}).get(symbol) or {}) if isinstance(feed.get("spot"), Mapping) else {}
+    rows = spot.get("candles_5m") if isinstance(spot, Mapping) else None
+    return list(rows or [])
+
+
+def entry_readiness_gate(
+    feed: Mapping[str, Any],
+    *,
+    symbol: str = "NIFTY",
+    side: str = "",
+    quorum: Mapping[str, Any] | None = None,
+    data_gate: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The strict 4-point visual and structural gate before any order fires.
+
+    1. The Spot chart has loaded >= 150 five-minute candles and the newest one
+       confirms the direction against VWAP (and the previous 5m high/low).
+    2. The selected ITM option chart has >= 30 real, non-zero OHLC candles.
+    3. A 2-of-3 model quorum at >= 62% plus option VWAP / OBI / TBQ print.
+    4. No duplicate entry while a position is OPEN.
+
+    Every point is returned with the observed value so the desk can show the
+    exact reason it is holding instead of a generic "blocked" badge.
+    """
+    feed = feed or {}
+    quorum = quorum or {}
+    gate = data_gate or {}
+    leg = str(side or quorum.get("side") or "").upper()
+    leg = leg if leg in {"CE", "PE"} else ""
+    spot_block = ((feed.get("spot") or {}).get(symbol) or {}) if isinstance(feed.get("spot"), Mapping) else {}
+    spot_block = spot_block if isinstance(spot_block, Mapping) else {}
+    bars = _spot_candles_5m(feed, symbol)
+    spot = _f(spot_block.get("ltp") or spot_block.get("display"))
+    vwap = _f(spot_block.get("vwap") or spot_block.get("atp"))
+    upper = 0.0
+    lower = 0.0
+    if len(bars) >= 2 and isinstance(bars[-2], Mapping):
+        upper = _f(bars[-2].get("h") if bars[-2].get("h") is not None else bars[-2].get("high"))
+        lower = _f(bars[-2].get("l") if bars[-2].get("l") is not None else bars[-2].get("low"))
+    if leg == "CE":
+        structure_ok = bool(spot > 0 and vwap > 0 and spot >= vwap and (upper <= 0 or spot >= upper))
+    elif leg == "PE":
+        structure_ok = bool(spot > 0 and vwap > 0 and spot <= vwap and (lower <= 0 or spot <= lower))
+    else:
+        structure_ok = False
+    spot_point = {
+        "key": "spot_5m",
+        "label": "Spot 5m candle formation",
+        "pass": bool(len(bars) >= SPOT_MIN_5M_CANDLES and structure_ok),
+        "value": (f"{len(bars)}/{SPOT_MIN_5M_CANDLES} 5m bars · "
+                  f"spot {spot:,.2f} vs VWAP {vwap:,.2f}"
+                  if spot and vwap else f"{len(bars)}/{SPOT_MIN_5M_CANDLES} 5m bars"),
+    }
+
+    options = feed.get("option") or {}
+    option = options.get(symbol) if isinstance(options, Mapping) else {}
+    option = option if isinstance(option, Mapping) else {}
+    chart = option_candle_readiness(option)
+    option_point = {
+        "key": "option_chart",
+        "label": "ITM option candles formed",
+        "pass": bool(chart.get("ready")),
+        "value": f"{chart.get('formed', 0)}/{OPTION_MIN_CANDLES} {chart.get('timeframe') or '—'} candles · {chart.get('reason')}",
+    }
+
+    votes = quorum.get("votes") or quorum.get("model_cards") or []
+    confirmed = [
+        vote for vote in votes
+        if isinstance(vote, Mapping) and bool(vote.get("confirmed"))
+        and str(vote.get("side") or "").upper() == leg
+    ] if leg else []
+    confidence = _f(quorum.get("confidence"))
+    depth = option.get("depth") if isinstance(option.get("depth"), Mapping) else {}
+    obi = _f(option.get("obi_5") or (depth or {}).get("obi_5"))
+    tbq = _f(option.get("tbq_tsq") or (depth or {}).get("tbq_tsq"))
+    option_vwap = _f(option.get("atp_vwap") or option.get("vwap"))
+    option_ltp = _f(option.get("ltp"))
+    above_atp = bool(option_vwap <= 0 or option_ltp >= option_vwap)
+    quorum_ok = bool(
+        len(confirmed) >= 2 or (bool(quorum.get("approved")) and confidence >= QUORUM_CONFIDENCE_FLOOR)
+    )
+    quorum_point = {
+        "key": "quorum_flow",
+        "label": "2-of-3 quorum + option book",
+        "pass": bool(quorum_ok and confidence >= QUORUM_CONFIDENCE_FLOOR
+                     and above_atp and obi >= 1.20 and tbq >= 1.25),
+        "value": (f"{quorum.get('quorum_count') or f'{len(confirmed)}/3'} @ {confidence:.0f}% · "
+                  f"OBI {obi:.2f}x · TBQ/TSQ {tbq:.2f}x"),
+    }
+
+    trade = ((feed.get("trade") or {}).get(symbol) or {}) if isinstance(feed.get("trade"), Mapping) else {}
+    open_trade = str((trade or {}).get("status") or "").upper() == "OPEN"
+    duplicate_point = {
+        "key": "no_duplicate",
+        "label": "Single active position",
+        "pass": not open_trade,
+        "value": (f"OPEN {trade.get('option_symbol') or trade.get('strike_symbol') or ''}".strip()
+                  if open_trade else "FLAT · ENTRY SLOT FREE"),
+    }
+
+    points = [spot_point, option_point, quorum_point, duplicate_point]
+    allowed = bool(gate.get("allowed", True)) and all(point["pass"] for point in points)
+    blocking = [point["key"] for point in points if not point["pass"]]
+    return {
+        "allowed": allowed,
+        "status": "READY_TO_FIRE" if allowed else "HOLD",
+        "symbol": symbol,
+        "side": leg,
+        "points": points,
+        "points_passed": sum(1 for point in points if point["pass"]),
+        "points_total": len(points),
+        "blocking": blocking,
+        "reason": ("ALL_4_POINTS_VERIFIED" if allowed else
+                   "DATA_GATE_BLOCKED" if not gate.get("allowed", True) else
+                   "HOLDING_ON_" + "_".join(key.upper() for key in blocking)),
+        "summary": f"{sum(1 for p in points if p['pass'])}/{len(points)} gate points verified",
+    }
+
+
 def _exit_guard(feed: Mapping[str, Any], symbol: str) -> dict[str, Any]:
     trade = (feed.get("trade") or {}).get(symbol) or {}
     open_trade = str(trade.get("status") or "").upper() == "OPEN"
@@ -401,6 +523,14 @@ class MasterSignalArbitrator:
             feed, symbol=symbol, now=moment, data_gate=gate,
         )
         quorum = build_model_quorum(feed, symbol=symbol, now=moment)
+        wanted_side = (
+            (sleeve_b["selected"] or {}).get("side")
+            or (sleeve_a["selected"] or {}).get("side")
+            or quorum.get("side") or ""
+        )
+        readiness = entry_readiness_gate(
+            feed, symbol=symbol, side=wanted_side, quorum=quorum, data_gate=gate,
+        )
         return {
             "ok": gate["allowed"],
             "symbol": symbol,
@@ -422,8 +552,11 @@ class MasterSignalArbitrator:
             "trigger_path": quorum.get("trigger_path"),
             "trigger_label": quorum.get("trigger_label"),
             "single_model_path": quorum.get("trigger_path") == "SINGLE_MODEL_SUPER_CONVICTION",
+            "readiness": readiness,
+            "entry_ready": bool(readiness["allowed"]),
             "trade_approved": bool(
                 gate["allowed"]
+                and readiness["allowed"]
                 and (playbooks.get("auto_execute") or quorum.get("auto_execute"))
             ),
             "latency_us": round(float(latency_us or 0.0), 2),
@@ -460,5 +593,6 @@ __all__ = [
     "SNIPER_SLEEVE_RS",
     "SNIPER_THRESHOLD",
     "build_master_arbitrator",
+    "entry_readiness_gate",
     "edge_score",
 ]
