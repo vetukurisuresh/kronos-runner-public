@@ -53,7 +53,16 @@ data_gate: LIVE / VERIFIED_LIVE       (all three symbols)
 
 - [x] `market/option_picker.pick_itm_strike()` — CE one grid step **below** spot, PE one step **above**; Preferences the 0.54–0.66 delta band nearest 0.60; falls back to the structural strike with `delta_source="STRUCTURAL"` when the chain has no Greeks.
 - [x] Unit check: spot 25,356 + CE → `NIFTY 25300 CE`. Live check: spot 81,948 + CE → `SENSEX 81900 CE` @ Δ 0.5543.
-- [x] Session trades the picker's strike (`strike` from `pick_itm_strike` feeds `selection_snapshot` and the subscription).
+- [x] **One contract, not a label.** The session now resolves the ITM *row* before building the book, so LTP, Greeks, the option chart, the subscription window and the label are the same contract. Previously only the label was ITM while the leg still came from the ATM row — that mismatch printed `BANKNIFTY 60900 CE` beside an ATM delta of 0.4756.
+- [x] `select_scalp_contract(..., spot=, strike_step=)` restricts the ₹35K sleeve to ITM strikes and scores them by distance to the 1-step target (distance-ranked, so a premium preference can no longer pull it back to a nearly-ATM strike). Verified for all three indices on both legs, delta ≈ 0.58, `selection_basis=ONE_STEP_ITM`, quantity lot-aligned:
+
+  | Index | Spot | CE | PE | Qty |
+  |---|---|---|---|---|
+  | NIFTY | 25,268.55 | 25,218 CE (Δ 0.581) | 25,318 PE (Δ 0.579) | 225 |
+  | BANKNIFTY | 61,481.95 | 61,381 CE (Δ 0.581) | 61,581 PE (Δ 0.579) | 240 |
+  | SENSEX | 81,948.04 | 81,848 CE (Δ 0.580) | 82,048 PE (Δ 0.580) | 240 |
+
+- [x] Regression test `test_scalp_contract_routes_every_index_to_the_one_step_itm_strike` locks the band for all three indices on both legs.
 - [x] `strategy/intra_candle_sniper.option_candle_readiness()` — counts only real prints (`high > low > 0`, `close > 0`), requires ≥ 30, and blocks `ready`. Reason becomes `HOLDING_ON… n/30 candles loaded`.
 - [x] `strategy/master_signal_arbitrator.entry_readiness_gate()` — the 4-point gate (Spot 5m ≥150 bars + VWAP/prior-high structure · ITM option ≥30 formed candles · 2-of-3 quorum ≥62% with OBI ≥1.20x and TBQ/TSQ ≥1.25x · single position). Exposed as `master_arbitrator.readiness`; `trade_approved` requires it.
 - [x] Post-entry lifecycle untouched and still frozen at execution: small SL 6–7% → +1R breakeven → T1 35% → T2 35% → 30% 5m-EMA9 runner.
@@ -78,6 +87,6 @@ data_gate: LIVE / VERIFIED_LIVE       (all three symbols)
 ### Honest limitations
 
 - This is one engineering pass, not a background daemon. Nothing continues polling after the turn ends.
-- BANKNIFTY's rendered watch contract can still land on an older scalp-resolver strike (`60900 CE`, Δ 0.4756) while NIFTY/SENSEX land in the ITM band — the scalp-contract path (`select_scalp_contract`) is a separate resolver and was not re-pointed at the ITM picker in this pass.
+- The BANKNIFTY resolver gap is fixed in code and unit-tested; confirming it on the live tape needs a runner start after the fix, which re-warms the session (~5 min).
 - `test_broker_grade_brain` has 2 failures that also fail at `HEAD` (verified on a clean worktree); they are unrelated to this change set.
 - `state/live_feed.json` is written by the local session; while that session ran, feed-dependent tests read a half-written snapshot. On the committed fixture the suite is **308 passed, 4 skipped, 2 pre-existing failures**.
