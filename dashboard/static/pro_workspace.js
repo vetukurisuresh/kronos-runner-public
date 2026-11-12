@@ -476,6 +476,7 @@
     const idx = t.indices || {};
     const bank = idx.BANKNIFTY || block.BANKNIFTY || {};
     const nifty = idx.NIFTY || block.NIFTY || {};
+    const sensex = idx.SENSEX || block.SENSEX || {};
     const liveSpot = t.spot ? (t.spot.display != null ? t.spot.display : t.spot.ltp) : null;
     const niftyLtp = nifty.ltp != null ? nifty.ltp
       : (symbol() === 'NIFTY' && liveSpot != null ? liveSpot : block.NIFTY && block.NIFTY.spot);
@@ -488,6 +489,16 @@
       const el = $('proBankDelta');
       el.textContent = Number.isFinite(ch) ? `${ch >= 0 ? '+' : ''}${ch.toFixed(2)}%` : '—';
       el.className = Number.isFinite(ch) ? (ch >= 0 ? 'up' : 'down') : '';
+    }
+    // SENSEX trades on BSE, so it has its own ticker and its own live spot.
+    const sensexLtp = sensex.ltp != null ? sensex.ltp
+      : (symbol() === 'SENSEX' && liveSpot != null ? liveSpot : block.SENSEX && block.SENSEX.spot);
+    if ($('proSensexLtp')) $('proSensexLtp').textContent = sensexLtp == null ? '—' : n(sensexLtp, 2);
+    if ($('proSensexDelta')) {
+      const sch = Number(sensex.change_pct != null ? sensex.change_pct : sensex.chg_pct);
+      const sel = $('proSensexDelta');
+      sel.textContent = Number.isFinite(sch) ? `${sch >= 0 ? '+' : ''}${sch.toFixed(2)}%` : '—';
+      sel.className = Number.isFinite(sch) ? (sch >= 0 ? 'up' : 'down') : '';
     }
     const niftyCh = Number(nifty.change_pct != null ? nifty.change_pct
       : (t.spot && t.spot.change_pct != null ? t.spot.change_pct : (block.NIFTY && block.NIFTY.change_pct)));
@@ -787,7 +798,8 @@
     btn.addEventListener('click', () => {
       const target = document.querySelector(`.tab[data-sym="${btn.dataset.proIndex}"]`);
       if (target) target.click();
-      else if (btn.dataset.proIndex === 'NIFTY' || btn.dataset.proIndex === 'BANKNIFTY') {
+      else {
+        // NIFTY 50 / BANKNIFTY / SENSEX all share the same selector contract.
         try { SYMBOL = btn.dataset.proIndex; } catch (_) { /* no-op */ }
       }
       document.querySelectorAll('[data-pro-index]').forEach((b) => b.classList.toggle('on', b === btn));

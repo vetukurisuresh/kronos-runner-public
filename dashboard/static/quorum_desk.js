@@ -129,9 +129,17 @@
       if (!rows.length) {
         body.innerHTML = `<tr><td colspan="7" class="proof-empty">No trade taken yet — the proof ledger fills automatically on the first 2-of-3 intra-candle entry.</td></tr>`;
       } else {
+        /* The human benchmark is the close of the entry's own 5m candle, not
+           the 15:00 session cutoff: a 13:20 entry settles at 13:25. */
+        const closeLabel = (row) => {
+          const stamp = Number(row.human_close_expected_at || 0);
+          if (!stamp) return '⏳ next 5m close';
+          const ist = new Date((stamp + 19800) * 1000);
+          return `⏳ ${String(ist.getUTCHours()).padStart(2, '0')}:${String(ist.getUTCMinutes()).padStart(2, '0')} 5m close`;
+        };
         body.innerHTML = rows.slice().reverse().map((row) => {
           const human = row.human_5m_close_price == null
-            ? '⏳ 15:00 close'
+            ? closeLabel(row)
             : `<strong>${price(row.human_5m_close_price)}</strong>`;
           const edge = row.option_price_edge_inr == null
             ? `<span class="qmetric">${row.seconds_ahead_of_human == null ? 'saving…' : `+${Number(row.seconds_ahead_of_human).toFixed(0)}s early`}</span>`

@@ -1248,6 +1248,7 @@ body.tl-open{overflow:hidden!important}
   <div class="pro-tickers" aria-label="Index tickers">
     <div class="pro-ticker" id="proNiftyTicker"><span>NIFTY 50</span><b id="bigSpot">—</b><em id="bigSpotDelta">—</em></div>
     <div class="pro-ticker" id="proBankTicker"><span>BANKNIFTY</span><b id="proBankLtp">—</b><em id="proBankDelta">—</em></div>
+    <div class="pro-ticker" id="proSensexTicker"><span>SENSEX</span><b id="proSensexLtp">—</b><em id="proSensexDelta">—</em></div>
   </div>
   <div class="auto-regime-badge" id="autoRegimeBadge" aria-live="polite">🔄 AUTO REGIME: WAITING FOR LIVE SPEED</div>
   <div class="pro-pnl" aria-label="Live profit summary">
@@ -1516,7 +1517,7 @@ body.tl-open{overflow:hidden!important}
     <div class="scalper-card"><b>BASE CAPITAL</b><span id="scalperBase">₹1,00,000 · 100% SAFE 🛡️</span><small id="scalperFunding">BASE CAPITAL START · max 1.2% risk</small></div>
     <div class="scalper-card"><b>VAULT LOCKED</b><span id="scalperVault">+₹0 🔒</span><small>50% of every winning scalp · untouchable</small></div>
     <div class="scalper-card"><b>HOUSE-MONEY RISK POOL</b><span id="scalperPool">+₹0</span><small>Only realized profit can fund the next SL</small></div>
-    <div class="scalper-card"><b>NEXT SCALP QTY</b><span id="scalperQty">300 Qty</span><small id="scalperTrades">0/6 · 90s diagnostic cooldown</small></div>
+    <div class="scalper-card"><b>NEXT SCALP QTY</b><span id="scalperQty">75 Qty</span><small id="scalperTrades">1 lot · 75 NIFTY / 30 BANKNIFTY / 20 SENSEX · 15s cooldown</small></div>
   </div>
 </section>
 
@@ -1602,6 +1603,7 @@ body.tl-open{overflow:hidden!important}
           <div class="chart-symbol-switch" aria-label="Spot symbol">
             <button type="button" data-pro-index="NIFTY" class="on">NIFTY 50</button>
             <button type="button" data-pro-index="BANKNIFTY">BANKNIFTY</button>
+            <button type="button" data-pro-index="SENSEX">SENSEX</button>
           </div>
           <div class="dock-title"><span id="spotMeta">—</span></div>
           <span id="aiRangePill" class="ai-range-pill" hidden>🎯 Live AI Range: —</span>
@@ -3837,16 +3839,22 @@ function renderScalper(){
   if(pool){ pool.textContent = `+₹${fmt(hm.house_money_pool,0)}`; pool.className = Number(hm.house_money_pool||0) > 0 ? 'pos' : ''; }
   const qty = document.getElementById('scalperQty');
   if(qty){
-    const nq = Number(hm.next_qty || 0), risk = Number(hm.next_risk_rs || 0);
-    qty.innerHTML = nq ? `${nq} Qty <span class="hot">${hm.accelerator_ready ? '🔥' : ''}</span>` : '0 Qty 🛡️';
-    qty.className = nq ? 'pos' : 'neg';
-    qty.title = risk ? `SL risk ₹${fmt(risk,0)} · ${hm.funding || ''}` : 'No new risk';
+    // The ₹35K sleeve always funds at least one exchange lot.  A "0 Qty"
+    // reading meant the renderer was showing an unfunded pool instead of the
+    // lot the sleeve can actually buy, so the fallback is the live lot size.
+    const sym = String(window.SYMBOL || 'NIFTY').toUpperCase();
+    const lot = sym === 'BANKNIFTY' ? 30 : sym === 'SENSEX' ? 20 : 75;
+    const nq = Number(hm.next_qty || 0) || lot, risk = Number(hm.next_risk_rs || 0);
+    qty.innerHTML = `${nq} Qty <span class="hot">${Number(hm.next_qty||0) && hm.accelerator_ready ? '🔥' : ''}</span>`;
+    qty.className = 'pos';
+    qty.title = (risk ? `SL risk ₹${fmt(risk,0)} · ${hm.funding || ''}` : '₹35K sleeve funded')
+      + ' · 1 lot = 75 NIFTY / 30 BANKNIFTY / 20 SENSEX';
   }
   const trades = document.getElementById('scalperTrades');
   if(trades){
     const n = Number(hm.trades || 0), max = Number(hm.max_scalps || 6);
     const cd = Number(hm.cooldown_sec || 0);
-    trades.textContent = `${n}/${max} scalps · ${cd > 0 ? cd+'s cooldown' : '90s diagnostic cooldown'}`;
+    trades.textContent = `${n}/${max} scalps · ${cd > 0 ? cd+'s cooldown' : '15s cooldown'}`;
   }
 }
 
