@@ -1,8 +1,19 @@
 # KRONOS Morning Auto-Wakeup & Live Audit — 12 Nov 2026
 
-**Status:** LOCAL LIVE / CLOUD RELAY BEING RESTARTED  
-**Report generated:** 12 Nov 2026, ~11:07 IST  
+**Status:** CLOUD LIVE / PUBLIC PAGES VERIFIED / LOCAL DESK ON STANDBY (one Upstox feed)  
+**Report generated:** 12 Nov 2026, ~11:07 IST; final cloud cutover added 11:30 IST  
 **Scope:** why the 12 Nov morning automation stayed silent, the three-layer auto-ignition fix, live market proof, UI defect verification, tests, and deployment.
+
+## Final cloud cutover — 11:28–11:30 IST
+
+- The old runners were cancelled; the new private relay is run **`43163158133`** on commit `2e63562`.
+- It published the live edge record to Firebase `/system` and `/kronos_state`:
+  - URL: `https://displayed-rules-limit-horizontal.trycloudflare.com`
+  - `runner_status: LIVE_STREAMING`, `run_id: 43163158133`, shift-1, 11:26:36 IST.
+- Cloud endpoint: `FEED_LIVE`, `stale:false`, `age_ms:40`, NIFTY 25,281.60, NIFTY 25300 CE, OBI 0.1351, quorum base 50 / small 58 / mini 48.
+- Public page (`https://vetukurisuresh.github.io/kronos-runner-public/`) resolved `window.EDGE_BASE_URL` to the cloud tunnel; `LIVE.edge.open=true`, `LIVE.tick` present, feed `FEED_LIVE`; model strip **50% / 58% / 48%**, no `—%`; charts 806 px; level inputs hidden; P&L identity 0 + 0 = 0 on the fresh cloud ledger.
+- Cloud `/api/readiness` = **5/6** (edge GREEN, auth GREEN, socket/chain GREEN, 512 bars GREEN; **model-feeds check RED** even though the deterministic 3-card quorum is live). This report does not claim 6/6.
+- The local desk is now on **standby**: `FEED_OFFLINE_OR_STALE`, `socket_error: WebSocketBadStatusException` after the cloud relay took the feed. This is the Upstox single-feed constraint described below, not a local process crash. The local feed's earlier 11:05 proof remains below.
 
 ---
 
@@ -164,19 +175,22 @@ The old black overlays, top condition box, level input strip, bottom card wall a
 
 ## 6. Deployment state
 
-- Local dashboard: PID `6604`; live session: PID `1620`; supervisor alive; feed live.
+- Local dashboard: PID `6604`; live session: PID `1620`; supervisor alive; feed process is RSS/HTTP-fresh but socket is blocked while the cloud relay is live.
 - Old cloud runs **cancelled**:
   - private `43157596109` — cancelled.
   - public `43157603829` — cancelled.
-- Private repo: new supervisor, quorum/OBI fallbacks, UI, workflow chain and public-schedule guard are staged for commit/push.
-- Public repo: new Python/static bundle copied; scheduled `01`/`02` triggers removed; staged for commit/push.
-- Public Pages and the single private cloud relay are restarted after the push; this report is written before that final run completes.
+- Private repo pushed: `2e63562`.
+- Public repo pushed: `d3b3252` (new code/static; scheduled `01`/`02` triggers removed).
+- Public Pages build: run `43163028129` succeeded; public URL returns HTTP 200.
+- New private cloud relay: run `43163158133`, edge live at the Firebase-recorded tunnel above.
+- The public page is verified live against that cloud edge. The local desk cannot share the same feed while the cloud relay is connected; see blockers.
 
 ### Known blockers
 
 1. **Scheduled Task not registered** — elevation denied. Login Startup Guardian is installed; the 08:25 task remains an explicit manual/admin step.
-2. **Upstox two-socket cap** — one cloud relay only. Running private and public runners together, plus the local desk, produces 403 on the third socket.
-3. **Local readiness edge** — standalone tunnel is live but not reflected in the session-derived edge check.
+2. **Upstox feed cap** — in this account/environment the cloud relay and the local desk do not both retain a live V3 socket; the local session receives 403 once the cloud relay is streaming. The public cloud relay is the active live surface. Running both cloud repos plus local is definitively impossible without another token/user.
+3. **Cloud readiness 5/6** — the model-feeds readiness check is red on the fresh cloud runner because the 500 MB `.pt` feeds are absent; the deterministic quorum cards themselves are live (50/58/48). This is a readiness-label gap, not a `—%` UI gap.
+4. **Public console 404s** — the private `edge-live` raw discovery URL is private/404; Firebase `/system` and `/kronos_state` both return 200 and the page uses the cloud edge. The 404s are non-fatal discovery attempts.
 
 ---
 
