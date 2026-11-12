@@ -1,0 +1,54 @@
+{
+  "generated_at_epoch": 1794475718.5844958,
+  "pages": {
+    "url": "https://vetukurisuresh.github.io/kronos-runner-public/",
+    "status": 200,
+    "bytes": 330490,
+    "has_SENSEX_ticker": true,
+    "has_SENSEX_index_pill": true,
+    "has_chart_library": true
+  },
+  "readiness": {
+    "edge": "https://purchasing-alarm-cyber-motors.trycloudflare.com",
+    "status": "DEGRADED",
+    "checks_green": 5,
+    "checks_total": 6,
+    "tick_age_ms": null
+  },
+  "symbols": [
+    {
+      "symbol": "NIFTY",
+      "spot": 25259.7,
+      "candles_5m": 512,
+      "gate": "LIVE",
+      "option": "NIFTY 25150 CE",
+      "delta": 0.611,
+      "model_bull": 50.0,
+      "model_bear": 50.0
+    },
+    {
+      "symbol": "BANKNIFTY",
+      "spot": 61454.15,
+      "candles_5m": 512,
+      "gate": "LIVE",
+      "option": "BANKNIFTY 60900 CE",
+      "delta": 0.5965,
+      "model_bull": 50.0,
+      "model_bear": 50.0
+    },
+    {
+      "symbol": "SENSEX",
+      "spot": 81934.38,
+      "candles_5m": 512,
+      "gate": "LIVE",
+      "option": "SENSEX 82000 PE",
+      "delta": -0.6387,
+      "model_bull": 50.0,
+      "model_bear": 50.0
+    }
+  ],
+  "failures": [
+    "readiness: 5/6 checks green"
+  ],
+  "ok": false
+}
