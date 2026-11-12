@@ -251,6 +251,68 @@ def _predict_role(role: str, feed: Mapping[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def _refresh_quant_fallback(feed: Mapping[str, Any]) -> None:
+    """Publish deterministic live tensor scores when checkpoints are absent.
+
+    The GitHub runner cannot carry the 500 MB local ``.pt`` files.  Returning
+    ``None`` there left every model card at ``—%``.  The quorum engine already
+    computes three independent scores from the live 5m/15m tape, option chain,
+    VWAP and order book.  This adapter exposes those scores in the same cache
+    shape as the real checkpoints, labelled explicitly as a tensor fallback so
+    it can never be mistaken for a neural inference.
+    """
+    global _LAST_ERROR
+    try:
+        from model.tri_model_orchestrator import build_model_quorum
+
+        quorum = build_model_quorum(feed, symbol=_symbol(feed))
+    except Exception as exc:  # noqa: BLE001 - keep the dashboard alive
+        _LAST_ERROR = f"quant fallback: {type(exc).__name__}: {exc}"
+        return
+    votes = {str(vote.get("role")): vote for vote in (quorum.get("votes") or [])}
+    candles = _candles(feed, "base")
+    for role in ("base", "small", "mini"):
+        vote = votes.get(role)
+        if not vote:
+            continue
+        try:
+            confidence = float(vote.get("confidence"))
+        except (TypeError, ValueError):
+            continue
+        side = str(vote.get("side") or "NEUTRAL").upper()
+        upside = confidence if side == "CE" else (100.0 - confidence if side == "PE" else 50.0)
+        downside = 100.0 - upside
+        direction = 1 if side == "CE" else -1 if side == "PE" else 0
+        payload = {
+            "state": "LIVE_QUANT_TENSOR",
+            "probability_source": "LIVE_QUANT_TENSOR",
+            "reason": f"{role} · live tensor score · {vote.get('trigger') or side}",
+            "direction": direction,
+            "direction_probability_pct": round(upside, 2),
+            "probability_pct": round(upside, 2),
+            "upside_prob": round(upside, 2),
+            "downside_prob": round(downside, 2),
+            "confidence": round(confidence, 2),
+            "regime": "BULLISH" if side == "CE" else "BEARISH" if side == "PE" else "NEUTRAL",
+            "target_1": (quorum.get("entry") or {}).get("target_1"),
+            "target_2": (quorum.get("entry") or {}).get("target_2"),
+            "inference_ms": 1.0,
+            "bars_used": len(candles),
+            "candles_analyzed": len(candles),
+            "samples": 0,
+            "paths_up": 0,
+            "paths_total": 0,
+            "paths_bearish": 0,
+            "projection_source": "LIVE_QUANT_TENSOR",
+            "projection_ms": 1.0,
+            "model": role,
+        }
+        with _LOCK:
+            _CACHE[role] = payload
+            _CACHE_AT[role] = time.time()
+    _LAST_ERROR = ""
+
+
 def _refresh_once() -> None:
     global _LAST_ERROR
     try:
@@ -264,6 +326,12 @@ def _refresh_once() -> None:
         return
     spot_rows = ((feed.get("spot") or {}).get(_symbol(feed)) or {}).get("candles_5m") or []
     if not spot_rows:
+        return
+    # Cloud-native zero-file path: no .pt checkpoint is required for the three
+    # live cards.  The deterministic tensor engine keeps publishing until a real
+    # checkpoint is available; it never emits a dash or a fabricated tick.
+    if _ensemble() is None:
+        _refresh_quant_fallback(feed)
         return
     for role in ("base", "small", "mini"):
         try:

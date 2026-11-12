@@ -23,6 +23,7 @@ find the runner without a laptop keeping a tunnel alive.
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import os
 import sys
@@ -37,7 +38,16 @@ from typing import Any
 import requests
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+LIVE_PID_FILE = REPO_ROOT / "state" / "live_session.pid"
 sys.path.insert(0, str(REPO_ROOT))
+
+# Windows consoles default to cp1252; the reconnect narrative is Telugu and
+# must never kill the socket thread with UnicodeEncodeError.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
 
 from execution.capital_sleeve_router import CapitalSleeveRouter  # noqa: E402
 from execution.house_money_compounder import HOUSE_MONEY_FILE, HouseMoneyCompounder  # noqa: E402
@@ -456,7 +466,7 @@ class Publisher:
         self.put("/kronos_state/tick.json", payload)
 
 
-def _replace_retry(temp, target, attempts: int = 10) -> None:
+def _replace_retry(temp, target, attempts: int = 25) -> None:
     """Atomic replace that tolerates a reader briefly holding the target.
 
     Windows refuses os.replace when another process has the destination open
@@ -987,6 +997,90 @@ def load_option_pin() -> str:
     return mode if mode in {"AUTO", "CE", "PE"} else "AUTO"
 
 
+def _pid_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        import psutil  # type: ignore[import-not-found]
+
+        return bool(psutil.pid_exists(pid) and psutil.Process(pid).is_running())
+    except Exception:  # noqa: BLE001 - psutil is optional on the runner
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
+
+def _claim_session_pid() -> bool:
+    """Single-instance guard shared with the dashboard auto-ignition loop."""
+    try:
+        previous = int(LIVE_PID_FILE.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError, TypeError):
+        previous = 0
+    if previous and previous != os.getpid() and _pid_running(previous):
+        print(f"live session already running pid={previous}", flush=True)
+        return False
+    try:
+        LIVE_PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+        LIVE_PID_FILE.write_text(str(os.getpid()), encoding="utf-8")
+    except OSError:
+        pass
+
+    def _release() -> None:
+        try:
+            if int(LIVE_PID_FILE.read_text(encoding="utf-8").strip()) == os.getpid():
+                LIVE_PID_FILE.unlink(missing_ok=True)
+        except (OSError, ValueError, TypeError):
+            pass
+
+    atexit.register(_release)
+    return True
+
+
+def _option_pressure(option_row: dict) -> tuple[float, str]:
+    """Bid/ask pressure from the option's own book or aggregate quantities."""
+    depth = option_row.get("depth") if isinstance(option_row.get("depth"), dict) else {}
+    bids = depth.get("bids") if isinstance(depth.get("bids"), list) else []
+    asks = depth.get("asks") if isinstance(depth.get("asks"), list) else []
+    bid_qty = sum(float((row or {}).get("qty") or (row or {}).get("quantity") or 0)
+                  for row in bids if isinstance(row, dict))
+    ask_qty = sum(float((row or {}).get("qty") or (row or {}).get("quantity") or 0)
+                  for row in asks if isinstance(row, dict))
+    if bid_qty <= 0 or ask_qty <= 0:
+        bid_qty = float(option_row.get("bid_qty_5") or 0.0)
+        ask_qty = float(option_row.get("ask_qty_5") or 0.0)
+    if bid_qty > 0 and ask_qty > 0:
+        return round(bid_qty / ask_qty, 4), "OPTION_BOOK"
+    tbq = float(option_row.get("tbq") or 0.0)
+    tsq = float(option_row.get("tsq") or 0.0)
+    if tbq > 0 and tsq > 0:
+        return round(tbq / tsq, 4), "TBQ_TSQ_FALLBACK"
+    return 0.0, "UNVERIFIED"
+
+
+def _sync_option_obi_condition(option_row: dict) -> None:
+    """Keep the visible OBI condition text in sync with the live option book."""
+    try:
+        obi = float(option_row.get("obi_5") or 0.0)
+    except (TypeError, ValueError):
+        return
+    if obi <= 0:
+        return
+    selection = option_row.get("selection")
+    if not isinstance(selection, dict):
+        return
+    side = str(option_row.get("side") or option_row.get("option_type") or selection.get("side") or "").upper()
+    buyers = obi > 1.0
+    for condition in selection.get("conditions") or []:
+        if not isinstance(condition, dict) or condition.get("key") != "obi":
+            continue
+        condition["value"] = (
+            f"{side} OBI {obi:.2f}x ({'Buyers > Sellers' if buyers else 'Sellers > Buyers'})"
+        )
+        condition["pass"] = buyers if side == "CE" else (obi < 1.0)
+
+
 def merge_verified_option_depth(payload: dict) -> dict:
     """Make the verified book authoritative over a pre-chain zero option row.
 
@@ -1022,6 +1116,41 @@ def merge_verified_option_depth(payload: dict) -> dict:
             option_row["strike_price"] = option_row.get("strike")
         if not option_row.get("side"):
             option_row["side"] = option_row.get("option_type")
+        # If the option's five-level book is still pending, use its own aggregate
+        # bid/ask quantities or TBQ/TSQ.  Never borrow the futures book.
+        if float(option_row.get("obi_5") or 0.0) <= 0:
+            pressure, source = _option_pressure(option_row)
+            if pressure > 0:
+                option_row["obi_5"] = pressure
+                option_row["obi_source"] = source
+        _sync_option_obi_condition(option_row)
+    # The selected option may have a real book before full_spectrum arrives;
+    # update its condition text even when the loop above did not run.
+    for option_row in (payload.get("option") or {}).values():
+        if isinstance(option_row, dict):
+            _sync_option_obi_condition(option_row)
+    return payload
+
+
+def ensure_feed_quorum(payload: dict) -> dict:
+    """Always write three live model votes, even when the playbook block skips.
+
+    The GitHub runner has no local .pt checkpoints.  ``build_model_quorum`` has
+    a deterministic tensor fallback, but some feed cycles can bypass the
+    playbook section that previously set ``payload['quorum']``.  This final
+    boundary keeps the browser/cloud from ever seeing an empty quorum or --%.
+    """
+    quorum = payload.setdefault("quorum", {})
+    if not isinstance(quorum, dict):
+        quorum = payload["quorum"] = {}
+    for name in ("NIFTY", "BANKNIFTY"):
+        current = quorum.get(name)
+        if isinstance(current, dict) and current.get("votes"):
+            continue
+        try:
+            quorum[name] = build_model_quorum(payload, symbol=name)
+        except Exception:  # noqa: BLE001 - the tape must keep streaming
+            continue
     return payload
 
 
@@ -1161,6 +1290,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="host the SSE server + a Cloudflare quick tunnel (GitHub runner)")
     parser.add_argument("--edge-port", type=int, default=8080)
     args = parser.parse_args(argv)
+
+    if not _claim_session_pid():
+        return 0
 
     token = load_access_token()
     if not token:
@@ -2249,6 +2381,15 @@ def main(argv: list[str] | None = None) -> int:
             # reversal checklist, but it must never veto a live 87.5% trend
             # backed by a one-sided option book.  The playbook gate below uses
             # the actual feed freshness, cutoff and risk guard only.
+            # This 5-minute OI velocity is consumed by the playbooks below; it
+            # must be computed before that block, not after it.  Keeping the
+            # append here also guarantees exactly one sample per cycle.
+            oi = float(market.get("oi") or 0.0)
+            hist_oi = oi_hist[name]
+            hist_oi.append((cycle, oi))
+            five_ago = next((v for t, v in hist_oi if cycle - t <= 300), oi)
+            oi_change = round((oi / five_ago - 1) * 100, 2) if five_ago else 0.0
+
             playbook_option = {
                 "strike_price": strike, "option_type": side, "ltp": ltp,
                 "atp_vwap": atp, "obi_5": option_obi, "tbq_tsq": option_flow,
@@ -2985,12 +3126,6 @@ def main(argv: list[str] | None = None) -> int:
                 if not args.no_firebase:
                     publisher.put("/kronos_state/trade_ledger.json", ledger.snapshot())
             trade["option_symbol"] = symbol
-
-            oi = float(market.get("oi") or 0.0)
-            hist_oi = oi_hist[name]
-            hist_oi.append((cycle, oi))
-            five_ago = next((v for t, v in hist_oi if cycle - t <= 300), oi)
-            oi_change = round((oi / five_ago - 1) * 100, 2) if five_ago else 0.0
 
             # ---- 100% full-spectrum snapshot (futures flow, 5-level depth,
             # 11-strike PCR, Greeks/IV velocity, VIX and heavyweight breadth) ----
@@ -3908,6 +4043,9 @@ def main(argv: list[str] | None = None) -> int:
         last_option.update(payload["option"])
         last_trade.update(payload["trade"])
         last_scanner.update(payload["scanner"])
+        # The feed is the shared handoff to the local dashboard, Pages and the
+        # cloud runner.  Guarantee the quorum block exists on every write.
+        ensure_feed_quorum(payload)
         # Stamp the heartbeat at the actual atomic write, not at the start of a
         # heavy opening-burst cycle.  The socket frame age remains independent.
         payload["updated_epoch"] = time.time()
@@ -3918,7 +4056,7 @@ def main(argv: list[str] | None = None) -> int:
         fast_shared["spot"] = dict(payload.get("spot") or {})
         fast_shared["depth"] = dict(payload.get("depth") or {})
         try:
-            temp = HEARTBEAT.with_suffix(".tmp")
+            temp = HEARTBEAT.with_name(f"{HEARTBEAT.name}.{os.getpid()}.tmp")
             temp.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
             _replace_retry(temp, HEARTBEAT)
         except (MemoryError, OSError) as exc:

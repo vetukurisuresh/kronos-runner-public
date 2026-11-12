@@ -52,6 +52,20 @@ HEARTBEAT_SECONDS = 45.0
 RESTART_BACKOFF = 1.0
 PUSH_TOKEN_ENV = "KRONOS_EDGE_PUSH_TOKEN"
 
+
+def _read_env(key: str) -> str:
+    """Read a local .env value so a separately started dashboard shares it."""
+    value = (os.environ.get(key) or "").strip()
+    if value:
+        return value
+    env_file = REPO_ROOT / ".env"
+    if env_file.is_file():
+        for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith(f"{key}="):
+                return line.split("=", 1)[1].strip().strip('"').strip("'")
+    return ""
+
+
 TUNNEL_RE = re.compile(r"https://[a-z0-9][a-z0-9-]*\.trycloudflare\.com", re.IGNORECASE)
 DOWNLOAD = {
     "linux": "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64",
@@ -124,9 +138,10 @@ class CloudEdge:
     def start(self) -> dict:
         """Start the local server, then best-effort bring up the tunnel."""
         # This must exist before the server child is spawned, because the child
-        # inherits the environment at Popen time.
-        if not os.environ.get(PUSH_TOKEN_ENV):
-            os.environ[PUSH_TOKEN_ENV] = secrets.token_urlsafe(32)
+        # inherits the environment at Popen time.  Prefer the shared .env token
+        # so a dashboard started separately accepts the same tick POSTs.
+        token = _read_env(PUSH_TOKEN_ENV)
+        os.environ[PUSH_TOKEN_ENV] = token or secrets.token_urlsafe(32)
         ok = self._start_server()
         if not ok:
             return {"ok": False, "reason": self.error}
@@ -168,7 +183,7 @@ class CloudEdge:
 
     def notify_tick(self, timeout: float = 0.25) -> bool:
         """Wake the SSE hub the instant a fresh live_feed frame is on disk."""
-        token = os.environ.get(PUSH_TOKEN_ENV, "")
+        token = _read_env(PUSH_TOKEN_ENV)
         if not token:
             return False
         try:
@@ -183,7 +198,7 @@ class CloudEdge:
 
     def notify_fast(self, timeout: float = 0.10) -> bool:
         """Push an event-driven fast tick without rebuilding the heavy chain."""
-        token = os.environ.get(PUSH_TOKEN_ENV, "")
+        token = _read_env(PUSH_TOKEN_ENV)
         if not token:
             return False
         try:

@@ -59,6 +59,24 @@
     setModelCard('qcard25', byRole.small, 'Kronos-small (25M)');
     setModelCard('qcard4', byRole.mini, 'Kronos-mini (4M)');
 
+    // Compact 36px AI strip: real percentages, never a dash placeholder.
+    const chip = (id, role) => {
+      const el = $(id);
+      if (!el) return;
+      const vote = byRole[role] || {};
+      const confidence = num(vote.confidence, 0);
+      el.textContent = confidence == null ? '—' : `${confidence}%`;
+      el.className = vote.confirmed ? 'pos' : 'warn';
+      el.title = `${vote.name || role} · ${vote.side || 'NEUTRAL'} · ${vote.trigger || 'waiting'}`;
+    };
+    chip('proModel102', 'base');
+    chip('proModel25', 'small');
+    chip('proModel4', 'mini');
+    if ($('proModelQuorum')) {
+      $('proModelQuorum').textContent = `${q.quorum_count || '0/3'} ${q.approved ? 'CONFIRMED' : 'SCANNING'}`;
+      $('proModelQuorum').className = q.approved ? 'pos' : 'warn';
+    }
+
     const regimeMap = t.regime || {};
     const regime = regimeMap[symbol] || t.auto_regime || {};
     const badge = $('autoRegimeBadge');
@@ -86,14 +104,20 @@
       `<div class="qprices"><span>Live P&amp;L <b class="${pnlClass}">${pnl >= 0 ? '+' : ''}${money(pnl)}</b></span><span>Trades won <b>${esc((t.hud || {}).trades_won || (t.hud || {}).wins || 0)}</b></span></div>` +
       `<div class="qreason">${esc(regimeNote)}. ${esc(q.reason_te || 'High-accuracy 2-of-3 scanner is active.')}</div>`);
 
-    const entry = tr.entry_price != null ? tr.entry_price : (q.entry || {}).entry_price;
-    const sl = tr.current_trailing_sl != null ? tr.current_trailing_sl : (q.entry || {}).stop_loss;
-    const t1 = tr.target_1 != null ? tr.target_1 : (q.entry || {}).target_1;
-    const t2 = tr.target_2_p90 != null ? tr.target_2_p90 : (tr.target_2 != null ? tr.target_2 : (q.entry || {}).target_2);
+    // Levels are execution facts, not a live forecast.  While flat, do not
+    // render or compute any entry/SL/T1/T2 from q.entry: those fields move with
+    // the plan and were the source of the bracket chasing LTP on every tick.
+    const entry = tradeOpen ? (tr.entry_price != null ? tr.entry_price : null) : null;
+    const sl = tradeOpen ? (tr.current_trailing_sl != null ? tr.current_trailing_sl : null) : null;
+    const t1 = tradeOpen ? (tr.target_1 != null ? tr.target_1 : null) : null;
+    const t2 = tradeOpen ? (tr.target_2_p90 != null ? tr.target_2_p90 : (tr.target_2 != null ? tr.target_2 : null)) : null;
     const early = (t.intra_candle || {})[symbol] || {};
+    const levels = tradeOpen
+      ? `<div class="qprices"><span>ENTRY <b>${price(entry)}</b></span><span>SL <b>${price(sl)}</b></span><span>T1 <b>${price(t1)}</b></span><span>T2 <b>${price(t2)}</b></span></div>`
+      : `<div class="qwait">⏳ Waiting for 2-of-3 Model Confirmation — Levels Lock at Execution</div>`;
     setDeskCard('qcardDirectional',
       `<div class="qhead"><span>🚀 DIRECTIONAL DESK (₹65K)</span><span class="qstatus ${tradeOpen || q.approved ? 'confirmed' : 'watching'}">${tradeOpen ? '🟢 EARLY ENTRY LIVE' : q.approved ? '🟢 READY' : '🟡 SCANNING'}</span></div>` +
-      `<div class="qprices"><span>ENTRY <b>${price(entry)}</b></span><span>SL <b>${price(sl)}</b></span><span>T1 <b>${price(t1)}</b></span><span>T2 <b>${price(t2)}</b></span></div>` +
+      levels +
       `<div class="qmetric">${esc(q.side || '—')} · ${esc(early.ready ? `Inside 5m candle ${early.elapsed_sec || 0}s` : 'Waiting for intra-5m ignition')}</div>` +
       `<div class="qreason">${esc(early.reason_te || q.reason_te || 'Waiting for a 2-of-3 early entry.')}</div>`);
 

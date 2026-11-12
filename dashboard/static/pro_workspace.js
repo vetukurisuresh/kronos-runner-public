@@ -155,10 +155,18 @@
 
   function updateLevels(t) {
     const lv = (t && t.chart_levels) || {};
+    const tradeOpen = String((((t || {}).active_trade || {}).status) || '').toUpperCase() === 'OPEN';
     const put = (id, v, key) => {
       const el = $(id); if (!el) return;
       const ov = (window.__kronosLevelOverrides || {})[key];
       if (el.tagName === 'INPUT') {
+        // While flat, an execution bracket must not be pre-computed or carried
+        // forward from an old plan.  The backend already sends nulls; clearing
+        // here also removes any stale manual override from the previous trade.
+        if (!tradeOpen) {
+          if (document.activeElement !== el) el.value = '';
+          return;
+        }
         if (document.activeElement !== el && (ov == null || ov === '')) {
           el.value = v == null || !Number.isFinite(Number(v)) ? '' : String(Number(v));
         }
@@ -170,6 +178,11 @@
     put('optLevelSl', lv.sl, 'sl');
     put('optLevelT1', lv.t1, 't1');
     put('optLevelT2', lv.t2, 't2');
+    if ($('levelStageTitle')) $('levelStageTitle').textContent = tradeOpen ? '🔒 Levels locked at execution' : '⏳ Waiting for model decision';
+    if ($('levelStageSub')) $('levelStageSub').textContent = tradeOpen ? 'ENTRY / SL / T1 / T2 frozen' : 'No bracket before execution';
+    if ($('optStripStatus')) $('optStripStatus').textContent = tradeOpen
+      ? '🔒 ENTRY / SL / T1 / T2 LOCKED · LIVE POSITION'
+      : '⏳ WAITING FOR 2-OF-3 MODEL CONFIRMATION — LEVELS LOCK AT EXECUTION';
   }
 
   const META = {
@@ -487,12 +500,15 @@
     updateLevels(t);
     updateModalStats(t);
     const eod = t.eod_pnl || {};
-    const scalpTotal = eod.scalp_35k_total != null ? eod.scalp_35k_total : ((t.scalp_sleeve || {}).realized_pnl_rs || 0);
-    const sniperTotal = eod.sniper_65k_total != null ? eod.sniper_65k_total : ((t.sniper_sleeve || {}).realized_pnl_rs || 0);
-    const grandTotal = eod.grand_total_net_pnl != null ? eod.grand_total_net_pnl : ((t.hud || {}).total_net_pnl || 0);
+    const scalpTotal = eod.scalp_35k_total != null ? Number(eod.scalp_35k_total) : Number((t.scalp_sleeve || {}).realized_pnl_rs || 0);
+    const sniperTotal = eod.sniper_65k_total != null ? Number(eod.sniper_65k_total) : Number((t.sniper_sleeve || {}).realized_pnl_rs || 0);
+    // One accounting identity, one source: Grand Total = Scalp + Sniper.
+    // Never read the stale DOM text here; it kept yesterday's -405 / +439 mix
+    // alive while the EOD reconciler had already published today's numbers.
+    const grandTotal = Math.round((scalpTotal + sniperTotal) * 100) / 100;
     const vaultLocked = eod.vault_locked_inr != null ? eod.vault_locked_inr : ((t.hud || {}).profit_vault || 0);
-    if ($('proScalpPnl')) $('proScalpPnl').textContent = getText('scalpProfitMain', money(scalpTotal));
-    if ($('proSniperPnl')) $('proSniperPnl').textContent = getText('sniperProfitMain', money(sniperTotal));
+    if ($('proScalpPnl')) $('proScalpPnl').textContent = money(scalpTotal);
+    if ($('proSniperPnl')) $('proSniperPnl').textContent = money(sniperTotal);
     if ($('proTotalPnl')) $('proTotalPnl').textContent = money(grandTotal);
     if ($('proVaultState')) $('proVaultState').textContent = 'VAULT ' + money(vaultLocked);
     if ($('proSniperState')) $('proSniperState').textContent = getText('sniperProfitState', 'T1/T2 · WAITING');

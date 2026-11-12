@@ -34,6 +34,7 @@ from datetime import datetime, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+import urllib.request
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -230,9 +231,14 @@ class TickHub:
 
     def wait(self, symbol: str, seen_version: int, timeout: float = 1.0) -> tuple[int, bytes, float] | None:
         with self._condition:
-            if seen_version == self._version:
+            frame = self._frames.get(symbol)
+            # Compare the symbol's own frame version.  A global version makes
+            # one symbol's update look like a new frame for the other symbol,
+            # which turns the SSE handler into a tight full-frame loop.
+            if frame is None or frame[0] == seen_version:
                 self._condition.wait(timeout)
-            return self._frames.get(symbol)
+                frame = self._frames.get(symbol)
+            return frame
 
     def publish_fast(self) -> None:
         """Queue a lightweight named ``tick_delta`` for each open SSE stream."""
@@ -362,6 +368,15 @@ class Handler(SimpleHTTPRequestHandler):
     # -- GET ---------------------------------------------------------------
     def do_GET(self) -> None:  # noqa: N802 - stdlib naming
         parsed = urlparse(self.path)
+        # Any dashboard request is a wake signal.  The supervisor is idempotent
+        # and also starts in main(); this guarantees a page opening after a
+        # reboot can ignite the feed even if the scheduled task missed 08:25.
+        try:
+            from market.auto_ignition_supervisor import note_dashboard_request
+
+            note_dashboard_request()
+        except Exception:  # noqa: BLE001 - never block the terminal
+            pass
         # The page probes this artifact as a state source.  An absent artifact
         # is an empty state, not a missing file, so the browser console stays
         # clean instead of logging a 404 on every load.
@@ -425,6 +440,14 @@ class Handler(SimpleHTTPRequestHandler):
             # Public liveness probe for the Cloudflare tunnel URL.
             self._json({"ok": True, "server": "kronos-edge", "ts": round(time.time(), 3)})
             return
+        if parsed.path == "/api/auto-ignition":
+            try:
+                from market.auto_ignition_supervisor import status as ignition_status
+
+                self._json({"ok": True, **ignition_status()})
+            except Exception as exc:  # noqa: BLE001
+                self._json({"ok": False, "reason": str(exc)}, status=500)
+            return
         if parsed.path == "/api/live-ticks":
             from market.live_ticks import snapshot
 
@@ -460,6 +483,12 @@ class Handler(SimpleHTTPRequestHandler):
                 token_present=bool(load_access_token()),
                 token_meta=load_token_meta(),
             )
+            try:
+                from market.auto_ignition_supervisor import status as ignition_status
+
+                payload["auto_ignition"] = ignition_status()
+            except Exception:  # noqa: BLE001
+                pass
             self._json({"ok": True, **payload})
             return
         if parsed.path == "/api/tick-stream":
@@ -498,7 +527,7 @@ class Handler(SimpleHTTPRequestHandler):
                         seen_fast, fast_body, _ = fast
                         self._sse_write(fast_body, event="tick_delta")
                     next_frame = TICK_HUB.wait(symbol, seen_version, timeout=0.05)
-                    if next_frame is not None:
+                    if next_frame is not None and next_frame[0] != seen_version:
                         seen_version, body, _ = next_frame
                         self._sse_write(body)
             except (BrokenPipeError, ConnectionResetError, OSError):
@@ -687,7 +716,7 @@ class Handler(SimpleHTTPRequestHandler):
                     payload.update(json.loads(LIVE_FILE.read_text(encoding="utf-8")))
                 except ValueError:
                     payload["reason"] = "live telemetry is corrupt"
-            payload.update(self._derived_ribbon())
+            payload.update(self._live_ribbon() or self._derived_ribbon())
             self._json(payload)
             return
         if parsed.path == "/api/command-center/live":
@@ -830,9 +859,78 @@ class Handler(SimpleHTTPRequestHandler):
         return {"ok": True, **five_checks(inputs)}
 
     @staticmethod
+    def _live_ribbon() -> dict:
+        """Ribbon from the current live feed; empty when the feed is stale."""
+        try:
+            feed = json.loads(
+                (REPO_ROOT / "state" / "live_feed.json").read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError):
+            return {}
+        try:
+            age = time.time() - float(feed.get("updated_epoch") or 0.0)
+        except (TypeError, ValueError):
+            return {}
+        if age > 12.0 or not feed.get("socket_connected"):
+            return {}
+        rows = []
+        for name in STREAM_SYMBOLS:
+            spot = (feed.get("spot") or {}).get(name) or {}
+            option = (feed.get("option") or {}).get(name) or {}
+            brain = (feed.get("model_brain") or {}).get(name) or {}
+            if not spot and not option:
+                continue
+            rows.append(
+                {
+                    "key": name,
+                    "label": "NIFTY 50" if name == "NIFTY" else "BANK NIFTY",
+                    "kind": "index",
+                    "ltp": spot.get("ltp"),
+                    "atp": spot.get("vwap"),
+                    "oi_change_pct": option.get("oi_change_5m_pct") or 0.0,
+                    "delta": option.get("delta") or 0.0,
+                    "bid": option.get("bid") or 0.0,
+                    "ask": option.get("ask") or 0.0,
+                    "paths_up": brain.get("paths_up"),
+                    "samples": brain.get("samples"),
+                    "regime": brain.get("regime"),
+                }
+            )
+        if not rows:
+            return {}
+        hud = feed.get("hud") or {}
+        money = {
+            "capital": (hud.get("tradable_capital") or hud.get("capital")
+                        or hud.get("starting_capital") or 0.0),
+            "vault": hud.get("profit_vault") or hud.get("vault_locked_inr") or 0.0,
+            "qty": hud.get("scalper_next_qty") or 300,
+            "recovery_active": bool(hud.get("daily_lock")),
+        }
+        plan = (feed.get("model_brain") or {}).get("NIFTY") or {}
+        traffic_text = str(plan.get("traffic") or "").upper()
+        if "RED" in traffic_text or str(plan.get("action") or "").upper() == "NO_TRADE":
+            light = "RED"
+        elif "YELLOW" in traffic_text:
+            light = "YELLOW"
+        else:
+            light = "GREEN"
+        auto_pick = feed.get("auto_pick") or {}
+        traffic = {
+            "light": light,
+            "action": plan.get("action"),
+            "confidence": auto_pick.get("probability") or 0.0,
+        }
+        return {"telemetry": rows, "money": money, "traffic": traffic}
+
+    @staticmethod
     def _derived_ribbon() -> dict:
-        """Fallback ribbon built from the newest cloud artifact."""
+        """Fallback ribbon built from a recently refreshed cloud artifact."""
         if not STATE_FILE.is_file():
+            return {"traffic": None}
+        try:
+            if time.time() - STATE_FILE.stat().st_mtime > 300:
+                return {"traffic": None}
+        except OSError:
             return {"traffic": None}
         try:
             state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
@@ -871,7 +969,7 @@ class Handler(SimpleHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802 - stdlib naming
         parsed = urlparse(self.path)
         if parsed.path == "/api/internal/tick":
-            expected = os.environ.get(PUSH_TOKEN_ENV, "")
+            expected = read_env(PUSH_TOKEN_ENV)
             supplied = self.headers.get("X-Kronos-Edge-Token", "")
             if not expected or not hmac.compare_digest(expected, supplied):
                 self._json({"ok": False, "reason": "edge push token required"}, status=403)
@@ -883,7 +981,7 @@ class Handler(SimpleHTTPRequestHandler):
                         "symbols": list(STREAM_SYMBOLS)})
             return
         if parsed.path == "/api/internal/fast-tick":
-            expected = os.environ.get(PUSH_TOKEN_ENV, "")
+            expected = read_env(PUSH_TOKEN_ENV)
             supplied = self.headers.get("X-Kronos-Edge-Token", "")
             if not expected or not hmac.compare_digest(expected, supplied):
                 self._json({"ok": False, "reason": "edge push token required"}, status=403)
@@ -1122,20 +1220,49 @@ class Handler(SimpleHTTPRequestHandler):
         self._json({"ok": False, "reason": "unknown endpoint"}, status=404)
 
 
+class KronosServer(ThreadingHTTPServer):
+    """HTTP server that does not log routine client disconnects."""
+
+    def handle_error(self, request, client_address):
+        if isinstance(sys.exc_info()[1], (ConnectionError, BrokenPipeError, TimeoutError)):
+            return
+        super().handle_error(request, client_address)
+
+
+def _already_serving(host: str, port: int) -> bool:
+    """A scheduled task must be safe to fire when the desk is already awake."""
+    try:
+        with urllib.request.urlopen(f"http://{host}:{port}/api/ping", timeout=2) as response:
+            payload = json.loads(response.read(256).decode("utf-8", "replace"))
+        return bool(payload.get("ok"))
+    except Exception:  # noqa: BLE001 - a closed port is the normal startup path
+        return False
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="KRONOS broker terminal")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--host", default="127.0.0.1")
     args = parser.parse_args(argv)
 
+    if _already_serving(args.host, args.port):
+        print(f"KRONOS terminal already serving on {args.host}:{args.port}; leaving it in place")
+        return 0
+
     TICK_HUB.start_watcher()
+    try:
+        from market.auto_ignition_supervisor import start_auto_ignition
+
+        start_auto_ignition()
+    except Exception as exc:  # noqa: BLE001 - the terminal still serves
+        print(f"  auto-ignition supervisor unavailable: {type(exc).__name__}: {exc}")
     try:
         from model.live_predictor import start as start_live_predictor
 
         start_live_predictor()
     except Exception as exc:  # noqa: BLE001 - the terminal still serves without weights
         print(f"  model predictor unavailable: {type(exc).__name__}: {exc}")
-    server = ThreadingHTTPServer((args.host, args.port), Handler)
+    server = KronosServer((args.host, args.port), Handler)
     print(f"KRONOS terminal  ->  http://localhost:{args.port}")
     print(f"serving           ->  {STATIC}")
     print(f"state file        ->  {STATE_FILE} ({'present' if STATE_FILE.is_file() else 'missing'})")

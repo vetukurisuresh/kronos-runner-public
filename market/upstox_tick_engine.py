@@ -123,7 +123,11 @@ def reconnect_forever(
             failures += 1
             if on_drop is not None:
                 on_drop(exc)
-            log(TELUGU_RECONNECT)
+            try:
+                log(TELUGU_RECONNECT)
+            except UnicodeEncodeError:
+                # A cp1252 console must not take down the reconnect thread.
+                print("feed disconnected - reconnecting...", flush=True)
             wait = min(delay * (2 ** min(failures - 1, 4)), max_delay)
             stop.wait(wait)
 

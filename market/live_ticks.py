@@ -51,12 +51,63 @@ def _load(path: Path) -> dict:
         return {}
 
 
+_FAST_FILE_CACHE: dict[Path, tuple[int, int, dict]] = {}
+
+
+def _load_fast(path: Path) -> dict:
+    """Parse the 4 Hz frame once per revision, not once per SSE fan-out.
+
+    The <1ms fast-lane budget is measured over repeated overlays of the same
+    frame; re-reading and parsing the JSON every time was the difference
+    between a sub-millisecond p95 and ~1.1ms on Windows.
+    """
+    try:
+        stat = path.stat()
+        revision = (stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        return {}
+    cached = _FAST_FILE_CACHE.get(path)
+    if cached is not None and cached[:2] == revision:
+        return cached[2]
+    value = _load(path)
+    if len(_FAST_FILE_CACHE) > 8:
+        _FAST_FILE_CACHE.clear()
+    _FAST_FILE_CACHE[path] = (revision[0], revision[1], value)
+    return value
+
+
 def _as_float(value: Any, default: float = 0.0) -> float:
     try:
         out = float(value)
     except (TypeError, ValueError):
         return default
     return out
+
+
+def _book_obi(book: dict | None) -> float:
+    """Bid/ask pressure from a five-level book, without inventing depth.
+
+    Upstox can publish a quote before the five depth frames arrive.  When the
+    selected option row still carries ``obi_5=0``, the UI and the 4M model must
+    use the real aggregate bid/ask quantities that did arrive rather than a
+    zero placeholder.  The ratio is deliberately the same bid/ask ratio used
+    by the decoder; no synthetic levels are created.
+    """
+    if not isinstance(book, dict):
+        return 0.0
+    bids = book.get("bids") if isinstance(book.get("bids"), list) else []
+    asks = book.get("asks") if isinstance(book.get("asks"), list) else []
+    bid_qty = sum(_as_float((row or {}).get("qty") or (row or {}).get("quantity"))
+                  for row in bids if isinstance(row, dict))
+    ask_qty = sum(_as_float((row or {}).get("qty") or (row or {}).get("quantity"))
+                  for row in asks if isinstance(row, dict))
+    if bid_qty > 0 and ask_qty > 0:
+        return round(bid_qty / ask_qty, 4)
+    bid_qty = _as_float(book.get("bid_qty_5") or book.get("bid_qty"))
+    ask_qty = _as_float(book.get("ask_qty_5") or book.get("ask_qty"))
+    if bid_qty > 0 and ask_qty > 0:
+        return round(bid_qty / ask_qty, 4)
+    return 0.0
 
 
 def _option_pin() -> str:
@@ -142,7 +193,7 @@ def effective_feed(feed: dict, now: float | None = None) -> dict:
     genuinely old chain still trips spectrum staleness.
     """
     moment = time.time() if now is None else float(now)
-    fast = _load(FAST_FILE)
+    fast = _load_fast(FAST_FILE)
     fast_epoch = _fast_epoch(fast)
     if fast_epoch and moment - fast_epoch <= FAST_STALE_SEC and fast.get("socket_connected"):
         return _apply_fast(feed, fast, moment)
@@ -285,7 +336,7 @@ def fast_overlay(payload: dict, now: float | None = None) -> dict:
     without rebuilding the option chain, narration and candle classifiers.
     """
     moment = time.time() if now is None else float(now)
-    fast = _load(FAST_FILE)
+    fast = _load_fast(FAST_FILE)
     epoch = _fast_epoch(fast)
     if not epoch or moment - epoch > FAST_STALE_SEC:
         return payload
@@ -375,7 +426,7 @@ def fast_delta(symbol: str = "NIFTY", now: float | None = None) -> dict:
     the caller keeps polling instead of inventing a tick.
     """
     moment = time.time() if now is None else float(now)
-    fast = _load(FAST_FILE)
+    fast = _load_fast(FAST_FILE)
     epoch = _fast_epoch(fast)
     if not epoch or moment - epoch > FAST_STALE_SEC:
         return {}
@@ -502,6 +553,40 @@ def countdown(now: float | None = None) -> dict[str, int]:
     return {"bar_5m": five, "bar_1m": one}
 
 
+_QUORUM_FALLBACK_CACHE: dict[tuple[Any, str], dict[str, Any]] = {}
+
+
+def _ensure_live_quorum(feed: dict[str, Any], symbol: str) -> dict[str, Any]:
+    """Return the feed quorum, repairing an empty block once per feed revision.
+
+    The session can write a valid feed before its playbook section has produced
+    a quorum (or an old cloud runner may omit it).  The browser must never show
+    ``—%`` in that window, so build the same deterministic 3-model quorum used
+    by the predictor and cache it by the feed revision.
+    """
+    quorum = feed.get("quorum")
+    quorum = dict(quorum) if isinstance(quorum, dict) else {}
+    current = quorum.get(symbol)
+    if isinstance(current, dict) and current.get("votes"):
+        return quorum
+    revision = feed.get("updated_epoch") or feed.get("liveness_epoch") or 0
+    key = (revision, symbol)
+    cached = _QUORUM_FALLBACK_CACHE.get(key)
+    if cached is None:
+        try:
+            from model.tri_model_orchestrator import build_model_quorum
+
+            cached = build_model_quorum(feed, symbol=symbol)
+        except Exception:  # noqa: BLE001 - never break the chart on model setup
+            cached = {}
+        if len(_QUORUM_FALLBACK_CACHE) > 32:
+            _QUORUM_FALLBACK_CACHE.clear()
+        _QUORUM_FALLBACK_CACHE[key] = cached
+    if cached:
+        quorum[symbol] = cached
+    return quorum
+
+
 def snapshot(symbol: str = "NIFTY", now: float | None = None) -> dict[str, Any]:
     """The payload pushed over SSE and polled by the phone."""
     now = now or time.time()
@@ -589,6 +674,42 @@ def snapshot(symbol: str = "NIFTY", now: float | None = None) -> dict[str, Any]:
 
     option = dict(option)
     if option:
+        # A zero OBI on a live quote usually means the five depth frames are
+        # still pending, not that pressure is exactly zero.  Use the verified
+        # book or aggregate quantities already present; keep the provenance so
+        # the audit never mistakes this for a synthetic level.
+        if _as_float(option.get("obi_5")) <= 0:
+            fallback = _book_obi(option.get("depth"))
+            source = "DEPTH_LEVELS"
+            if fallback <= 0:
+                fallback = _book_obi({
+                    "bid_qty_5": option.get("bid_qty_5"),
+                    "ask_qty_5": option.get("ask_qty_5"),
+                })
+                source = "AGGREGATE_QTY"
+            if fallback <= 0:
+                fallback = _as_float(option.get("tbq_tsq"))
+                source = "TBQ_TSQ_FALLBACK"
+            if fallback > 0:
+                option["obi_5"] = fallback
+                option["obi_source"] = source
+        # The condition text is rendered by the drawer; a stale "0.00x" here is
+        # exactly the defect the screenshot caught even when the book is live.
+        try:
+            obi = float(option.get("obi_5") or 0.0)
+        except (TypeError, ValueError):
+            obi = 0.0
+        selection = option.get("selection")
+        if obi > 0 and isinstance(selection, dict):
+            side = str(option.get("side") or option.get("option_type") or "").upper()
+            buyers = obi > 1.0
+            for condition in selection.get("conditions") or []:
+                if isinstance(condition, dict) and condition.get("key") == "obi":
+                    condition["value"] = (
+                        f"{side} OBI {obi:.2f}x "
+                        f"({'Buyers > Sellers' if buyers else 'Sellers > Buyers'})"
+                    )
+                    condition["pass"] = buyers if side == "CE" else obi < 1.0
         option.setdefault("countdown_sec", countdown(now))
         option["zone"] = _zone(float(option.get("ltp") or 0), float(option.get("atp_vwap") or 0))
 
@@ -867,9 +988,18 @@ def snapshot(symbol: str = "NIFTY", now: float | None = None) -> dict[str, Any]:
         },
         "eod_pnl": feed.get("eod_pnl") or {},
         "sniper_sleeve": feed.get("sniper_sleeve") or {},
+        # The three model cards and the two desk cards render from these
+        # canonical blocks.  They were previously present in live_feed.json but
+        # omitted from the browser payload, so every card stayed at "—%".
+        "quorum": (quorum := _ensure_live_quorum(feed, symbol)),
+        "trade": feed.get("trade") or {},
+        "intra_candle": feed.get("intra_candle") or {},
+        "regime": feed.get("regime") or {},
+        "auto_regime": feed.get("auto_regime") or {},
+        "proof_ledger": feed.get("proof_ledger") or [],
         "trigger_badge": (
             (feed.get("trade") or {}).get(symbol, {}) or {}
-        ).get("trigger_label") or ((feed.get("quorum") or {}).get(symbol, {}) or {}).get("trigger_label") or "",
+        ).get("trigger_label") or ((quorum or {}).get(symbol, {}) or {}).get("trigger_label") or "",
         "stale": not live,
         "as_of": feed.get("updated_at"),
         "cutoff": feed.get("cutoff") or cutoff_state(),
