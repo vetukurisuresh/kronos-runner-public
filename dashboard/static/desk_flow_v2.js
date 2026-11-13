@@ -37,8 +37,8 @@
       '#kfBtn{position:fixed;right:18px;bottom:18px;z-index:9998;border:1px solid #22d3ee55;background:#0b1220;color:#e2e8f0;',
       'padding:10px 14px;border-radius:999px;font:600 12px ui-monospace,Menlo,monospace;cursor:pointer;box-shadow:0 8px 24px #0008}',
       '#kfBtn:hover{border-color:#22d3ee;color:#67e8f9}',
-      '#kfWrap{position:fixed;inset:0;z-index:9999;background:#05080fee;backdrop-filter:blur(6px);display:none;padding:18px;overflow:auto}',
-      '#kfWrap.on{display:block}',
+      '#kfWrap{position:fixed;inset:0;z-index:9999;background:#05080fee;backdrop-filter:blur(6px);display:none;pointer-events:none;padding:18px;overflow:auto}',
+      '#kfWrap.on{display:block;pointer-events:auto}',
       '.kf-shell{max-width:1280px;margin:0 auto;background:#0a0f19;border:1px solid #1e293b;border-radius:16px;color:#e2e8f0;',
       'font:13px/1.45 ui-sans-serif,system-ui,Segoe UI,Roboto,sans-serif}',
       '.kf-head{display:flex;gap:12px;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid #1e293b}',
@@ -102,6 +102,7 @@
       '<button class="kf-x" id="kfModalX">Close ✕</button></div><canvas id="kfCanvas" width="960" height="440"></canvas></div>';
     document.body.appendChild(modal);
 
+    w.classList.remove('on');
     b.onclick = function () { w.classList.add('on'); render(); pull(); };
     pull();
     setInterval(pull, 3000);
@@ -139,16 +140,16 @@
     var items = [['all', '🟣 All-3 Parallel'], ['directional_100k', '🧭 Directional ₹1L'],
       ['scalping_100k', '⚡ Scalping ₹1L'], ['zero_to_hero_100k', '🚀 Zero-to-Hero ₹1L']];
     el.innerHTML = items.map(function (it) {
-      return '<button class="kf-tab' + (TAB === it[0] ? ' on' : '') + '" data-tab="' + it[0] + '">' + it[1] + '</button>';
+      return '<button class="kf-tab' + (TAB === it[0] ? ' on' : '') + '" data-kf-tab="' + it[0] + '">' + it[1] + '</button>';
     }).join('');
-    Array.prototype.forEach.call(el.querySelectorAll('[data-tab]'), function (btn) {
-      btn.onclick = function () { TAB = btn.getAttribute('data-tab'); render(); };
+    Array.prototype.forEach.call(el.querySelectorAll('[data-kf-tab]'), function (btn) {
+      btn.onclick = function () { TAB = btn.getAttribute('data-kf-tab'); render(); };
     });
   }
 
   function nodeBox(x, y, w, h, node, tipText) {
     var cls = 'kf-node ' + (node.ok ? 'ok' : 'wait');
-    return '<rect class="' + cls + '" x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '" rx="10" data-tip="' + esc(tipText) + '"/>' +
+    return '<rect style="pointer-events:all" class="' + cls + '" x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '" rx="10" data-tip="' + esc(tipText) + '"/>' +
       '<text class="kf-nt" x="' + (x + 12) + '" y="' + (y + 24) + '">' + esc(node.label) + ' ' + node.mark + '</text>' +
       '<text class="kf-ns" x="' + (x + 12) + '" y="' + (y + 42) + '">' + esc(node.detail) + '</text>';
   }
@@ -160,17 +161,19 @@
       'Indices: NIFTY 50 · BANKNIFTY · SENSEX\n512-bar buffers maintained\n' +
       '37 streams: Spot OHLC · Futures VTT/Basis · 11-strike OI/PCR · Δ Γ Θ IV · 5-level OBI/TBQ · VIX · Breadth';
     var parts = [];
-    parts.push('<svg class="kf-flow" viewBox="0 0 1000 320" xmlns="http://www.w3.org/2000/svg">');
-    parts.push('<rect class="kf-hub" x="14" y="112" width="200" height="86" rx="12" data-tip="' + esc(hubTip) + '"/>');
+    parts.push('<svg class="kf-flow" viewBox="0 0 1000 320" xmlns="http://www.w3.org/2000/svg" style="display:block;width:100%;height:auto;overflow:visible;pointer-events:auto">');
+    parts.push('<g data-node="hub" style="cursor:pointer;pointer-events:all"><rect class="kf-hub" x="14" y="112" width="200" height="86" rx="12" style="pointer-events:all" data-tip="' + esc(hubTip) + '"/>');
     parts.push('<text class="kf-nt" x="28" y="140">🟣 UPSTOX V3 HUB</text>');
     parts.push('<text class="kf-ns" x="28" y="160">🟢 100% DATA SYNC</text>');
-    parts.push('<text class="kf-ns" x="28" y="178">' + esc(multi ? '3 indices streaming' : name + ' streaming') + '</text>');
+    parts.push('<text class="kf-ns" x="28" y="178">' + esc(multi ? '3 indices streaming' : name + ' streaming') + '</text></g>');
     var ys = [24, 118, 212];
     nodes.forEach(function (n, i) {
       var y = ys[i] || (24 + i * 96);
       var tip = n.label + '\n' + n.detail + '\n' + (n.ok ? 'vote: confirmed ✅' : 'vote: waiting — no fabricated signal');
       parts.push('<path class="kf-line' + (n.ok ? ' hot' : '') + '" d="M214 155 C 250 155, 250 ' + (y + 40) + ', 300 ' + (y + 40) + '"/>');
+      parts.push('<g data-node="' + ['102m', '25m', '4m'][i] + '" style="cursor:pointer;pointer-events:all">');
       parts.push(nodeBox(300, y, 210, 62, n, tip));
+      parts.push('</g>');
     });
     var exec = desk.exec || {};
     var ex = 'ENTRY PENDING', cls = 'kf-wait';
@@ -413,7 +416,15 @@
       })
       .catch(function () { return ''; });
   }
+  function busy() {
+    try {
+      if (document.querySelector('#kfWrap:hover')) return true;
+      var m = $('kfModal');
+      return !!(m && m.classList.contains('on'));
+    } catch (e) { return false; }
+  }
   function pull() {
+    if (busy()) return;
     resolveEdge().then(function (base) {
       if (!base) return;
       return fetch(base + '/api/live-ticks?symbol=NIFTY', { cache: 'no-store' })
