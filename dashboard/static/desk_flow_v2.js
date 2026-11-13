@@ -325,6 +325,22 @@
       var top = y(Math.max(r.o, r.c)), bot = y(Math.min(r.o, r.c));
       ctx.fillRect(x - Math.max(step * 0.3, 1.5), top, Math.max(step * 0.6, 3), Math.max(bot - top, 1));
     });
+    var vol = rows.some(function (r) { return r.v > 0; });
+    var pv = 0, vv = 0, cum = 0, vwap = [];
+    rows.forEach(function (r, i) {
+      var typical = (r.h + r.l + r.c) / 3;
+      if (vol) { pv += typical * r.v; vv += r.v; cum = vv ? pv / vv : typical; }
+      else { cum = (cum * i + typical) / (i + 1); }
+      vwap.push(cum);
+    });
+    ctx.strokeStyle = '#F59E0B'; ctx.lineWidth = 1.6; ctx.beginPath();
+    vwap.forEach(function (v, i) {
+      var x = padL + step * (i + 0.5), yv = y(v);
+      if (i === 0) ctx.moveTo(x, yv); else ctx.lineTo(x, yv);
+    });
+    ctx.stroke();
+    ctx.fillStyle = '#F59E0B'; ctx.font = '10px ui-monospace,monospace';
+    ctx.fillText('VWAP ₹' + vwap[vwap.length - 1].toFixed(2), padL + 4, 27);
     var entry = trade && trade.entry != null ? +trade.entry : null;
     var levels = [];
     if (entry) {
