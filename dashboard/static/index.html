@@ -2874,7 +2874,10 @@ function paintRoleStrip(p){
   const ce = ic.hot_ce_contract, pe = ic.hot_pe_contract;
   if(ce || pe){
     const tag = (c, s)=> c ? s + ' ' + c.strike + ' Δ' + Number(c.delta).toFixed(2) : s + ' —';
-    put('ic4', '⚡ 4M CACHE: ' + tag(ce, 'CE') + ' · ' + tag(pe, 'PE'));
+    const MODE_TAG = {SHOCKWAVE_VELOCITY_SCALP: '⚡ MODE: SHOCKWAVE', SIDEWAYS_PING_PONG_ABSORPTION: '🏓 MODE: PING-PONG', WICK_EXHAUSTION_SNAPBACK: '🪤 MODE: WICK SNAPBACK'};
+    const mt = MODE_TAG[ic.mode] || '· SCANNING';
+    put('ic4', '⚡ 4M CACHE: ' + tag(ce, 'CE') + ' · ' + tag(pe, 'PE') + ' · ' + mt +
+      (ic.spot_velocity_pts_per_sec != null ? ' (' + Number(ic.spot_velocity_pts_per_sec).toFixed(1) + ' pts/s)' : ''));
   }
   try { if (window.paintDeskFlow) window.paintDeskFlow(p); } catch (e) {}
 }
