@@ -1337,6 +1337,13 @@ def main(argv: list[str] | None = None) -> int:
         print("no access token")
         return 1
 
+    # Run the predictor loop in-process so state/kronos_predictor_status.json
+    # is refreshed every cycle on the runner (the dashboard server is not running here).
+    try:
+        from model.live_predictor import start as _start_predictor
+        _start_predictor()
+    except Exception as exc:  # noqa: BLE001 - readiness must never crash the session
+        print(f"predictor start failed: {type(exc).__name__}: {exc}", flush=True)
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     futures = resolve_futures(token)
     futures_keys = {

@@ -452,7 +452,16 @@ class Handler(SimpleHTTPRequestHandler):
             from market.live_ticks import snapshot
 
             symbol = (parse_qs(parsed.query).get("symbol") or ["NIFTY"])[0].upper()
-            self._json(snapshot(symbol))
+            payload = snapshot(symbol)
+            try:
+                from market.desk_ledgers import build_desks
+
+                feed_path = REPO_ROOT / "state" / "live_feed.json"
+                feed = json.loads(feed_path.read_text(encoding="utf-8"))
+                payload.update(build_desks(feed, {}))
+            except (OSError, ValueError):
+                payload.update(build_desks({}, {}))
+            self._json(payload)
             return
         if parsed.path == "/api/full-spectrum":
             from market.live_ticks import snapshot
