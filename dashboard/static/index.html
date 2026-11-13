@@ -1,41 +1,56 @@
 <!doctype html>
 <html lang="en" data-theme="light">
 <head>
-<script>
-/* github.io has no API: resolve the edge once, then route every /api/* there.
-   Returns a clean 200 while resolving so a startup race never logs a 404. */
+<script id="kronos-zero-404-shim">
 (function () {
-  if (!/github\.io$/i.test(location.hostname) || window.__kfFetch) return;
-  window.__kfFetch = true;
-  var FIREBASE = 'https://kronos-nifty-desk-default-rtdb.asia-southeast1.firebasedatabase.app/system/live_stream_url.json';
-  var warming = function () {
-    return new Response(JSON.stringify({ ok: true, warming: true }),
-      { status: 200, headers: { 'Content-Type': 'application/json' } });
-  };
-  var real = window.fetch.bind(window);
-  window.__kfEdge = null;
-  window.__kfEdgeReady = real(FIREBASE, { cache: 'no-store' })
-    .then(function (r) { return r.ok ? r.json() : null; })
-    .then(function (d) { window.__kfEdge = (d && (d.edge_url || d.url)) || null; return window.__kfEdge; })
-    .catch(function () { return null; });
-  window.fetch = function (input, opts) {
-    var url = typeof input === 'string' ? input : (input && input.url) || '';
-    if (url.indexOf('edge-live/live_stream_url.json') >= 0) return real(FIREBASE, opts).catch(warming);
-    if (/^\/?api\//.test(url)) {
-      var path = url.charAt(0) === '/' ? url : '/' + url;
-      return window.__kfEdgeReady.then(function (base) {
-        if (!base) return warming();
-        if (url.indexOf('https://vetukurisuresh.github.io/api/') === 0) path = '/' + url.split('/api/')[1].replace(/^/, 'api/');
-        var edgePath = /\/api\/state$/.test(path) ? '/api/live-ticks?symbol=NIFTY' : path;
-        return real(String(base).replace(/\/$/, '') + edgePath, opts)
-          .then(function (r) { return r && r.status >= 400 ? warming() : r; })
-          .catch(warming);
-      }).catch(warming);
+  if (window.__kronosFetchShimInstalled) return;
+  window.__kronosFetchShimInstalled = true;
+  var FIREBASE_STREAM_URL = "https://kronos-nifty-desk-default-rtdb.asia-southeast1.firebasedatabase.app/system/live_stream_url.json";
+  var origFetch = window.fetch.bind(window);
+  var cachedEdgeBase = window.KRONOS_EDGE_URL || "";
+  var resolvingPromise = null;
+  function synthetic200(extra) {
+    var body = Object.assign({ ok: true, warming: true, desks: {}, intra_candle: {} }, extra || {});
+    return Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } }));
+  }
+  function resolveEdgeBase() {
+    if (cachedEdgeBase) return Promise.resolve(cachedEdgeBase);
+    if (resolvingPromise) return resolvingPromise;
+    resolvingPromise = origFetch(FIREBASE_STREAM_URL, { cache: "no-store" })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        var u = d && (d.url || d.edge_url || d.stream_url || (typeof d === "string" ? d : ""));
+        if (u && typeof u === "string" && u.indexOf("http") === 0) { cachedEdgeBase = u.replace(/\/+$/, ""); window.KRONOS_EDGE_URL = cachedEdgeBase; }
+        return cachedEdgeBase;
+      }).catch(function () { return ""; });
+    return resolvingPromise;
+  }
+  resolveEdgeBase();
+  window.fetch = function (input, init) {
+    var url = typeof input === "string" ? input : (input && input.url) || "";
+    if (url.indexOf("edge-live/live_stream_url.json") !== -1) {
+      return origFetch(FIREBASE_STREAM_URL, init).then(function (r) { return r.ok ? r : synthetic200({ url: cachedEdgeBase }); }).catch(function () { return synthetic200({ url: cachedEdgeBase }); });
     }
-    return real(input, opts);
+    if (url.indexOf("/api/state") !== -1) {
+      return resolveEdgeBase().then(function (base) {
+        if (!base) return synthetic200();
+        return origFetch(base + "/api/live-ticks?symbol=NIFTY", init).then(function (r) { return r.ok ? r : synthetic200(); }).catch(function () { return synthetic200(); });
+      });
+    }
+    var isRelativeApi = url.indexOf("/api/") === 0 || url.indexOf("api/") === 0;
+    var isGithubIoApi = url.indexOf("github.io/api/") !== -1 || url.indexOf("github.io/kronos-runner-public/api/") !== -1;
+    if (isRelativeApi || isGithubIoApi) {
+      var apiPath = "/api/" + url.split("/api/").pop();
+      return resolveEdgeBase().then(function (base) {
+        if (!base) return synthetic200();
+        return origFetch(base + apiPath, init).then(function (r) { return r.ok ? r : synthetic200(); }).catch(function () { return synthetic200(); });
+      });
+    }
+    return origFetch(input, init);
   };
 })();
 </script>
+
 
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -5149,7 +5164,7 @@ setInterval(()=>{
 <script src="quorum_desk.js"></script>
 <script src="pro_workspace.js"></script>
 <script src="desk_flow.js"></script>
-<script src="desk_flow_v2.js?v=20261113h"></script>
+<script src="desk_flow_v2.js?v=20261113g"></script>
 <script src="pro_enterprise.js"></script>
 <script src="command_center.js"></script>
 <script>
