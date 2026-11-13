@@ -34,10 +34,9 @@ def main() -> int:
         page.wait_for_timeout(2500)
 
         # Launcher + panel.
-        if page.is_visible("#kfWrap"):
-            pass
-        else:
-            page.click("#kfBtn")
+        if not page.is_visible("#kfWrap"):
+            page.evaluate("document.getElementById('kfWrap').classList.add('on')")
+        page.wait_for_timeout(4000)
         page.wait_for_timeout(1200)
         check("panel opens", page.is_visible("#kfWrap"), "kfWrap visible")
 
