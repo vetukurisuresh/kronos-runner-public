@@ -2812,6 +2812,7 @@ function setOrderLines(o){
   const sl = pick('sl', num(tr.current_trailing_sl) || num(lv.sl));
   const t1 = pick('t1', num(tr.target_1) || num(lv.t1));
   const t2 = pick('t2', num(tr.target_2_p90) || num(lv.t2));
+  const qty = Math.max(0, Number(tr.qty || tr.open_qty || 0) || 0);
   const atp = num(o && o.atp_vwap) || num(lv.atp);
   const sig = JSON.stringify({entry,sl,t1,t2,atp,lines:LINES,isOpen});
   if(sig === PL_SIG.v) return;
@@ -2825,7 +2826,7 @@ function setOrderLines(o){
       return SERIES.opt.candle.createPriceLine({price,
         color:cfg.color, lineWidth:Math.min(4, thick || width),
         lineStyle:dash ? LWC.LineStyle.Dashed : LWC.LineStyle.Solid,
-        axisLabelVisible:false, title});
+        axisLabelVisible:true, title});
     }catch(e){ return null; }
   };
   if(atp != null) PL.atp = mk(atp, {color:t.blue}, true, 'ATP', 1);
@@ -2833,13 +2834,19 @@ function setOrderLines(o){
   if(!isOpen) return;
   // Right-axis labels are intentionally hidden: the bold left legend is the
   // single source of truth, so the price scale never becomes noisy.
-  if(entry != null && LINES.entry.on) PL.entry = mk(entry, LINES.entry, true, 'ENTRY', width + 1);
+  if(entry != null && LINES.entry.on) PL.entry = mk(
+    entry, LINES.entry, true,
+    '🔵 ENTRY @ ₹' + fmt(entry, 2) + (qty > 0 ? ' (' + qty + ' Qty Filled ✅)' : ''), width + 1);
   const riskFree = sl != null && entry != null && sl >= entry;
   if(sl != null && LINES.sl.on) PL.sl = mk(
     sl, riskFree ? {color: (t.green || '#10B981')} : LINES.sl, false,
-    riskFree ? '🛡️ RISK-FREE SL @ ₹' + fmt(sl, 2) + ' (Cost + ₹1.50)' : 'SL');
-  if(t1 != null && LINES.t1.on) PL.t1 = mk(t1, LINES.t1, true, 'T1');
-  if(t2 != null && LINES.t2.on) PL.t2 = mk(t2, LINES.t2, true, 'T2');
+    riskFree
+      ? '🛡️ TRAILED SL @ ₹' + fmt(sl, 2) + ' (Cost + ₹1.50 · 0% Risk!)'
+      : '🔴 SL @ ₹' + fmt(sl, 2) + ' (-7% Small SL)');
+  if(t1 != null && LINES.t1.on) PL.t1 = mk(
+    t1, LINES.t1, true, '🟢 T1 @ ₹' + fmt(t1, 2) + ' (+14% · Book 50%)');
+  if(t2 != null && LINES.t2.on) PL.t2 = mk(
+    t2, LINES.t2, true, '🟣 T2 @ ₹' + fmt(t2, 2) + ' (+28% · Trend Target)');
   setTradeMarkers();
 }
 
@@ -2865,8 +2872,11 @@ function setTradeMarkers(){
     if(tr.t1_hit){
       const tt = sec(tr.t1_at, last);
       if(tt != null){
+        const bq = Math.round(Math.max(0, Number(tr.qty || tr.open_qty || 0)) * 0.5);
+        const bp = (Number(tr.target_1 || tr.t1 || 0) - Number(tr.entry_price || 0)) * bq;
         marks.push({time: tt, position: 'aboveBar', color: '#22C55E', shape: 'circle',
-                    text: '🎯 T1 BOOKED (50%)'});
+                    text: '🎯 T1 BOOKED' + (bq > 0 ? ' (' + bq + ' Qty ' : ' (') +
+                          (bp >= 0 ? '+' : '-') + '₹' + fmt(Math.abs(bp), 0) + ')'});
       }
     }
   } else if(st === 'CLOSED'){
@@ -2876,7 +2886,7 @@ function setTradeMarkers(){
     if(xt != null){
       marks.push({time: xt, position: 'aboveBar', color: '#F59E0B', shape: 'square',
                   text: '🏁 EXIT @ ₹' + fmt(tr.exit_price || 0, 2) +
-                        ' (Net ' + (pnl >= 0 ? '+' : '-') + '₹' + fmt(Math.abs(pnl), 0) + ')'});
+                        ' (Total Net Profit: ' + (pnl >= 0 ? '+' : '-') + '₹' + fmt(Math.abs(pnl), 0) + ')'});
     }
   }
   const sig = JSON.stringify(marks);

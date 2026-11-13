@@ -383,7 +383,14 @@ def build_oscillator_from_feed(
     # Real live-predictor probabilities/paths override the stale cloud plan,
     # without ever passing the same keyword twice.
     inputs.update(predictor_inputs)
-    return build_model_oscillator(**inputs)
+    oscillator = build_model_oscillator(**inputs)
+    # The 102M forecast cone is real model output: expose its quantiles so the
+    # desk never shows a bare 50/50 with p10/p50/p90 missing.
+    base_row = predictor_roles.get("base") or {}
+    for key in ("p10", "p50", "p90"):
+        if base_row.get(key) is not None:
+            oscillator[key] = base_row[key]
+    return oscillator
 
 
 # Public aliases for dashboards/agents that use the shorter name.
