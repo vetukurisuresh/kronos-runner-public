@@ -328,13 +328,14 @@ def build_from_runtime(
     )
 
     models = readiness.get("models") or {}
-    model_rows = [models.get(name) or {} for name in ("base", "small", "mini")]
-    models_ok = len(model_rows) == 3 and all(
-        bool(row.get("ready")) and int(row.get("bars") or 0) >= 512
-        for row in model_rows
-    )
+    # One primary brain: Kronos-102M.  25M (chain PCR/ΔOI/Greeks) and 4M
+    # (order-book OBI/TBQ) are deterministic math, so they must not gate
+    # readiness on a neural checkpoint that the cloud runner never carries.
+    primary = models.get("base") or {}
+    models_ok = bool(primary.get("ready")) and int(primary.get("bars") or 0) >= 512
+    card = primary.get("probability_pct")
     model_detail = (
-        "102M / 25M / 4M · 512×6 FEEDS READY"
+        f"102M {card}% · 512×6 FEED READY · chain+micro deterministic"
         if models_ok else "MODEL FEEDS NOT WARM"
     )
 
