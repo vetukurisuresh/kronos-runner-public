@@ -177,6 +177,10 @@ def build_desk_flow(payload: Mapping[str, Any]) -> dict[str, Any]:
         "desks": flows,
         "index_edges": edges,
         "ranking": [row["symbol"] for row in ranked],
+        "index_momentum_ranking": [
+            {"rank": i + 1, "symbol": row["symbol"], "score": row["score"]}
+            for i, row in enumerate(ranked)
+        ],
         "top_index": top,
         "total_capital_inr": sum(_f(_d(ledgers.get(d)).get("capital_inr"), 100000.0)
                                  for d, _ in DESKS),

@@ -73,3 +73,21 @@ def test_empty_payload_never_fabricates_a_handshake() -> None:
     assert flow["ranking"] == []
     assert all(desk["handshake"] is False for desk in flow["desks"].values())
     assert all(node["mark"] == "⏳" for desk in flow["desks"].values() for node in desk["nodes"])
+
+
+def test_index_momentum_ranking_is_ordered_and_typed() -> None:
+    flow = build_desk_flow(_payload())
+    ranking = flow["index_momentum_ranking"]
+    assert [row["rank"] for row in ranking] == [1, 2]
+    assert ranking[0]["symbol"] == "NIFTY"
+    assert ranking[0]["score"] > ranking[1]["score"]
+
+
+def test_eod_reconciler_keeps_three_independent_one_lakh_ledgers() -> None:
+    from state.eod_pnl_reconciler import reconcile_desks
+
+    out = reconcile_desks(_payload()["desks"])
+    assert sorted(out) == ["directional_100k", "scalping_100k", "zero_to_hero_100k"]
+    assert sum(row["capital_inr"] for row in out.values()) == 300000.0
+    assert out["directional_100k"]["trades_closed"] == 1
+    assert out["directional_100k"]["total_inr"] == 4850.0

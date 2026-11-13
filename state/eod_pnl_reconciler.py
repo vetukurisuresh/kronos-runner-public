@@ -147,6 +147,39 @@ def _sum(rows: Iterable[Mapping[str, Any]], key: str) -> float:
     return round(sum(_f(row.get(key)) for row in rows), 2)
 
 
+def _desk_row(row: Any) -> dict[str, Any]:
+    data = _row_dict(row)
+    status = str(data.get("status") or data.get("state") or "OPEN").upper()
+    closed = "DONE" in status or "CLOSED" in status or "EXIT" in status
+    pnl = _f(data.get("pnl", data.get("profit", data.get("net_pnl"))))
+    return {"status": "CLOSED" if closed else "OPEN", "net_pnl": pnl}
+
+
+def reconcile_desks(desks: Mapping[str, Any] | None) -> dict[str, dict[str, Any]]:
+    """Per-sleeve totals for the three independent ₹1,00,000 desks."""
+    out: dict[str, dict[str, Any]] = {}
+    for desk_id, ledger in (desks or {}).items():
+        if not isinstance(ledger, Mapping):
+            continue
+        rows = [_desk_row(row) for row in (ledger.get("trades") or [])]
+        realized = round(sum(row["net_pnl"] for row in rows if row["status"] == "CLOSED"), 2)
+        live = _f(ledger.get("live_pnl_inr"))
+        capital = _f(ledger.get("capital_inr"), 100000.0)
+        closed = [row for row in rows if row["status"] == "CLOSED"]
+        out[str(desk_id)] = {
+            "capital_inr": capital,
+            "equity_inr": _f(ledger.get("equity_inr"), capital),
+            "booked_pnl_inr": _f(ledger.get("booked_pnl_inr"), realized),
+            "live_pnl_inr": live,
+            "total_inr": round(realized + live, 2),
+            "trades_total": len(rows),
+            "trades_closed": len(closed),
+            "wins": sum(1 for row in closed if row["net_pnl"] > 0),
+            "losses": sum(1 for row in closed if row["net_pnl"] < 0),
+        }
+    return out
+
+
 def reconcile_eod(
     rows: Iterable[Any],
     *,
@@ -155,6 +188,7 @@ def reconcile_eod(
     sniper_open_mtm: Any = 0.0,
     journal_rows: Iterable[Any] | None = None,
     reported_vault: Any | None = None,
+    desks: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Reconcile ledger, open MTM and journal into one grand total."""
     normal = [normalise_row(row) for row in rows]
@@ -229,6 +263,10 @@ def reconcile_eod(
         "avg_sl_vs_trend_ratio": round(abs(avg_win / avg_sl), 2) if avg_sl < 0 else None,
         "rows": normal,
     }
+    desk_ledgers = reconcile_desks(desks)
+    summary["desk_ledgers"] = desk_ledgers
+    summary["desk_capital_inr"] = round(sum(d["capital_inr"] for d in desk_ledgers.values()), 2)
+    summary["desk_grand_total_net_pnl"] = round(sum(d["total_inr"] for d in desk_ledgers.values()), 2)
     return summary
 
 
@@ -244,6 +282,7 @@ __all__ = [
     "EOD_SUMMARY_FILE",
     "VAULT_FRACTION",
     "normalise_row",
+    "reconcile_desks",
     "reconcile_eod",
     "write_eod_summary",
 ]
