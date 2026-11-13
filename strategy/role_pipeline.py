@@ -62,9 +62,6 @@ def data_gate(feed: Mapping[str, Any], symbol: str = "NIFTY") -> dict[str, Any]:
     pe_doi_pct = _doi_pct(_f(metrics.get("pe_doi")), pe_oi)
 
     spectrum = _block(feed, "full_spectrum", symbol)
-    # The raw 11-strike window can be OI-empty early in a session; the
-    # spectrum aggregate still carries the real PCR.
-    pcr = _f((spectrum.get("pcr") or {}).get("pcr")) or pcr
     depth = spectrum.get("depth") or {}
     greeks = spectrum.get("greeks") or {}
     vix = spectrum.get("vix") or {}
@@ -78,6 +75,12 @@ def data_gate(feed: Mapping[str, Any], symbol: str = "NIFTY") -> dict[str, Any]:
     ltp = _f(option.get("ltp"))
     opt_vwap = _f(option.get("atp_vwap") or option.get("vwap"))
     pcr = _f(metrics.get("pcr"))
+    # The raw 11-strike window can be OI-empty early in a session; the
+    # spectrum aggregate still carries the real PCR (dict or bare number).
+    spec_pcr = spectrum.get("pcr")
+    if isinstance(spec_pcr, Mapping):
+        spec_pcr = spec_pcr.get("pcr")
+    pcr = pcr or _f(spec_pcr)
     aligned, total = _f(breadth.get("aligned")), _f(breadth.get("total"))
     vtt = _f(futures.get("vtt_ratio") or futures.get("volume_ratio"))
     vix_slope = _f(vix.get("change_pct"))
