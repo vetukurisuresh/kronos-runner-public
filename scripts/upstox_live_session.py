@@ -4001,27 +4001,32 @@ def main(argv: list[str] | None = None) -> int:
                 and age_sec <= 900.0
                 and row.get("probability_pct") is not None
             )
+            deterministic = str(
+                row.get("probability_source") or row.get("state") or ""
+            ) == "LIVE_QUANT_TENSOR"
             model_feeds[role] = {
-                "ready": bool(weights_ok and feeds_warm and fresh),
+                "ready": bool(feeds_warm and fresh and (weights_ok or deterministic)),
                 "bars": model_bars,
                 "features": 6,
-                "source": "live-predictor",
+                "source": "live-quant-tensor" if deterministic else "live-predictor",
                 "probability_pct": row.get("probability_pct"),
                 "age_sec": round(age_sec, 1) if age_sec is not None else None,
             }
-        model_ready = all(row["ready"] for row in model_feeds.values())
-        live_cards = [
-            f"{role} {row['probability_pct']}% ({row['age_sec']}s)"
-            for role, row in model_feeds.items() if row["ready"]
-        ]
+        # Single primary brain: Kronos-102M.  25M/4M are deterministic
+        # chain/microstructure math, so a missing checkpoint for them must
+        # never hold the desk at 5/6.
+        primary_ready = bool(model_feeds.get("base", {}).get("ready"))
+        model_ready = bool(feeds_warm and primary_ready)
         if model_ready:
-            model_detail = " · ".join(live_cards)
-        elif not weights_ok:
-            model_detail = weights_reason
+            base = model_feeds["base"]
+            model_detail = (
+                f"102M {base['probability_pct']}% ({base['age_sec']}s) · "
+                "chain+microstructure deterministic"
+            )
         elif not feeds_warm:
             model_detail = f"WARMING · min {min_buffer}/512 bars"
         else:
-            model_detail = "PREDICTOR WARMING · no fresh 3/3 cards yet"
+            model_detail = "PREDICTOR WARMING · no fresh 102M card yet"
         edge_ready = bool(edge and edge.url and getattr(edge, "verified", False))
         checks = build_checks(
             auth_ok=auth_verified,
