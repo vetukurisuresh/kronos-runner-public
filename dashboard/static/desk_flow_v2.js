@@ -246,7 +246,8 @@
         '<span class="kf-kpis"><span>CAP ' + money(desk.capital_inr) + '</span>' +
         '<span>EQ ' + money(desk.equity_inr) + '</span>' +
         '<span>BOOKED <b class="' + (book >= 0 ? 'kf-done' : 'kf-run') + '">' + inr(book) + '</b></span>' +
-        '<span>LIVE <b class="' + (live >= 0 ? 'kf-done' : 'kf-run') + '">' + inr(live) + '</b></span></span></div>' +
+        '<span>LIVE <b class="' + (live >= 0 ? 'kf-done' : 'kf-run') + '">' + inr(live) + '</b></span>' +
+        '<button class="kf-btn" data-kf-chart="' + id + '">📈 Live Chart</button></span></div>' +
         flowSvg(withNodes(desk), TAB === 'all') +
         ledger(desk, id) + '</div>';
     });

@@ -25,6 +25,8 @@ def main() -> int:
         browser = pw.chromium.launch()
         page = browser.new_page(viewport={"width": 1440, "height": 1000})
         page.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
+        bad: list[str] = []
+        page.on("response", lambda r: bad.append(f"{r.status} {r.url}") if r.status == 404 else None)
         page.on("console", lambda m: errors.append(f"console.{m.type}: {m.text}") if m.type == "error" else None)
 
         page.goto(PAGES, wait_until="domcontentloaded", timeout=60000)
@@ -67,9 +69,9 @@ def main() -> int:
         check("hub hover telemetry", tip.is_visible() and "UPSTOX" in tip_text.upper(), tip_text[:120])
 
         # Chart button (may not exist with zero trades).
-        btns = page.locator("[data-chart]")
+        btns = page.locator("[data-kf-chart]")
         if btns.count():
-            btns.first.click()
+            btns.first.click(force=True)
             page.wait_for_timeout(600)
             check("chart modal opens", page.is_visible("#kfModal"), "kfModal")
             cbox = page.locator("#kfCanvas").bounding_box()
@@ -77,6 +79,8 @@ def main() -> int:
         else:
             checks.append({"check": "chart button", "ok": True, "detail": "skipped: no closed trade yet"})
 
+        for url in bad[:12]:
+            checks.append({"check": "404 url", "ok": False, "detail": url})
         browser.close()
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
