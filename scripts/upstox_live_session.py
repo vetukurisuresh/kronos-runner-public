@@ -1389,10 +1389,17 @@ def main(argv: list[str] | None = None) -> int:
     story = StoryTeller(limit=20)
     hud = load_hud()
     guard = SniperRiskGuard.load(RISK_FILE, today_ist())
-    # Each ₹1L desk owns its pin and its trade cap: one open trade per desk,
-    # never blocking another desk on another index.
+    # Each ₹1L desk owns its pin and its own risk guard (separate state file),
+    # so one desk's trade cap or SL lock never blocks another desk.
     desk_pins: dict[str, str | None] = {
         "directional_100k": None, "scalping_100k": None, "zero_to_hero_100k": None,
+    }
+    desk_guards: dict[str, SniperRiskGuard] = {
+        "directional_100k": guard,
+        "scalping_100k": SniperRiskGuard.load(
+            REPO_ROOT / "state" / "sniper_risk_guard_scalping.json", today_ist()),
+        "zero_to_hero_100k": SniperRiskGuard.load(
+            REPO_ROOT / "state" / "sniper_risk_guard_zero_to_hero.json", today_ist()),
     }
     hero_desk = HeroTradeDesk.load(HERO_DESK_FILE, today_ist())
     hero_last: dict[str, dict] = {}
@@ -1802,6 +1809,10 @@ def main(argv: list[str] | None = None) -> int:
             # Release the directional desk pin once this index's trade is closed.
             if not trade_pin_open and desk_pins.get("directional_100k") == name:
                 desk_pins["directional_100k"] = None
+            if not trade and desk_pins.get("scalping_100k") == name:
+                desk_pins["scalping_100k"] = None
+            if not trade and desk_pins.get("zero_to_hero_100k") == name:
+                desk_pins["zero_to_hero_100k"] = None
             full_now = (payload.get("full_spectrum") or {}).get(name) or {}
             depth_now = full_now.get("depth") or {}
             bias = payload.get("model_oscillator") or {}
@@ -2406,9 +2417,11 @@ def main(argv: list[str] | None = None) -> int:
             hero_window_cap = int(hero_window.get("max_setups") or 0)
             hero_window_used = hero_window_entries.get(hero_window_key, 0)
             hero_window_ok = hero_window_cap <= 0 or hero_window_used < hero_window_cap
+            hero_guard = desk_guards["zero_to_hero_100k"]
             hero_ready = bool(
                 hero_enabled and hero_signal.get("trigger") and hero_can_fire.get("ok")
-                and hero_window_ok
+                and hero_window_ok and not desk_pins.get("zero_to_hero_100k")
+                and hero_guard.can_open("A+")["ok"]
             )
 
             traffic = str(plan.get("traffic") or "").upper()
@@ -2696,6 +2709,9 @@ def main(argv: list[str] | None = None) -> int:
                 state["story_trade"] = True
                 state["ledger_sig"] = None
                 hero_desk.register_entry()
+                hero_guard.register_entry("A+")
+                hero_guard.save(REPO_ROOT / "state" / "sniper_risk_guard_zero_to_hero.json")
+                desk_pins["zero_to_hero_100k"] = name
                 hero_window_entries[hero_window_key] = hero_window_used + 1
                 hero_desk.save(HERO_DESK_FILE)
                 hero_last[name] = trade
@@ -2720,9 +2736,12 @@ def main(argv: list[str] | None = None) -> int:
             # The dedicated continuous sleeve takes the current chain book when
             # all five signatures align. A different side is pinned for the
             # next cycle so the fill can never land on the old chart's leg.
+            scalp_guard = desk_guards["scalping_100k"]
             if (not trade and continuous_now.get("trigger")
                     and cutoff["new_entries_allowed"] and not traffic_red
-                    and not feed_stale and not scalp_sleeve.active):
+                    and not feed_stale and not scalp_sleeve.active
+                    and not desk_pins.get("scalping_100k")
+                    and scalp_guard.can_open("A+")["ok"]):
                 if continuous_now.get("side") and continuous_now.get("side") != side:
                     scalper_pending[name] = str(continuous_now["side"])
                 else:
@@ -2770,6 +2789,9 @@ def main(argv: list[str] | None = None) -> int:
                         scalp_sleeve.start_trade(contract, now=now_ist_dt)
                         scalp_sleeve.sync_trade(trade, ltp=ltp)
                         continuous_last[name] = trade
+                        scalp_guard.register_entry("A+")
+                        scalp_guard.save(REPO_ROOT / "state" / "sniper_risk_guard_scalping.json")
+                        desk_pins["scalping_100k"] = name
                         hud["continuous_scalp_trades"] = int(hud.get("continuous_scalp_trades") or 0) + 1
                         save_hud(hud)
                         if pending:
