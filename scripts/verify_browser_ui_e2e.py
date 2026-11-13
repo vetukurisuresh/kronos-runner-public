@@ -36,7 +36,13 @@ def main() -> int:
         # Launcher + panel.
         if not page.is_visible("#kfWrap"):
             page.evaluate("document.getElementById('kfWrap').classList.add('on')")
-        page.wait_for_timeout(4000)
+        page.wait_for_timeout(800)
+        try:
+            page.wait_for_function(
+                "() => { var b=document.querySelector('#kfBody'); return b && b.innerText.indexOf('feed pending') === -1; }",
+                timeout=8000)
+        except Exception:
+            pass
         page.wait_for_timeout(1200)
         check("panel opens", page.is_visible("#kfWrap"), "kfWrap visible")
 
