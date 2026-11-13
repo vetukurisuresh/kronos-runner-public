@@ -854,6 +854,7 @@ def snapshot(symbol: str = "NIFTY", now: float | None = None) -> dict[str, Any]:
     autopilot = feed.get("autopilot")
     role_pipeline = feed.get("role_pipeline")
     intra_candle = feed.get("intra_candle")
+    desk_flow = feed.get("desk_flow")
     try:
         from market.autopilot_readiness import build_from_runtime, load_readiness
         from market.upstox_health import load_access_token, load_token_meta
@@ -998,6 +999,7 @@ def snapshot(symbol: str = "NIFTY", now: float | None = None) -> dict[str, Any]:
         "data_pipe_health": programmatic.get("data_pipe_health") or [],
         "role_pipeline": role_pipeline,
         "intra_candle": intra_candle,
+        "desk_flow": desk_flow,
         "model_oscillator": oscillator,
         "model_thoughts_te": thoughts,
         "brain_log_te": brain_log,

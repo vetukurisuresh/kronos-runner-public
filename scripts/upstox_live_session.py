@@ -3977,6 +3977,12 @@ def main(argv: list[str] | None = None) -> int:
             }
         except Exception as exc:  # noqa: BLE001 - telemetry must never stop the desk
             payload["intra_candle"] = {"error": f"{type(exc).__name__}: {exc}"}
+        try:
+            from strategy.desk_flow import build_desk_flow
+
+            payload["desk_flow"] = build_desk_flow(payload)
+        except Exception as exc:  # noqa: BLE001
+            payload["desk_flow"] = {"error": f"{type(exc).__name__}: {exc}"}
         payload["model_thoughts_te"] = narration_now["thoughts"]
         payload["brain_log_te"] = narration_now["log"]
         payload["proof_ledger"] = early_entry_detector.snapshot()
