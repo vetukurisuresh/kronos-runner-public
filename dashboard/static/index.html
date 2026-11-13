@@ -20,12 +20,16 @@
     .catch(function () { return null; });
   window.fetch = function (input, opts) {
     var url = typeof input === 'string' ? input : (input && input.url) || '';
+    if (url.indexOf('edge-live/live_stream_url.json') >= 0) return real(FIREBASE, opts).catch(warming);
     if (/^\/?api\//.test(url)) {
       var path = url.charAt(0) === '/' ? url : '/' + url;
       return window.__kfEdgeReady.then(function (base) {
         if (!base) return warming();
         if (url.indexOf('https://vetukurisuresh.github.io/api/') === 0) path = '/' + url.split('/api/')[1].replace(/^/, 'api/');
-        return real(String(base).replace(/\/$/, '') + path, opts).catch(warming);
+        var edgePath = /\/api\/state$/.test(path) ? '/api/live-ticks?symbol=NIFTY' : path;
+        return real(String(base).replace(/\/$/, '') + edgePath, opts)
+          .then(function (r) { return r && r.status >= 400 ? warming() : r; })
+          .catch(warming);
       }).catch(warming);
     }
     return real(input, opts);
@@ -5145,7 +5149,7 @@ setInterval(()=>{
 <script src="quorum_desk.js"></script>
 <script src="pro_workspace.js"></script>
 <script src="desk_flow.js"></script>
-<script src="desk_flow_v2.js?v=20261113g"></script>
+<script src="desk_flow_v2.js?v=20261113h"></script>
 <script src="pro_enterprise.js"></script>
 <script src="command_center.js"></script>
 <script>
