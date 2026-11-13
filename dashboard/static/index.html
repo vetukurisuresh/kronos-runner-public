@@ -2876,6 +2876,7 @@ function paintRoleStrip(p){
     const tag = (c, s)=> c ? s + ' ' + c.strike + ' Δ' + Number(c.delta).toFixed(2) : s + ' —';
     put('ic4', '⚡ 4M CACHE: ' + tag(ce, 'CE') + ' · ' + tag(pe, 'PE'));
   }
+  try { if (window.paintDeskFlow) window.paintDeskFlow(p); } catch (e) {}
 }
 
 function setTradeMarkers(){
@@ -5109,6 +5110,7 @@ setInterval(()=>{
 <script src="quorum_desk.js"></script>
 <script src="pro_workspace.js"></script>
 <script src="desk_flow.js"></script>
+<script src="desk_flow_v2.js"></script>
 <script src="pro_enterprise.js"></script>
 <script src="command_center.js"></script>
 <script>
