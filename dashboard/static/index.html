@@ -1656,6 +1656,11 @@ body.tl-open{overflow:hidden!important}
         <div class="level-stage"><b id="levelStageTitle">Stage 1 · Waiting</b><small id="levelStageSub">No position · bracket ready</small></div>
         <button class="level-reset" id="optLevelReset" type="button">Reset</button>
       </div>
+      <div id="roleStrip" style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;padding:5px 8px;border-bottom:1px solid #1d2838;font:11px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:#8fa0b6;background:#070b12">
+        <span data-role="d102">🧭 102M DIRECTIONAL · WAITING</span>
+        <span data-role="gate25">📊 25M DATA GATE · WAITING</span>
+        <span data-role="sniper4">💥 4M EXPIRY/SNIPER · SCANNING</span>
+      </div>
       <div class="chart-canvas-wrap">
         <div id="chart2" class="chart-host"></div>
         <canvas id="overlayOpt" class="chart-overlay" aria-hidden="true"></canvas>
@@ -2785,6 +2790,7 @@ function renderOption(){
     oi.className='oi-badge '+(d<0?'unwind':d>0?'build':'');
   }
   setOrderLines(o);
+  paintRoleStrip(o);
   paintBadge();
   paintCloseControls();
   drawOptionOverlay(o);
@@ -2852,6 +2858,19 @@ function setOrderLines(o){
 
 // TradingView-style execution markers: entry arrow while OPEN, T1 booking,
 // and one exit flag on CLOSED.  Never redraws unless the marker set changes.
+function paintRoleStrip(p){
+  const host = document.getElementById('roleStrip');
+  if(!host) return;
+  const b = (p && p.role_pipeline && p.role_pipeline.badges) || {};
+  const put = (key, txt)=>{
+    const el = host.querySelector('[data-role="' + key + '"]');
+    if(el && txt && el.textContent !== txt) el.textContent = txt;
+  };
+  put('d102', b.d102);
+  put('gate25', b.gate25);
+  put('sniper4', b.sniper4);
+}
+
 function setTradeMarkers(){
   const s = SERIES.opt.candle;
   if(!s) return;

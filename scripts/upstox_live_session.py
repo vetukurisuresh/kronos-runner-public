@@ -3955,6 +3955,14 @@ def main(argv: list[str] | None = None) -> int:
             latency_ms=max(0.0, cycle * 1000.0 - (socket.last_ltt_ms or 0.0)),
         )
         payload["model_oscillator"] = oscillator_now
+        # Role-specialized pipeline: 25M data gate + 4M micro timing + 102M
+        # direction, joined for the badge strip.  Never blocks the desk.
+        try:
+            from strategy.role_pipeline import build_role_pipeline
+
+            payload["role_pipeline"] = build_role_pipeline(payload, "NIFTY")
+        except Exception as exc:  # noqa: BLE001 - badges must not stop the desk
+            payload["role_pipeline"] = {"error": f"{type(exc).__name__}: {exc}"}
         payload["model_thoughts_te"] = narration_now["thoughts"]
         payload["brain_log_te"] = narration_now["log"]
         payload["proof_ledger"] = early_entry_detector.snapshot()
