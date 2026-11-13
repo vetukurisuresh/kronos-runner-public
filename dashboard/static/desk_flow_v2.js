@@ -102,7 +102,9 @@
       '<button class="kf-x" id="kfModalX">Close ✕</button></div><canvas id="kfCanvas" width="960" height="440"></canvas></div>';
     document.body.appendChild(modal);
 
-    b.onclick = function () { w.classList.add('on'); render(); };
+    b.onclick = function () { w.classList.add('on'); render(); pull(); };
+    pull();
+    setInterval(pull, 3000);
     $('kfClose').onclick = function () { w.classList.remove('on'); };
     $('kfModalX').onclick = function () { $('kfModal').classList.remove('on'); };
     document.addEventListener('mousemove', function (ev) {
@@ -111,6 +113,19 @@
       t.style.left = Math.min(ev.clientX + 16, window.innerWidth - 360) + 'px';
       t.style.top = Math.min(ev.clientY + 16, window.innerHeight - 220) + 'px';
     });
+  }
+
+  function withNodes(desk) {
+    if (desk && desk.nodes && desk.nodes.length) return desk;
+    var out = Object.assign({}, desk || {});
+    out.nodes = [
+      { label: 'KRONOS-102M', mark: '⏳', ok: false, detail: 'directional probability — feed pending' },
+      { label: 'KRONOS-25M', mark: '⏳', ok: false, detail: 'PCR / ΔOI / ITM picker — feed pending' },
+      { label: 'KRONOS-4M', mark: '⏳', ok: false, detail: 'OBI / TBQ / 1.5s velocity — feed pending' }
+    ];
+    out.handshake = false;
+    out.exec = out.exec || { status: 'PENDING' };
+    return out;
   }
 
   function deskFlow(id) {
@@ -229,7 +244,7 @@
         '<span>EQ ' + money(desk.equity_inr) + '</span>' +
         '<span>BOOKED <b class="' + (book >= 0 ? 'kf-done' : 'kf-run') + '">' + inr(book) + '</b></span>' +
         '<span>LIVE <b class="' + (live >= 0 ? 'kf-done' : 'kf-run') + '">' + inr(live) + '</b></span></span></div>' +
-        (desk.nodes && desk.nodes.length ? flowSvg(desk, TAB === 'all') : '<div class="kf-empty">Waiting for model handshake data…</div>') +
+        flowSvg(withNodes(desk), TAB === 'all') +
         ledger(desk, id) + '</div>';
     });
     $('kfBody').innerHTML = html;
@@ -383,6 +398,33 @@
     if (!MOUNTED) mount();
     if ($('kfWrap') && $('kfWrap').classList.contains('on')) render();
   };
+
+  function edgeBase() {
+    return window.KRONOS_EDGE_URL || window.__kfEdge || '';
+  }
+  function resolveEdge() {
+    if (window.__kfEdge) return Promise.resolve(window.__kfEdge);
+    return fetch('https://kronos-nifty-desk-default-rtdb.asia-southeast1.firebasedatabase.app/system/live_stream_url.json', { cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        var url = d && (d.edge_url || d.url) ? (d.edge_url || d.url) : '';
+        if (url) window.__kfEdge = String(url).replace(/\/$/, '');
+        return window.__kfEdge || '';
+      })
+      .catch(function () { return ''; });
+  }
+  function pull() {
+    resolveEdge().then(function (base) {
+      if (!base) return;
+      return fetch(base + '/api/live-ticks?symbol=NIFTY', { cache: 'no-store' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (p) {
+          if (p && typeof p === 'object' && !p.error && (p.spot || p.desk_flow || p.role_pipeline)) {
+            window.paintDeskFlow(p);
+          }
+        });
+    }).catch(function () {});
+  }
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', mount);
