@@ -206,6 +206,9 @@ CONTRACT_URL = "https://api.upstox.com/v2/option/contract"
 
 #: Three-index universe: NIFTY 50 + BANKNIFTY (NSE) and SENSEX (BSE).
 KEYS = {name: str(spec["instrument_key"]) for name, spec in INDEX_SPECS.items()}
+## Rolling per-index intra-candle tick windows (1.5s velocity).
+_TICK_WINDOWS: dict = {}
+_INTRA_MODES: dict = {}
 INDIA_VIX = "NSE_INDEX|India VIX"
 INSTRUMENTS_URL = "https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz"
 BSE_INSTRUMENTS_URL = "https://assets.upstox.com/market-quote/instruments/exchange/BSE.json.gz"
@@ -2313,6 +2316,31 @@ def main(argv: list[str] | None = None) -> int:
             cooldown_until = continuous_cooldown_until.get(name)
             if cooldown_until:
                 cooldown_left = max(0, int((cooldown_until - now_ist_dt).total_seconds()))
+            try:
+                from strategy.intra_candle_scalper import TickWindow, detect_mode
+
+                window = _TICK_WINDOWS.setdefault(name, TickWindow())
+                opt_ltp = float((ce_ltp if side == "CE" else pe_ltp) or 0.0)
+                opt_obi = float((ce_obi if side == "CE" else pe_obi) or 0.0)
+                window.add(float(now_ist_dt.timestamp()), float(spot or 0.0), opt_ltp, opt_obi)
+                quote = locals().get("ce_quote") if side == "CE" else locals().get("pe_quote")
+                mode_now = detect_mode(
+                    spot_ticks=window.spot_series(),
+                    option={"ltp": opt_ltp, "obi_5": opt_obi,
+                            "tbq_tsq": float(getattr(quote, "tbq", 0.0) or 0.0)},
+                    bars_5m=[{"o": float(getattr(b, "open", 0.0)), "c": float(getattr(b, "close", 0.0))}
+                             for b in (spot_bars or [])[-20:]],
+                )
+                _INTRA_MODES[name] = {
+                    "mode": mode_now.get("mode"),
+                    "mode_side": mode_now.get("side"),
+                    "spot_velocity_pts_per_sec": window.spot_velocity(),
+                    "option_velocity_inr_per_sec": window.option_velocity(),
+                    "mode_reason": mode_now.get("reason"),
+                    "ticks": len(window.rows),
+                }
+            except Exception as exc:  # noqa: BLE001 - telemetry only
+                _INTRA_MODES[name] = {"error": f"{type(exc).__name__}: {exc}"}
             continuous_started = time.perf_counter()
             continuous_now = evaluate_continuous_scalp(
                 now_ist_dt,
@@ -3968,13 +3996,16 @@ def main(argv: list[str] | None = None) -> int:
         try:
             from strategy.intra_candle_scalper import arm_strike_cache
 
-            payload["intra_candle"] = {
-                name: arm_strike_cache(
+            for name in KEYS:
+                gate_block = (((payload.get("role_pipeline") or {}).get("symbols") or {})
+                              .get(name) or {}).get("gate_25m") or {}
+                cache = arm_strike_cache(
                     payload, name,
                     float((payload.get("spot", {}).get(name) or {}).get("ltp") or 0.0),
+                    gate=gate_block,
                 )
-                for name in KEYS
-            }
+                cache.update(_INTRA_MODES.get(name) or {})
+                payload.setdefault("intra_candle", {})[name] = cache
         except Exception as exc:  # noqa: BLE001 - telemetry must never stop the desk
             payload["intra_candle"] = {"error": f"{type(exc).__name__}: {exc}"}
         try:

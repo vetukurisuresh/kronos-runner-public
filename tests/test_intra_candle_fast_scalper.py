@@ -115,3 +115,35 @@ def test_cache_pre_arms_itm_contracts_and_oi_walls() -> None:
     assert cache["call_wall_spot"] == 25050
     assert cache["put_wall_spot"] == 25100
     assert cache["armed"] is True
+
+
+def test_tick_window_measures_live_velocity() -> None:
+    from strategy.intra_candle_scalper import TickWindow
+
+    w = TickWindow()
+    w.add(0.0, 25000.0, 100.0, 1.2)
+    w.add(0.5, 25003.0, 101.0, 1.4)
+    w.add(1.0, 25006.0, 103.0, 1.5)
+    assert w.spot_velocity() == 6.0
+    assert w.option_velocity() == 3.0
+    assert len(w.spot_series()) == 3
+
+
+def test_arm_falls_back_to_the_live_gate_delta_without_inventing_a_strike() -> None:
+    cache = arm_strike_cache({"spot": {"NIFTY": {"ltp": 25224.5}}}, "NIFTY", 25224.5,
+                             gate={"delta": 0.5976, "max_pain": 25200.0})
+    assert cache["armed"] is True
+    assert cache["armed_source"] == "gate_25m"
+    assert cache["strike_pending"] is True
+    assert cache["hot_ce_contract"]["strike"] is None      # never fabricated
+    assert cache["call_wall_spot"] == 25200.0
+
+
+def test_order_plan_refuses_a_strike_less_contract() -> None:
+    from strategy.intra_candle_scalper import plan_scalp_order
+
+    mode = {"mode": "SHOCKWAVE_VELOCITY_SCALP", "side": "CE"}
+    assert plan_scalp_order(mode, {"strike": None}, 210.0, 75) is None
+    plan = plan_scalp_order(mode, {"strike": 25300, "symbol": "NIFTY"}, 210.0, 75)
+    assert plan["sl"] == 198.45 and plan["t1"] == 217.5
+    assert plan["sl_pct"] == -5.5 and plan["executor"] == "paper"

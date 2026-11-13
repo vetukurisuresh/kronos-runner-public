@@ -15,6 +15,7 @@ invented.
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -65,7 +66,8 @@ def _strike(row: Mapping[str, Any]) -> float:
 
 
 def arm_strike_cache(
-    feed: Mapping[str, Any], symbol: str = "NIFTY", spot: float = 0.0
+    feed: Mapping[str, Any], symbol: str = "NIFTY", spot: float = 0.0,
+    gate: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """KRONOS-25M: pre-arm the hot CE/PE contracts and the OI walls."""
     feed = feed or {}
@@ -116,14 +118,31 @@ def arm_strike_cache(
             return None
         return max(ranked, key=lambda item: item[1])[0]
 
+    ce, pe = hot(calls, True), hot(puts, False)
+    gate = _row(gate)
+    delta = abs(_f(gate.get("delta")))
+    level = _f(gate.get("max_pain")) or None
+    fallback = ""
+    if not (ce and pe) and ITM_DELTA_BAND[0] <= delta <= ITM_DELTA_BAND[1]:
+        # The raw 11-strike window can be empty between chain refreshes while the
+        # 25M gate still carries a verified live delta. Arm on that real delta;
+        # the strike stays None until the chain repopulates (never invented).
+        stub = {"symbol": symbol, "strike": None, "delta": delta, "ltp": None,
+                "obi_5": _f(gate.get("obi_5")) or None, "spread_pct": None,
+                "level": level, "source": "gate_25m_delta_only"}
+        ce = ce or {**stub, "side": "CE"}
+        pe = pe or {**stub, "side": "PE"}
+        fallback = "gate_25m"
     return {
         "symbol": symbol,
         "spot": spot or None,
-        "hot_ce_contract": hot(calls, True),
-        "hot_pe_contract": hot(puts, False),
-        "call_wall_spot": wall(calls),
-        "put_wall_spot": wall(puts),
-        "armed": bool(hot(calls, True) and hot(puts, False)),
+        "hot_ce_contract": ce,
+        "hot_pe_contract": pe,
+        "call_wall_spot": wall(calls) or level,
+        "put_wall_spot": wall(puts) or level,
+        "armed": bool(ce and pe),
+        "armed_source": "option_chain" if not fallback else fallback,
+        "strike_pending": bool(ce and ce.get("strike") is None),
     }
 
 
@@ -266,6 +285,9 @@ class PeakTickRatchet:
             "ratchet": self.ratchet_level(),
         }
 
+    def step(self, ltp: float, *, obi: float | None = None, now: float | None = None) -> dict[str, Any]:
+        return self.on_tick(ltp, obi=obi, now=now)
+
     def on_tick(self, ltp: float, *, obi: float | None = None, now: float | None = None) -> dict[str, Any]:
         """Manage one tick; returns the action the caller must execute."""
         if self.closed:
@@ -320,9 +342,72 @@ class PeakTickRatchet:
         }
 
 
+class TickWindow:
+    """Rolling 1.5s per-symbol tick window for intra-candle velocity."""
+
+    def __init__(self, maxlen: int = 32) -> None:
+        self.rows: deque[tuple[float, float, float, float]] = deque(maxlen=maxlen)
+
+    def add(self, ts: float, spot: float, option_ltp: float = 0.0, obi: float = 0.0) -> None:
+        if _f(spot) <= 0:
+            return
+        self.rows.append((float(ts), float(spot), _f(option_ltp), _f(obi)))
+
+    def _pair(self, index: int) -> tuple[float, float]:
+        if len(self.rows) < 2:
+            return 0.0, 0.0
+        end = self.rows[-1]
+        start = self.rows[0]
+        for row in reversed(self.rows):
+            if end[0] - row[0] <= SHOCKWAVE_LOOKBACK_SEC:
+                start = row
+        span = end[0] - start[0]
+        if span <= 0:
+            return 0.0, 0.0
+        return end[index] - start[index], span
+
+    def spot_velocity(self) -> float:
+        delta, span = self._pair(1)
+        return round(delta / span, 3) if span else 0.0
+
+    def option_velocity(self) -> float:
+        delta, span = self._pair(2)
+        return round(delta / span, 2) if span else 0.0
+
+    def spot_series(self) -> list[tuple[float, float]]:
+        return [(row[0], row[1]) for row in self.rows]
+
+    def last_obi(self) -> float:
+        return self.rows[-1][3] if self.rows else 0.0
+
+
+def plan_scalp_order(
+    mode: Mapping[str, Any], contract: Mapping[str, Any], entry: float, qty: int
+) -> dict[str, Any] | None:
+    """Turn a mode trigger into the exact paper order the executor may place."""
+    mode = _row(mode)
+    contract = _row(contract)
+    entry = _f(entry)
+    if not mode.get("mode") or mode.get("mode") == "SCANNING" or entry <= 0 or int(qty) <= 0:
+        return None
+    side = mode.get("side") or contract.get("side")
+    if side not in ("CE", "PE") or not contract.get("strike"):
+        return None          # no strike means nothing real to execute
+    return {
+        "mode": mode["mode"], "side": side, "symbol": contract.get("symbol"),
+        "strike": contract.get("strike"), "instrument_key": contract.get("instrument_key"),
+        "entry": round(entry, 2), "qty": int(qty),
+        "sl": round(entry * 0.945, 2), "t1": round(entry + 7.50, 2),
+        "t2": round(entry + 15.00, 2), "sl_pct": -5.5,
+        "ratchet": "peak - max(1.50, 0.18 * gain)", "executor": "paper",
+    }
+
+
 __all__ = [
     "PeakTickRatchet",
+    "TickWindow",
     "arm_strike_cache",
     "detect_mode",
+    "plan_scalp_order",
     "tick_velocity",
 ]
