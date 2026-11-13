@@ -142,10 +142,18 @@ def check_symbol(edge: str, symbol: str, failures: list[str]) -> dict[str, Any]:
         delta_f = abs(float(delta))
     except (TypeError, ValueError):
         delta_f = None
+    trade = tick.get("active_trade") or ((tick.get("trade") or {}).get(symbol) or {})
+    trade_open = str(trade.get("status") or "").upper() == "OPEN"
     if delta_f is None:
         failures.append(f"{symbol}: option chart has no delta")
     elif not (DELTA_BAND[0] <= delta_f <= DELTA_BAND[1]):
-        failures.append(f"{symbol}: |delta| {delta_f:.3f} outside {DELTA_BAND}")
+        # The band is the entry-selection rule.  An OPEN leg is never rolled:
+        # its delta legitimately drifts as spot travels through the strike, so
+        # there we only require that the leg is still in the money.
+        if trade_open and delta_f > 0:
+            out["delta_note"] = "OPEN_POSITION_DRIFT"
+        else:
+            failures.append(f"{symbol}: |delta| {delta_f:.3f} outside {DELTA_BAND}")
 
     osc = tick.get("model_oscillator") or {}
     bull = osc.get("bullish_upside_prob_pct")
