@@ -2770,6 +2770,17 @@ def main(argv: list[str] | None = None) -> int:
             # The dedicated continuous sleeve takes the current chain book when
             # all five signatures align. A different side is pinned for the
             # next cycle so the fill can never land on the old chart's leg.
+            # Kronos-4M intra-candle trigger feeds the SAME guarded paper
+            # executor below instead of opening a second, competing book.
+            intra_mode = _INTRA_MODES.get(name) or {}
+            if (intra_mode.get("mode") in {"SHOCKWAVE_VELOCITY_SCALP",
+                                           "SIDEWAYS_PING_PONG_ABSORPTION",
+                                           "WICK_EXHAUSTION_SNAPBACK"}
+                    and intra_mode.get("mode_side") in ("CE", "PE")
+                    and not continuous_now.get("trigger")):
+                continuous_now["trigger"] = True
+                continuous_now["side"] = intra_mode["mode_side"]
+                continuous_now["trigger_route"] = "INTRACANDLE_" + str(intra_mode.get("mode"))
             scalp_guard = desk_guards["scalping_100k"]
             if (not trade and continuous_now.get("trigger")
                     and cutoff["new_entries_allowed"] and not traffic_red

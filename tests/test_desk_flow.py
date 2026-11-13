@@ -91,3 +91,47 @@ def test_eod_reconciler_keeps_three_independent_one_lakh_ledgers() -> None:
     assert sum(row["capital_inr"] for row in out.values()) == 300000.0
     assert out["directional_100k"]["trades_closed"] == 1
     assert out["directional_100k"]["total_inr"] == 4850.0
+
+
+def test_live_ticks_routes_return_json_200() -> None:
+    """The exact routes the dashboard calls must answer JSON, never HTML 404."""
+    import json
+    import socket
+    import subprocess
+    import sys
+    import time
+    import urllib.request
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    proc = subprocess.Popen(
+        [sys.executable, str(root / "dashboard" / "server.py"),
+         "--host", "127.0.0.1", "--port", str(port)],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=str(root),
+    )
+    try:
+        import pytest
+
+        base = f"http://127.0.0.1:{port}"
+        for _ in range(16):
+            try:
+                urllib.request.urlopen(base + "/api/readiness", timeout=1)
+                break
+            except Exception:
+                time.sleep(0.25)
+        else:
+            pytest.skip("dashboard server did not come up in this environment")
+        for path in ("/api/live-ticks?symbol=NIFTY", "/api/live-ticks/NIFTY",
+                     "/api/live-ticks?symbol=BANKNIFTY", "/api/live-ticks?symbol=SENSEX"):
+            with urllib.request.urlopen(base + path, timeout=10) as resp:
+                assert resp.status == 200, path
+                body = json.loads(resp.read().decode("utf-8"))
+            assert isinstance(body, dict) and body, path
+            assert "desks" in body and "intra_candle" in body, path
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)

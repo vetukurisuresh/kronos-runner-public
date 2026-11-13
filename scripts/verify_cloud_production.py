@@ -122,6 +122,12 @@ def check_symbol(edge: str, symbol: str, failures: list[str]) -> dict[str, Any]:
     except (urllib.error.URLError, RuntimeError, json.JSONDecodeError, TimeoutError) as exc:
         failures.append(f"{symbol}: live-ticks unreachable ({type(exc).__name__}: {exc})")
         return out
+    if not isinstance(tick, dict) or not tick:
+        failures.append(f"{symbol}: live-ticks returned no JSON object")
+        return out
+    if "desks" not in tick:
+        failures.append(f"{symbol}: live-ticks missing 'desks' (HTML or degraded response)")
+        return out
     spot = tick.get("spot") or {}
     bars = spot.get("candles_5m") or []
     out["spot"] = spot.get("ltp")
