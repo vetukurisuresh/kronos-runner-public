@@ -2079,6 +2079,7 @@ const CHARTS = {spot: null, opt: null};
 const SERIES = {spot: {}, opt: {}};
 const PL = {entry: null, sl: null, t1: null, t2: null, atp: null};
 const PL_SIG = {v: ''};
+const MARK_SIG = {v: ''};
 const CONE = {sig: '', paths: []};
 const LINES_DEFAULT = {
   entry: {on: true, color: '#22d3ee'},
@@ -2833,9 +2834,61 @@ function setOrderLines(o){
   // Right-axis labels are intentionally hidden: the bold left legend is the
   // single source of truth, so the price scale never becomes noisy.
   if(entry != null && LINES.entry.on) PL.entry = mk(entry, LINES.entry, true, 'ENTRY', width + 1);
-  if(sl != null && LINES.sl.on) PL.sl = mk(sl, LINES.sl, false, 'SL');
+  const riskFree = sl != null && entry != null && sl >= entry;
+  if(sl != null && LINES.sl.on) PL.sl = mk(
+    sl, riskFree ? {color: (t.green || '#10B981')} : LINES.sl, false,
+    riskFree ? '🛡️ RISK-FREE SL @ ₹' + fmt(sl, 2) + ' (Cost + ₹1.50)' : 'SL');
   if(t1 != null && LINES.t1.on) PL.t1 = mk(t1, LINES.t1, true, 'T1');
   if(t2 != null && LINES.t2.on) PL.t2 = mk(t2, LINES.t2, true, 'T2');
+  setTradeMarkers();
+}
+
+// TradingView-style execution markers: entry arrow while OPEN, T1 booking,
+// and one exit flag on CLOSED.  Never redraws unless the marker set changes.
+function setTradeMarkers(){
+  const s = SERIES.opt.candle;
+  if(!s) return;
+  const tr = LIVE.trade || {};
+  const st = String(tr.status || '').toUpperCase();
+  const sec = (iso, fallback)=>{
+    const n = Date.parse(iso || '');
+    return Number.isFinite(n) ? Math.floor(n/1000) : fallback;
+  };
+  const last = s.__last;
+  const marks = [];
+  if(st === 'OPEN'){
+    const at = sec(tr.entry_at, last);
+    if(at != null && Number(tr.entry_price) > 0){
+      marks.push({time: at, position: 'belowBar', color: '#38BDF8', shape: 'arrowUp',
+                  text: '⬆️ BUY @ ₹' + fmt(tr.entry_price, 2)});
+    }
+    if(tr.t1_hit){
+      const tt = sec(tr.t1_at, last);
+      if(tt != null){
+        marks.push({time: tt, position: 'aboveBar', color: '#22C55E', shape: 'circle',
+                    text: '🎯 T1 BOOKED (50%)'});
+      }
+    }
+  } else if(st === 'CLOSED'){
+    const xt = sec(tr.exit_at, last);
+    const pnl = Number(tr.booked_pnl_rs != null ? tr.booked_pnl_rs
+                    : (tr.net_pnl_rs != null ? tr.net_pnl_rs : (tr.booked_pnl_inr || 0)));
+    if(xt != null){
+      marks.push({time: xt, position: 'aboveBar', color: '#F59E0B', shape: 'square',
+                  text: '🏁 EXIT @ ₹' + fmt(tr.exit_price || 0, 2) +
+                        ' (Net ' + (pnl >= 0 ? '+' : '-') + '₹' + fmt(Math.abs(pnl), 0) + ')'});
+    }
+  }
+  const sig = JSON.stringify(marks);
+  if(sig === MARK_SIG.v) return;
+  MARK_SIG.v = sig;
+  try{
+    if(typeof s.setMarkers === 'function') s.setMarkers(marks);
+    else if(typeof window.createSeriesMarkers === 'function'){
+      if(window.__kronosMarkers) window.__kronosMarkers.setMarkers(marks);
+      else window.__kronosMarkers = window.createSeriesMarkers(s, marks);
+    }
+  }catch(e){}
 }
 
 function paintBadge(){
