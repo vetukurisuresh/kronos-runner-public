@@ -252,9 +252,10 @@
         ledger(desk, id) + '</div>';
     });
     $('kfBody').innerHTML = html;
-    Array.prototype.forEach.call($('kfBody').querySelectorAll('[data-chart]'), function (btn) {
+    Array.prototype.forEach.call($('kfBody').querySelectorAll('[data-chart], [data-kf-chart]'), function (btn) {
       btn.onclick = function () {
-        openChart(btn.getAttribute('data-chart'), btn.getAttribute('data-live') === '1');
+        var key = btn.getAttribute('data-chart') || (btn.getAttribute('data-kf-chart') + ':0');
+        openChart(key, btn.getAttribute('data-live') === '1');
       };
     });
     Array.prototype.forEach.call($('kfBody').querySelectorAll('[data-tip], [data-node]'), function (node) {
@@ -453,10 +454,12 @@
     resolveEdge().then(function (base) {
       if (!base) return;
       var f = window.__kronosOrigFetch || fetch;
-      return f(base + '/api/live-ticks?symbol=NIFTY', { cache: 'no-store' })
+      var activeSym = String(window.KRONOS_ACTIVE_SYMBOL || 'NIFTY').toUpperCase();
+      return f(base + '/api/live-ticks?symbol=' + encodeURIComponent(activeSym), { cache: 'no-store' })
         .then(function (r) { return r.ok ? r.json() : null; })
         .then(function (p) {
           if (p && typeof p === 'object' && !p.error && (p.spot || p.desk_flow || p.role_pipeline)) {
+            if (p.all_symbols) window.KRONOS_ALL_SYMBOLS = p.all_symbols;
             window.paintDeskFlow(p);
           }
         });

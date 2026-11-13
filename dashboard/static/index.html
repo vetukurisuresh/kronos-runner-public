@@ -29,10 +29,6 @@
   resolveEdgeBase();
   window.fetch = function (input, init) {
     var url = typeof input === "string" ? input : (input && input.url) || "";
-    var absolute = url.indexOf("http://") === 0 || url.indexOf("https://") === 0;
-    if (absolute && url.indexOf("vetukurisuresh.github.io") === -1 && url.indexOf("edge-live/live_stream_url.json") === -1) {
-      return origFetch(input, init);
-    }
     if (url.indexOf("edge-live/live_stream_url.json") !== -1) {
       return origFetch(FIREBASE_STREAM_URL, init).then(function (r) { return r.ok ? r : synthetic200({ url: cachedEdgeBase }); }).catch(function () { return synthetic200({ url: cachedEdgeBase }); });
     }
@@ -41,6 +37,10 @@
         if (!base) return synthetic200();
         return origFetch(base + "/api/live-ticks?symbol=NIFTY", init).then(function (r) { return r.ok ? r : synthetic200(); }).catch(function () { return synthetic200(); });
       });
+    }
+    var absolute = url.indexOf("http://") === 0 || url.indexOf("https://") === 0;
+    if (absolute && url.indexOf("vetukurisuresh.github.io") === -1 && url.indexOf("edge-live/live_stream_url.json") === -1) {
+      return origFetch(input, init);
     }
     var isRelativeApi = url.indexOf("/api/") === 0 || url.indexOf("api/") === 0;
     var isGithubIoApi = url.indexOf("github.io/api/") !== -1 || url.indexOf("github.io/kronos-runner-public/api/") !== -1;
@@ -52,6 +52,18 @@
       });
     }
     return origFetch(input, init);
+  };
+})();
+(function () {
+  var RealES = window.EventSource;
+  window.EventSource = function (url, cfg) {
+    var u = String(url || "");
+    if (u.indexOf("/api/") === 0 || u.indexOf("api/") === 0) {
+      return { close: function () {}, addEventListener: function () {},
+               removeEventListener: function () {}, readyState: 1,
+               onmessage: null, onerror: null, onopen: null };
+    }
+    return new RealES(url, cfg);
   };
 })();
 </script>
@@ -5169,7 +5181,7 @@ setInterval(()=>{
 <script src="quorum_desk.js"></script>
 <script src="pro_workspace.js"></script>
 <script src="desk_flow.js"></script>
-<script src="desk_flow_v2.js?v=20261113i"></script>
+<script src="desk_flow_v2.js?v=20261113k"></script>
 <script src="pro_enterprise.js"></script>
 <script src="command_center.js"></script>
 <script>
