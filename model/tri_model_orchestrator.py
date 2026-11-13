@@ -243,41 +243,6 @@ def run_model_brain(
             prediction=prediction, inference_ms=inference_ms, missing_reason=reason,
         ))
     fallback_used = False
-    if not any(card.get("model_loaded") for card in cards):
-        # Cloud-native zero-file fallback.  The runner does not carry the local
-        # PyTorch checkpoints, but the live quorum engine does compute three
-        # independent tensor scores from the real tape/chain/depth.  Publish
-        # those values so the cards never freeze at "—%" or "WAITING".
-        try:
-            quant = build_model_quorum(feed, symbol=symbol)
-        except Exception as exc:  # noqa: BLE001 - keep the audit endpoint alive
-            quant = {"error": f"{type(exc).__name__}: {exc}"}
-        votes = {str(vote.get("role")): vote for vote in (quant.get("votes") or [])}
-        for card in cards:
-            vote = votes.get(str(card.get("role")))
-            if not vote:
-                continue
-            try:
-                confidence = float(vote.get("confidence"))
-            except (TypeError, ValueError):
-                continue
-            side = str(vote.get("side") or "NEUTRAL").upper()
-            upside = confidence if side == "CE" else (100.0 - confidence if side == "PE" else 50.0)
-            card.update({
-                "model_loaded": True,
-                "state": "LIVE_QUANT_TENSOR",
-                "probability_pct": round(confidence, 2),
-                "upside_prob": round(upside, 2),
-                "downside_prob": round(100.0 - upside, 2),
-                "direction": 1 if side == "CE" else -1 if side == "PE" else 0,
-                "reason": f"Deterministic live tensor score · {vote.get('trigger') or side} · no .pt checkpoint on runner",
-                "inference_ms": 1.0,
-                "regime": "BULLISH" if side == "CE" else "BEARISH" if side == "PE" else "NEUTRAL",
-                "target_1": (quant.get("entry") or {}).get("target_1"),
-                "target_2": (quant.get("entry") or {}).get("target_2"),
-                "projection_source": "LIVE_QUANT_TENSOR",
-            })
-            fallback_used = True
     return {
         "models": cards,
         "decision": {
