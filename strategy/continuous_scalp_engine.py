@@ -584,6 +584,54 @@ def manage_continuous_scalp(
     A trade carrying the new asymmetric plan is delegated to the 35/35/30
     rider; legacy trades keep the exact 50% path covered by existing tests.
     """
+    if str(trade.get("trigger_route") or "").startswith("INTRACANDLE_"):
+        # Single owner: an intra-candle scalp is stepped ONLY by the ratchet.
+        # The legacy/asymmetric rules below never run for these trades.
+        from strategy.intra_candle_scalper import step_ratchet_state
+
+        entry = _f(trade.get("entry_price"))
+        price = _f(ltp)
+        initial = int(trade.get("initial_qty") or trade.get("qty") or 0)
+        trade.setdefault("initial_qty", initial)
+        trade.setdefault("qty_open", initial)
+        trade.setdefault("realized_pnl_rs", 0.0)
+        trade.setdefault("booked_legs", [])
+        result = {"legs": [], "stage1": False, "breakeven": False, "exit": False,
+                  "reason": "", "total_pnl": round(_f(trade.get("realized_pnl_rs")), 2),
+                  "remaining": int(trade.get("qty_open") or 0), "status": trade.get("status")}
+        if str(trade.get("status") or "").upper() != "OPEN" or entry <= 0 or price <= 0:
+            return result
+        stamp = 0.0
+        if now is not None:
+            stamp = now.timestamp() if hasattr(now, "timestamp") else _f(now)
+        state = dict(trade.get("ratchet_state") or {
+            "entry": entry, "qty": initial, "mode": trade.get("trigger_route"),
+            "peak": entry, "booked_qty": 0, "realized": 0.0, "risk_free": False,
+            "t1_booked": False, "sl": round(entry * 0.945, 2), "opened_at": stamp,
+        })
+        new_state, tick = step_ratchet_state(state, price, obi=obi_5, now=stamp or None)
+        trade["ratchet_state"] = new_state
+        trade["current_trailing_sl"] = round(_f(tick.get("sl"), new_state["sl"]), 2)
+        trade["peak_ltp"] = max(_f(trade.get("peak_ltp"), entry), _f(tick.get("peak"), price))
+        action = str(tick.get("action") or "")
+        if action == "T1_BOOK_PEAK_RATCHET":
+            qty = min(int(trade.get("qty_open") or 0), int(_f(tick.get("qty"))))
+            leg = _close_qty(trade, price, qty, "RATCHET_T1_60PCT") if qty > 0 else None
+            if leg:
+                result["legs"].append(leg)
+                result["stage1"] = True
+        elif action in {"EXIT_PEAK_EXHAUSTION", "EXIT_SL", "SCRATCH_STAGNATION", "SCRATCH_OBI_COLLAPSE"}:
+            qty = int(trade.get("qty_open") or 0)
+            leg = _close_qty(trade, price, qty, action) if qty > 0 else None
+            if leg:
+                result["legs"].append(leg)
+            result["exit"] = True
+            result["reason"] = action
+        trade["live_pnl_rs"] = _mark_open(trade, price)
+        result["total_pnl"] = round(_f(trade.get("realized_pnl_rs")), 2)
+        result["remaining"] = int(trade.get("qty_open") or 0)
+        result["status"] = str(trade.get("status") or "OPEN")
+        return result
     if trade.get("asymmetric_plan"):
         from execution.asymmetric_trend_rider import manage_asymmetric_trade
 

@@ -408,11 +408,36 @@ def plan_scalp_order(
     }
 
 
+def step_ratchet_state(
+    state: Mapping[str, Any], ltp: float, *, obi: float | None = None, now: float | None = None
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Advance a JSON-safe ratchet state; returns (new_state, tick_action)."""
+    state = _row(state)
+    entry = _f(state.get("entry"))
+    r = PeakTickRatchet(entry=entry, qty=int(_f(state.get("qty"))),
+                        mode=str(state.get("mode") or "SHOCKWAVE"))
+    r.peak = _f(state.get("peak"), entry)
+    r.booked_qty = int(_f(state.get("booked_qty")))
+    r.realized = _f(state.get("realized"))
+    r.risk_free = bool(state.get("risk_free"))
+    r.t1_booked = bool(state.get("t1_booked"))
+    r.sl = _f(state.get("sl"), round(entry * 0.945, 2))
+    r.opened_at = _f(state.get("opened_at"))
+    tick = r.step(ltp, obi=obi, now=now)
+    return ({
+        "entry": r.entry, "qty": r.qty, "mode": r.mode, "peak": r.peak,
+        "booked_qty": r.booked_qty, "realized": r.realized, "risk_free": r.risk_free,
+        "t1_booked": r.t1_booked, "sl": r.sl, "opened_at": r.opened_at,
+        "closed": r.closed,
+    }, tick)
+
+
 __all__ = [
     "PeakTickRatchet",
     "TickWindow",
     "arm_strike_cache",
     "detect_mode",
     "plan_scalp_order",
+    "step_ratchet_state",
     "tick_velocity",
 ]

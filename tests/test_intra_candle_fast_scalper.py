@@ -147,3 +147,28 @@ def test_order_plan_refuses_a_strike_less_contract() -> None:
     plan = plan_scalp_order(mode, {"strike": 25300, "symbol": "NIFTY"}, 210.0, 75)
     assert plan["sl"] == 198.45 and plan["t1"] == 217.5
     assert plan["sl_pct"] == -5.5 and plan["executor"] == "paper"
+
+
+def test_intracandle_trade_is_owned_only_by_the_ratchet() -> None:
+    from strategy.continuous_scalp_engine import manage_continuous_scalp
+
+    trade = {
+        "status": "OPEN", "entry_price": 200.0, "qty": 75, "initial_qty": 75,
+        "continuous_scalp": True, "trigger_route": "INTRACANDLE_SHOCKWAVE_VELOCITY_SCALP",
+    }
+    first = manage_continuous_scalp(trade, 208.0, obi_5=1.8, now=1.0)
+    assert first["stage1"] is True
+    assert sum(int(leg.get("qty") or 0) for leg in first["legs"]) == 45
+    assert int(trade["qty_open"]) == 30
+
+    hold = manage_continuous_scalp(trade, 212.0, obi_5=1.8, now=2.0)
+    assert hold["exit"] is False and hold["legs"] == []
+
+    done = manage_continuous_scalp(trade, 209.8, obi_5=1.8, now=3.0)
+    assert done["exit"] is True
+    assert sum(int(leg.get("qty") or 0) for leg in done["legs"]) == 30
+    assert int(trade["qty_open"]) == 0
+
+    # A repeat tick must never book a second time.
+    again = manage_continuous_scalp(trade, 209.8, obi_5=1.8, now=4.0)
+    assert again["legs"] == [] and again["exit"] is False
