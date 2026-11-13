@@ -62,6 +62,9 @@ def data_gate(feed: Mapping[str, Any], symbol: str = "NIFTY") -> dict[str, Any]:
     pe_doi_pct = _doi_pct(_f(metrics.get("pe_doi")), pe_oi)
 
     spectrum = _block(feed, "full_spectrum", symbol)
+    # The raw 11-strike window can be OI-empty early in a session; the
+    # spectrum aggregate still carries the real PCR.
+    pcr = _f((spectrum.get("pcr") or {}).get("pcr")) or pcr
     depth = spectrum.get("depth") or {}
     greeks = spectrum.get("greeks") or {}
     vix = spectrum.get("vix") or {}
