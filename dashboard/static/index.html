@@ -7,6 +7,7 @@
   window.__kronosFetchShimInstalled = true;
   var FIREBASE_STREAM_URL = "https://kronos-nifty-desk-default-rtdb.asia-southeast1.firebasedatabase.app/system/live_stream_url.json";
   var origFetch = window.fetch.bind(window);
+  window.__kronosOrigFetch = origFetch;
   var cachedEdgeBase = window.KRONOS_EDGE_URL || "";
   var resolvingPromise = null;
   function synthetic200(extra) {
@@ -28,6 +29,10 @@
   resolveEdgeBase();
   window.fetch = function (input, init) {
     var url = typeof input === "string" ? input : (input && input.url) || "";
+    var absolute = url.indexOf("http://") === 0 || url.indexOf("https://") === 0;
+    if (absolute && url.indexOf("vetukurisuresh.github.io") === -1 && url.indexOf("edge-live/live_stream_url.json") === -1) {
+      return origFetch(input, init);
+    }
     if (url.indexOf("edge-live/live_stream_url.json") !== -1) {
       return origFetch(FIREBASE_STREAM_URL, init).then(function (r) { return r.ok ? r : synthetic200({ url: cachedEdgeBase }); }).catch(function () { return synthetic200({ url: cachedEdgeBase }); });
     }
@@ -5164,7 +5169,7 @@ setInterval(()=>{
 <script src="quorum_desk.js"></script>
 <script src="pro_workspace.js"></script>
 <script src="desk_flow.js"></script>
-<script src="desk_flow_v2.js?v=20261113g"></script>
+<script src="desk_flow_v2.js?v=20261113i"></script>
 <script src="pro_enterprise.js"></script>
 <script src="command_center.js"></script>
 <script>

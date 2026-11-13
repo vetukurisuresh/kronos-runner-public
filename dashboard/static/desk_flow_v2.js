@@ -452,7 +452,8 @@
     if (busy()) return;
     resolveEdge().then(function (base) {
       if (!base) return;
-      return fetch(base + '/api/live-ticks?symbol=NIFTY', { cache: 'no-store' })
+      var f = window.__kronosOrigFetch || fetch;
+      return f(base + '/api/live-ticks?symbol=NIFTY', { cache: 'no-store' })
         .then(function (r) { return r.ok ? r.json() : null; })
         .then(function (p) {
           if (p && typeof p === 'object' && !p.error && (p.spot || p.desk_flow || p.role_pipeline)) {
