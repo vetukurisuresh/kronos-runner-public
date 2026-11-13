@@ -84,10 +84,18 @@ def _directional(payload: Mapping[str, Any], name: str) -> dict[str, Any]:
     gate = _d(block.get("gate_25m"))
     micro = _d(block.get("micro_4m"))
     osc = _d(payload.get("model_oscillator"))
-    prob = _f(osc.get("directional_probability_pct"))
-    side = str(osc.get("directional_side") or "").upper()
+    upside = _f(osc.get("bullish_upside_prob_pct")) or _f(osc.get("directional_probability_pct"))
+    downside = _f(osc.get("bearish_downside_prob_pct"))
+    if not downside and upside:
+        downside = 100.0 - upside
+    if max(upside, downside) <= 0:
+        prob, side = 0.0, ""
+    elif downside > upside:
+        prob, side = downside, "PE"
+    else:
+        prob, side = upside, "CE"
     bull, bear = bool(gate.get("data_confirmed_bullish")), bool(gate.get("data_confirmed_bearish"))
-    n102 = _node("KRONOS-102M", prob >= 75.0, f"{prob:.0f}% {side or '—'}")
+    n102 = _node("KRONOS-102M", prob >= 62.0, f"{prob:.0f}% {side or '—'} ({upside:.0f}/{downside:.0f})")
     n25 = _node("KRONOS-25M", bull or bear,
                 f"PCR {_f(gate.get('pcr')):.2f} · Δ {_f(gate.get('delta')):.2f} · "
                 f"{'BULL' if bull else 'BEAR' if bear else 'WAIT'}")
@@ -95,7 +103,7 @@ def _directional(payload: Mapping[str, Any], name: str) -> dict[str, Any]:
     n4 = _node("KRONOS-4M", obi >= 1.25,
                f"OBI {obi:.2f}x · TBQ {_f(micro.get('tbq_tsq')):.2f}x")
     return {"id": "directional_100k", "nodes": [n102, n25, n4],
-            "handshake": prob >= 75.0 and (bull or bear) and obi >= 1.25,
+            "handshake": prob >= 62.0 and (bull or bear) and obi >= 1.25,
             "side": "CE" if bull or side == "BULL" else "PE" if bear or side == "BEAR" else None}
 
 
