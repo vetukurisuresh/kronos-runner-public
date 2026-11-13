@@ -1809,9 +1809,15 @@ def main(argv: list[str] | None = None) -> int:
             # Release the directional desk pin once this index's trade is closed.
             if not trade_pin_open and desk_pins.get("directional_100k") == name:
                 desk_pins["directional_100k"] = None
-            if not trade and desk_pins.get("scalping_100k") == name:
+            # Scalper and hero pins release on their own last trade, never on a
+            # variable that this cycle has not assigned yet.
+            scalp_pinned = continuous_last.get(name) or {}
+            if (desk_pins.get("scalping_100k") == name
+                    and str(scalp_pinned.get("status") or "").upper() != "OPEN"):
                 desk_pins["scalping_100k"] = None
-            if not trade and desk_pins.get("zero_to_hero_100k") == name:
+            hero_pinned = hero_last.get(name) or {}
+            if (desk_pins.get("zero_to_hero_100k") == name
+                    and str(hero_pinned.get("status") or "").upper() != "OPEN"):
                 desk_pins["zero_to_hero_100k"] = None
             full_now = (payload.get("full_spectrum") or {}).get(name) or {}
             depth_now = full_now.get("depth") or {}
