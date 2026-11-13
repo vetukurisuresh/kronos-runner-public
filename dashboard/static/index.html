@@ -1660,6 +1660,7 @@ body.tl-open{overflow:hidden!important}
         <span data-role="d102">🧭 102M DIRECTIONAL · WAITING</span>
         <span data-role="gate25">📊 25M DATA GATE · WAITING</span>
         <span data-role="sniper4">💥 4M EXPIRY/SNIPER · SCANNING</span>
+        <span data-role="ic4">⚡ 4M CACHE · ARMING</span>
       </div>
       <div class="chart-canvas-wrap">
         <div id="chart2" class="chart-host"></div>
@@ -2869,6 +2870,12 @@ function paintRoleStrip(p){
   put('d102', b.d102);
   put('gate25', b.gate25);
   put('sniper4', b.sniper4);
+  const ic = (p && p.intra_candle && p.intra_candle.NIFTY) || {};
+  const ce = ic.hot_ce_contract, pe = ic.hot_pe_contract;
+  if(ce || pe){
+    const tag = (c, s)=> c ? s + ' ' + c.strike + ' Δ' + Number(c.delta).toFixed(2) : s + ' —';
+    put('ic4', '⚡ 4M CACHE: ' + tag(ce, 'CE') + ' · ' + tag(pe, 'PE'));
+  }
 }
 
 function setTradeMarkers(){
