@@ -1,6 +1,38 @@
 <!doctype html>
 <html lang="en" data-theme="light">
 <head>
+<script>
+/* github.io has no API: resolve the edge once, then route every /api/* there.
+   Returns a clean 200 while resolving so a startup race never logs a 404. */
+(function () {
+  if (!/github\.io$/i.test(location.hostname) || window.__kfFetch) return;
+  window.__kfFetch = true;
+  var FIREBASE = 'https://kronos-nifty-desk-default-rtdb.asia-southeast1.firebasedatabase.app/system/live_stream_url.json';
+  var warming = function () {
+    return new Response(JSON.stringify({ ok: true, warming: true }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  var real = window.fetch.bind(window);
+  window.__kfEdge = null;
+  window.__kfEdgeReady = real(FIREBASE, { cache: 'no-store' })
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (d) { window.__kfEdge = (d && (d.edge_url || d.url)) || null; return window.__kfEdge; })
+    .catch(function () { return null; });
+  window.fetch = function (input, opts) {
+    var url = typeof input === 'string' ? input : (input && input.url) || '';
+    if (/^\/?api\//.test(url)) {
+      var path = url.charAt(0) === '/' ? url : '/' + url;
+      return window.__kfEdgeReady.then(function (base) {
+        if (!base) return warming();
+        if (url.indexOf('https://vetukurisuresh.github.io/api/') === 0) path = '/' + url.split('/api/')[1].replace(/^/, 'api/');
+        return real(String(base).replace(/\/$/, '') + path, opts).catch(warming);
+      }).catch(warming);
+    }
+    return real(input, opts);
+  };
+})();
+</script>
+
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#080b11">
@@ -1963,7 +1995,7 @@ const FIREBASE_DB = (window.KRONOS_CONFIG && window.KRONOS_CONFIG.firebaseDbUrl)
 // Live traffic goes to the active GitHub runner, never the Pages origin.
 let EDGE_BASE_URL=''; let API_BASE=''; window.EDGE_BASE_URL='';
 const EDGE_QUERY=new URLSearchParams(location.search).get('edge')||'';
-const EDGE_RAW_RECORD='https://raw.githubusercontent.com/vetukurisuresh/kronos-trading-brain/edge-live/live_stream_url.json';
+const EDGE_RAW_RECORD='https://kronos-nifty-desk-default-rtdb.asia-southeast1.firebasedatabase.app/system/live_stream_url.json';
 function normalizeEdgeUrl(v){const u=String(v||'').trim().replace(/\/+$/,'');return /^https:\/\//.test(u)?u:''}
 function apiUrl(path){const r=String(path||'');if(r.indexOf('/api/')!==0)return r;const b=EDGE_BASE_URL||API_BASE;return b?b+r:r}
 const __nativeFetch=window.fetch.bind(window);
@@ -5113,7 +5145,7 @@ setInterval(()=>{
 <script src="quorum_desk.js"></script>
 <script src="pro_workspace.js"></script>
 <script src="desk_flow.js"></script>
-<script src="desk_flow_v2.js?v=20261113f"></script>
+<script src="desk_flow_v2.js?v=20261113g"></script>
 <script src="pro_enterprise.js"></script>
 <script src="command_center.js"></script>
 <script>
