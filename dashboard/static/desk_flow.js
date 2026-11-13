@@ -43,6 +43,7 @@
       '<div class="desk-line">Exits T1 ' + (exits.t1_pct || 0) + "% / T2 " +
       (exits.t2_pct || 0) + "% / Runner " + (exits.runner_pct || 0) + "%</div>" +
       '<div class="desk-line desk-muted">' + esc(desk.strategy) + "</div>" +
+      '<button class="desk-chart-btn" data-symbol="NIFTY">📈 Chart</button>' +
       "</div>"
     );
   }
@@ -62,6 +63,96 @@
     }).join("");
   }
 
+  // SVG node-flow: Upstox hub -> Kronos 102M/25M/4M -> strike/trade node.
+  // Model % and checkmarks come only from the payload; missing values show as "—".
+  function pct(v) {
+    return v == null || isNaN(Number(v)) ? "—" : Number(v).toFixed(1) + "%";
+  }
+
+  function flowSvg(payload, desk) {
+    var m = payload.model_oscillator || {};
+    var up = Number(m.bullish_upside_prob_pct || 0);
+    var down = Number(m.bearish_downside_prob_pct || 0);
+    var ready = up >= 75 || down >= 75;
+    var tradeLabel = desk && desk.trade_status ? esc(desk.trade_status) : "⏳ ENTRY PENDING";
+    var stamp = ready ? "✅" : "⏳";
+    var models = [
+      { id: "102M", y: 40, p: up, tip: "Kronos-102M · upside " + pct(up) + " · down " + pct(down) },
+      { id: "25M", y: 110, p: up, tip: "Kronos-25M · confirms 102M bias" },
+      { id: "4M", y: 180, p: up, tip: "Kronos-4M · confirms 102M bias" }
+    ];
+    var nodes = models.map(function (mo) {
+      var glow = ready ? ' class="flow-glow"' : "";
+      return '<g class="flow-model" data-tip="' + esc(mo.tip) + '">' +
+        '<line x1="80" y1="100" x2="160" y2="' + mo.y + '"' + glow + ' stroke="#64748b" stroke-width="2"/>' +
+        '<rect x="160" y="' + (mo.y - 18) + '" width="110" height="36" rx="8" fill="#1e293b" stroke="#334155"/>' +
+        '<text x="215" y="' + (mo.y + 5) + '" text-anchor="middle" fill="#e2e8f0" font-size="13">' +
+        mo.id + " " + pct(mo.p) + " " + (ready ? "✅" : "") + "</text></g>";
+    }).join("");
+    return (
+      '<svg class="flow-svg" viewBox="0 0 400 220" role="img" aria-label="Model flow">' +
+      '<g class="flow-hub" data-tip="Upstox V3 · NIFTY / BANKNIFTY / SENSEX ticks · 512-bar status · 37 streams">' +
+      '<rect x="0" y="80" width="80" height="40" rx="8" fill="#312e81"/>' +
+      '<text x="40" y="104" text-anchor="middle" fill="#f5f3ff" font-size="11">🟣 UPSTOX 🟢 100%</text></g>' +
+      nodes +
+      '<g class="flow-strike" data-tip="Strike node: ' + tradeLabel + '">' +
+      '<line x1="270" y1="110" x2="330" y2="110" stroke="' + (ready ? "#22c55e" : "#64748b") + '" stroke-width="2"/>' +
+      '<rect x="330" y="92" width="68" height="36" rx="8" fill="#0f172a" stroke="#334155"/>' +
+      '<text x="364" y="114" text-anchor="middle" fill="#e2e8f0" font-size="10">' + stamp + " " + tradeLabel + "</text></g>" +
+      "</svg>"
+    );
+  }
+
+  // Chart modal: dark slate, bullish #FFFFFF, bearish #F43F5E, VWAP #F59E0B.
+  // Draws only the candles it is given; never calls setData on live ticks.
+  function drawChart(canvas, candles, vwap) {
+    var ctx = canvas.getContext("2d");
+    var w = canvas.width, h = canvas.height;
+    ctx.fillStyle = "#0f172a";
+    ctx.fillRect(0, 0, w, h);
+    if (!candles || !candles.length) {
+      ctx.fillStyle = "#94a3b8";
+      ctx.fillText("No candles in the live payload yet.", 20, 30);
+      return;
+    }
+    var lo = Infinity, hi = -Infinity;
+    candles.forEach(function (c) { lo = Math.min(lo, c.low); hi = Math.max(hi, c.high); });
+    var span = (hi - lo) || 1;
+    var step = w / candles.length;
+    var y = function (v) { return h - 20 - ((v - lo) / span) * (h - 40); };
+    candles.forEach(function (c, i) {
+      var x = i * step + step / 2;
+      var up = c.close >= c.open;
+      ctx.strokeStyle = ctx.fillStyle = up ? "#FFFFFF" : "#F43F5E";
+      ctx.beginPath(); ctx.moveTo(x, y(c.high)); ctx.lineTo(x, y(c.low)); ctx.stroke();
+      var top = y(Math.max(c.open, c.close)), bot = y(Math.min(c.open, c.close));
+      ctx.fillRect(x - step * 0.3, top, step * 0.6, Math.max(bot - top, 1));
+    });
+    if (vwap) {
+      ctx.strokeStyle = "#F59E0B";
+      ctx.beginPath(); ctx.moveTo(0, y(vwap)); ctx.lineTo(w, y(vwap)); ctx.stroke();
+    }
+  }
+
+  function openChart(symbol) {
+    var snap = lastPayload || {};
+    var modal = document.createElement("div");
+    modal.className = "desk-modal";
+    modal.innerHTML = '<div class="desk-modal-box"><div class="desk-modal-head">' +
+      esc(symbol) + ' · 5m <button class="desk-modal-close">✕</button></div>' +
+      '<canvas width="720" height="360"></canvas></div>';
+    document.body.appendChild(modal);
+    drawChart(modal.querySelector("canvas"), snap.candles || [], snap.vwap);
+    modal.addEventListener("click", function (e) {
+      if (e.target === modal || e.target.classList.contains("desk-modal-close")) modal.remove();
+    });
+  }
+
+  document.addEventListener("click", function (event) {
+    var chart = event.target && event.target.closest && event.target.closest(".desk-chart-btn");
+    if (chart) openChart(chart.getAttribute("data-symbol") || "NIFTY");
+  });
+
   function render(payload) {
     var host = document.getElementById("deskFlowPanel");
     if (!host || !payload || !payload.desks) return;
@@ -76,12 +167,25 @@
     var cards = keys.map(function (k) {
       return payload.desks[k] ? deskCard(k, payload.desks[k]) : "";
     }).join("");
+    var flowDesk = active === "ALL" ? null : payload.desks[active];
     host.innerHTML =
       '<div class="desk-tabs">' + tabs + "</div>" +
+      flowSvg(payload, flowDesk) +
+      '<div class="desk-tip" id="deskTip" hidden></div>' +
       '<div class="desk-cards">' + cards + "</div>" +
       '<div class="desk-rank-wrap"><div class="desk-k">INDEX MOMENTUM (0–100)</div>' +
       rankingRows(payload.index_momentum) + "</div>";
   }
+
+  // Hover telemetry: a floating popover shows the element's data-tip text.
+  document.addEventListener("mouseover", function (event) {
+    var node = event.target && event.target.closest && event.target.closest("[data-tip]");
+    var tip = document.getElementById("deskTip");
+    if (!tip) return;
+    if (!node) { tip.hidden = true; return; }
+    tip.textContent = node.getAttribute("data-tip");
+    tip.hidden = false;
+  });
 
   document.addEventListener("click", function (event) {
     var btn = event.target && event.target.closest && event.target.closest(".desk-tab");

@@ -1389,6 +1389,11 @@ def main(argv: list[str] | None = None) -> int:
     story = StoryTeller(limit=20)
     hud = load_hud()
     guard = SniperRiskGuard.load(RISK_FILE, today_ist())
+    # Each ₹1L desk owns its pin and its trade cap: one open trade per desk,
+    # never blocking another desk on another index.
+    desk_pins: dict[str, str | None] = {
+        "directional_100k": None, "scalping_100k": None, "zero_to_hero_100k": None,
+    }
     hero_desk = HeroTradeDesk.load(HERO_DESK_FILE, today_ist())
     hero_last: dict[str, dict] = {}
     hero_window_entries: dict[str, int] = {}
@@ -1794,6 +1799,9 @@ def main(argv: list[str] | None = None) -> int:
                 str(pinned_trade.get("status") or "").upper() == "OPEN"
                 and str(pinned_trade.get("option_type") or "").upper() in {"CE", "PE"}
             )
+            # Release the directional desk pin once this index's trade is closed.
+            if not trade_pin_open and desk_pins.get("directional_100k") == name:
+                desk_pins["directional_100k"] = None
             full_now = (payload.get("full_spectrum") or {}).get(name) or {}
             depth_now = full_now.get("depth") or {}
             bias = payload.get("model_oscillator") or {}
@@ -2510,6 +2518,8 @@ def main(argv: list[str] | None = None) -> int:
                     sniper_pending[name] = auto_side
                 elif auto_side in {"CE", "PE"}:
                     risk_check = guard.can_open("A+")
+                    if desk_pins.get("directional_100k") and trade:
+                        risk_check = {"ok": False, "reason": "DESK_ALREADY_OPEN"}
                     if risk_check.get("ok"):
                         try:
                             trade = create_autonomous_trade(
@@ -2535,6 +2545,7 @@ def main(argv: list[str] | None = None) -> int:
                             state["story_trade"] = False
                             state["ledger_sig"] = None
                             guard.register_entry("A+")
+                            desk_pins["directional_100k"] = name
                             hud["trades_today"] = int(hud.get("trades_today") or 0) + 1
                             hud["sniper_trades"] = guard.trades
                             save_hud(hud)
@@ -2591,6 +2602,7 @@ def main(argv: list[str] | None = None) -> int:
                             state["story_trade"] = False
                             state["ledger_sig"] = None
                             guard.register_entry("A+")
+                            desk_pins["directional_100k"] = name
                             hud["trades_today"] = int(hud.get("trades_today") or 0) + 1
                             hud["sniper_trades"] = guard.trades
                             save_hud(hud)
