@@ -400,6 +400,26 @@
     drawChart(rows, saved ? saved.trade : trade, !!saved && !live);
   }
 
+  // github.io has no API of its own: route every relative /api/* call to the edge.
+  if (/github\.io$/i.test(location.hostname) && !window.__kfFetch) {
+    window.__kfFetch = true;
+    var realFetch = window.fetch.bind(window);
+    var warming = function () {
+      return new Response(JSON.stringify({ ok: true, warming: true }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+    window.fetch = function (input, opts) {
+      var url = typeof input === 'string' ? input : (input && input.url) || '';
+      if (/^\/?api\//.test(url)) {
+        var path = url.charAt(0) === '/' ? url : '/' + url;
+        return resolveEdge().then(function (base) {
+          return base ? realFetch(base + path, opts) : warming();
+        }).catch(warming);
+      }
+      return realFetch(input, opts);
+    };
+  }
+
   window.paintDeskFlow = function (payload) {
     if (!payload) return;
     LAST = payload;
