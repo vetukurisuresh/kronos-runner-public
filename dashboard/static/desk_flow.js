@@ -190,9 +190,14 @@
 
   // openChartModal(symbol, frozen): a frozen shot (completed trade) draws its saved
   // candles and levels; otherwise the live payload candles for that symbol.
+  function liveCandles(snap) {
+    // /api/live-ticks serves the series under spot.candles_5m.
+    return (snap.candles || (snap.spot || {}).candles_5m || []);
+  }
+
   function openChartModal(symbol, frozen) {
     var snap = lastPayload || {};
-    var candles = frozen ? frozen.candles : (snap.candles || []);
+    var candles = frozen ? frozen.candles : liveCandles(snap);
     var levels = frozen ? frozen.levels : null;
     var modal = document.createElement("div");
     modal.className = "desk-modal";
@@ -201,7 +206,7 @@
       ' <button class="desk-modal-close">✕</button></div>' +
       '<canvas width="720" height="360"></canvas></div>';
     document.body.appendChild(modal);
-    drawChart(modal.querySelector("canvas"), candles, snap.vwap, levels);
+    drawChart(modal.querySelector("canvas"), candles, (snap.spot || {}).vwap || snap.vwap, levels);
     modal.addEventListener("click", function (e) {
       if (e.target === modal || e.target.classList.contains("desk-modal-close")) modal.remove();
     });
@@ -216,7 +221,7 @@
 
   // Called when a trade reaches ✅ TRADE DONE: freeze its candles and levels.
   function onTradeDone(sid, trade) {
-    saveShot(sid, trade, (lastPayload && lastPayload.candles) || []);
+    saveShot(sid, trade, lastPayload ? liveCandles(lastPayload) : []);
   }
   window.kronosDeskTradeDone = onTradeDone;
 
