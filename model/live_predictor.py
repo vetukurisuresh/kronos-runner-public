@@ -364,6 +364,9 @@ def _publish_status() -> None:
                 "projection_source": payload.get("projection_source"),
                 "projection_ms": payload.get("projection_ms"),
                 "direction": payload.get("direction"),
+                # Readiness must see whether this card came from a checkpoint
+                # or the deterministic live tensor engine.
+                "probability_source": payload.get("probability_source") or payload.get("state"),
                 "regime": payload.get("regime"),
                 "p10": payload.get("p10"),
                 "p50": payload.get("p50"),
