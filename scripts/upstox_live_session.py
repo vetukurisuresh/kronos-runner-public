@@ -3963,6 +3963,20 @@ def main(argv: list[str] | None = None) -> int:
             payload["role_pipeline"] = build_role_pipeline(payload, "NIFTY")
         except Exception as exc:  # noqa: BLE001 - badges must not stop the desk
             payload["role_pipeline"] = {"error": f"{type(exc).__name__}: {exc}"}
+        # Kronos-25M pre-armed strike cache: the exact ITM CE/PE and the OI
+        # walls the 4M scalper can fire on without scanning the chain.
+        try:
+            from strategy.intra_candle_scalper import arm_strike_cache
+
+            payload["intra_candle"] = {
+                name: arm_strike_cache(
+                    payload, name,
+                    float((payload.get("spot", {}).get(name) or {}).get("ltp") or 0.0),
+                )
+                for name in KEYS
+            }
+        except Exception as exc:  # noqa: BLE001 - telemetry must never stop the desk
+            payload["intra_candle"] = {"error": f"{type(exc).__name__}: {exc}"}
         payload["model_thoughts_te"] = narration_now["thoughts"]
         payload["brain_log_te"] = narration_now["log"]
         payload["proof_ledger"] = early_entry_detector.snapshot()
