@@ -852,6 +852,7 @@ def snapshot(symbol: str = "NIFTY", now: float | None = None) -> dict[str, Any]:
     # heavy cycle (5/6 vs 6/6 in the same modal).  Use the same runtime builder
     # the /api/readiness endpoint uses so every surface agrees.
     autopilot = feed.get("autopilot")
+    role_pipeline = feed.get("role_pipeline")
     try:
         from market.autopilot_readiness import build_from_runtime, load_readiness
         from market.upstox_health import load_access_token, load_token_meta
@@ -994,6 +995,7 @@ def snapshot(symbol: str = "NIFTY", now: float | None = None) -> dict[str, Any]:
         "programmatic": programmatic,
         "speed_telemetry": programmatic.get("speed_telemetry") or {},
         "data_pipe_health": programmatic.get("data_pipe_health") or [],
+        "role_pipeline": role_pipeline,
         "model_oscillator": oscillator,
         "model_thoughts_te": thoughts,
         "brain_log_te": brain_log,
