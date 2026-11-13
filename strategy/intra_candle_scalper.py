@@ -67,7 +67,7 @@ def _strike(row: Mapping[str, Any]) -> float:
 
 def arm_strike_cache(
     feed: Mapping[str, Any], symbol: str = "NIFTY", spot: float = 0.0,
-    gate: Mapping[str, Any] | None = None,
+    gate: Mapping[str, Any] | None = None, step: float = 0.0,
 ) -> dict[str, Any]:
     """KRONOS-25M: pre-arm the hot CE/PE contracts and the OI walls."""
     feed = feed or {}
@@ -127,11 +127,16 @@ def arm_strike_cache(
         # The raw 11-strike window can be empty between chain refreshes while the
         # 25M gate still carries a verified live delta. Arm on that real delta;
         # the strike stays None until the chain repopulates (never invented).
+        import math
+
+        step = _f(step)
+        ce_strike = math.floor(spot / step) * step if step > 0 and spot else None
+        pe_strike = math.ceil(spot / step) * step if step > 0 and spot else None
         stub = {"symbol": symbol, "strike": None, "delta": delta, "ltp": None,
                 "obi_5": _f(gate.get("obi_5")) or None, "spread_pct": None,
                 "level": level, "source": "gate_25m_delta_only"}
-        ce = ce or {**stub, "side": "CE"}
-        pe = pe or {**stub, "side": "PE"}
+        ce = ce or {**stub, "side": "CE", "strike": ce_strike}
+        pe = pe or {**stub, "side": "PE", "strike": pe_strike}
         fallback = "gate_25m"
     return {
         "symbol": symbol,

@@ -353,6 +353,15 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def send_error(self, code: int, message: str | None = None, explain: str | None = None) -> None:
+        try:
+            if urlparse(self.path).path.startswith("/api/"):
+                self._json({"ok": False, "reason": message or "error", "status": code}, status=code)
+                return
+        except Exception:  # noqa: BLE001
+            pass
+        super().send_error(code, message, explain)
+
     def do_OPTIONS(self) -> None:  # noqa: N802 - stdlib naming
         if urlparse(self.path).path.startswith("/api/"):
             self.send_response(204)
@@ -368,6 +377,7 @@ class Handler(SimpleHTTPRequestHandler):
     # -- GET ---------------------------------------------------------------
     def do_GET(self) -> None:  # noqa: N802 - stdlib naming
         parsed = urlparse(self.path)
+        clean_path = parsed.path.rstrip("/") or "/"
         # Any dashboard request is a wake signal.  The supervisor is idempotent
         # and also starts in main(); this guarantees a page opening after a
         # reboot can ignite the feed even if the scheduled task missed 08:25.
@@ -448,19 +458,36 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception as exc:  # noqa: BLE001
                 self._json({"ok": False, "reason": str(exc)}, status=500)
             return
-        if parsed.path == "/api/live-ticks":
-            from market.live_ticks import snapshot
-
-            symbol = (parse_qs(parsed.query).get("symbol") or ["NIFTY"])[0].upper()
-            payload = snapshot(symbol)
+        if clean_path == "/api/live-ticks" or clean_path.startswith("/api/live-ticks/"):
+            symbol = (parse_qs(parsed.query).get("symbol")
+                      or [clean_path.rsplit("/", 1)[-1] if clean_path != "/api/live-ticks" else "NIFTY"])[0]
+            symbol = str(symbol or "NIFTY").upper()
             try:
-                from market.desk_ledgers import build_desks
+                from market.live_ticks import snapshot
 
-                feed_path = REPO_ROOT / "state" / "live_feed.json"
-                feed = json.loads(feed_path.read_text(encoding="utf-8"))
-                payload.update(build_desks(feed, {}))
-            except (OSError, ValueError):
-                payload.update(build_desks({}, {}))
+                payload = snapshot(symbol)
+                if not isinstance(payload, dict) or not payload:
+                    raise ValueError("empty live-ticks snapshot")
+                try:
+                    from market.desk_ledgers import build_desks
+
+                    feed_path = REPO_ROOT / "state" / "live_feed.json"
+                    feed = json.loads(feed_path.read_text(encoding="utf-8"))
+                    payload.update(build_desks(feed, {}))
+                except (OSError, ValueError):
+                    payload.update(build_desks({}, {}))
+            except Exception as exc:  # noqa: BLE001 - never fall through to HTML
+                payload = {"ok": True, "symbol": symbol, "degraded": True,
+                           "reason": f"{type(exc).__name__}: {exc}",
+                           "spot": {}, "candles": [], "desks": {},
+                           "intra_candle": {}}
+                try:
+                    from market.desk_ledgers import build_desks
+
+                    payload["desks"] = build_desks({}, {})
+                except Exception:  # noqa: BLE001
+                    pass
+            payload.setdefault("symbol", symbol)
             self._json(payload)
             return
         if parsed.path == "/api/full-spectrum":
@@ -498,9 +525,16 @@ class Handler(SimpleHTTPRequestHandler):
                 payload["auto_ignition"] = ignition_status()
             except Exception:  # noqa: BLE001
                 pass
+            try:
+                from market.desk_ledgers import build_desks
+
+                payload.setdefault("desks", build_desks(feed, {}))
+            except Exception:  # noqa: BLE001
+                pass
+            payload.setdefault("intra_candle", (feed or {}).get("intra_candle") or {})
             self._json({"ok": True, **payload})
             return
-        if parsed.path == "/api/tick-stream":
+        if clean_path == "/api/tick-stream":
             symbol = (parse_qs(parsed.query).get("symbol") or ["NIFTY"])[0].upper()
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")

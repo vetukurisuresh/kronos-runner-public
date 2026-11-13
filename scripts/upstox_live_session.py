@@ -4003,6 +4003,7 @@ def main(argv: list[str] | None = None) -> int:
                     payload, name,
                     float((payload.get("spot", {}).get(name) or {}).get("ltp") or 0.0),
                     gate=gate_block,
+                    step=float(index_strike_step(name) or 0.0),
                 )
                 cache.update(_INTRA_MODES.get(name) or {})
                 payload.setdefault("intra_candle", {})[name] = cache
