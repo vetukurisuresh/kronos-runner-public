@@ -1,0 +1,1 @@
+window.KRONOS_CONFIG = { firebaseDbUrl: "https://kronos-nifty-desk-default-rtdb.asia-southeast1.firebasedatabase.app", upstoxClientId: "94c2d1d8-b5c9-44e1-9335-6d0fa5a448e6", upstoxRedirectUri: "https://vetukurisuresh.github.io/kronos-runner-public/" };

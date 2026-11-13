@@ -1,0 +1,19 @@
+{
+  "name": "KRONOS Quant Desk — NIFTY 50",
+  "short_name": "KRONOS",
+  "description": "NIFTY 50 / BANK NIFTY Kronos trio forecast terminal",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#080b11",
+  "theme_color": "#080b11",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
