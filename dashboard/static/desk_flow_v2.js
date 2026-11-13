@@ -256,7 +256,11 @@
         openChart(btn.getAttribute('data-chart'), btn.getAttribute('data-live') === '1');
       };
     });
-    Array.prototype.forEach.call($('kfBody').querySelectorAll('[data-tip]'), function (node) {
+    Array.prototype.forEach.call($('kfBody').querySelectorAll('[data-tip], [data-node]'), function (node) {
+      if (node.getAttribute('data-node') && !node.getAttribute('data-tip')) {
+        var inner = node.querySelector('[data-tip]');
+        if (inner) node.setAttribute('data-tip', inner.getAttribute('data-tip'));
+      }
       node.addEventListener('mouseenter', function (ev) {
         var t = $('kfTip'); if (!t) return;
         t.textContent = node.getAttribute('data-tip');
