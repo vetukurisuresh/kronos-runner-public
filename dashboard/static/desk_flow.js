@@ -44,8 +44,43 @@
       (exits.t2_pct || 0) + "% / Runner " + (exits.runner_pct || 0) + "%</div>" +
       '<div class="desk-line desk-muted">' + esc(desk.strategy) + "</div>" +
       '<button class="desk-chart-btn" data-symbol="NIFTY">📈 Chart</button>' +
+      ledgerRows(key, desk.trades || []) +
       "</div>"
     );
+  }
+
+  // Per-trade rows: # | Time | Index & Strike | Entry -> Exit/LTP | Status | Booked ₹ | chart.
+  // A completed trade's chart is frozen to localStorage when it closes.
+  var SHOT_KEY = "kronos_desk_shots";
+  function loadShots() {
+    try { return JSON.parse(localStorage.getItem(SHOT_KEY) || "{}"); } catch (e) { return {}; }
+  }
+  function ledgerRows(deskKey, trades) {
+    if (!trades.length) return '<div class="desk-muted">No trades yet.</div>';
+    var shots = loadShots();
+    return '<table class="desk-ledger"><tr><th>#</th><th>Time</th><th>Index &amp; Strike</th>' +
+      '<th>Entry ₹</th><th>LTP/Exit ₹</th><th>Status</th><th>Booked ₹</th><th></th></tr>' +
+      trades.map(function (t, i) {
+        var done = String(t.status || "").indexOf("DONE") >= 0;
+        var sid = deskKey + ":" + (t.id || i);
+        var btn = done && shots[sid]
+          ? '<button class="desk-shot-btn" data-shot="' + esc(sid) + '">📸 Saved Chart Shot</button>'
+          : '<button class="desk-chart-btn" data-symbol="' + esc(t.symbol || "NIFTY") +
+            '" data-trade="' + esc(sid) + '">📈 Live Chart</button>';
+        return '<tr><td>#' + (i + 1) + '</td><td>' + esc(t.time || "—") + '</td><td>' +
+          esc(t.index_strike || "—") + '</td><td>' + esc(t.entry == null ? "—" : t.entry) +
+          '</td><td>' + esc(t.exit_or_ltp == null ? "—" : t.exit_or_ltp) + '</td><td>' +
+          esc(t.status || "⏳ ENTRY PENDING") + '</td><td>' + inr(t.booked_pnl_inr) +
+          '</td><td>' + btn + '</td></tr>';
+      }).join("") + "</table>";
+  }
+
+  // Auto-save a frozen chart shot when a trade reaches ✅ TRADE DONE.
+  function saveShot(sid, trade, candles) {
+    var shots = loadShots();
+    if (shots[sid]) return;
+    shots[sid] = { candles: candles || [], levels: trade.levels || {}, booked: trade.booked_pnl_inr, symbol: trade.symbol };
+    try { localStorage.setItem(SHOT_KEY, JSON.stringify(shots)); } catch (e) { /* storage full: keep in memory only */ }
   }
 
   function rankingRows(ranking) {
@@ -74,6 +109,11 @@
     var up = Number(m.bullish_upside_prob_pct || 0);
     var down = Number(m.bearish_downside_prob_pct || 0);
     var ready = up >= 75 || down >= 75;
+    // 102M >= 75%: a glowing pulse travels 102M -> 25M and 102M -> 4M.
+    var pulse = up >= 75
+      ? '<circle class="flow-pulse" r="4" fill="#FFFFFF"><animateMotion dur="1.4s" repeatCount="indefinite" path="M80,100 L160,110"/></circle>' +
+        '<circle class="flow-pulse" r="4" fill="#FFFFFF"><animateMotion dur="1.4s" repeatCount="indefinite" path="M80,100 L160,180"/></circle>'
+      : "";
     var tradeLabel = desk && desk.trade_status ? esc(desk.trade_status) : "⏳ ENTRY PENDING";
     var stamp = ready ? "✅" : "⏳";
     var models = [
@@ -94,7 +134,7 @@
       '<g class="flow-hub" data-tip="Upstox V3 · NIFTY / BANKNIFTY / SENSEX ticks · 512-bar status · 37 streams">' +
       '<rect x="0" y="80" width="80" height="40" rx="8" fill="#312e81"/>' +
       '<text x="40" y="104" text-anchor="middle" fill="#f5f3ff" font-size="11">🟣 UPSTOX 🟢 100%</text></g>' +
-      nodes +
+      nodes + pulse +
       '<g class="flow-strike" data-tip="Strike node: ' + tradeLabel + '">' +
       '<line x1="270" y1="110" x2="330" y2="110" stroke="' + (ready ? "#22c55e" : "#64748b") + '" stroke-width="2"/>' +
       '<rect x="330" y="92" width="68" height="36" rx="8" fill="#0f172a" stroke="#334155"/>' +
@@ -105,7 +145,7 @@
 
   // Chart modal: dark slate, bullish #FFFFFF, bearish #F43F5E, VWAP #F59E0B.
   // Draws only the candles it is given; never calls setData on live ticks.
-  function drawChart(canvas, candles, vwap) {
+  function drawChart(canvas, candles, vwap, levels) {
     var ctx = canvas.getContext("2d");
     var w = canvas.width, h = canvas.height;
     ctx.fillStyle = "#0f172a";
@@ -132,17 +172,36 @@
       ctx.strokeStyle = "#F59E0B";
       ctx.beginPath(); ctx.moveTo(0, y(vwap)); ctx.lineTo(w, y(vwap)); ctx.stroke();
     }
+    // Trade-specific levels: right-axis rupee tags. Drawn only when the trade has them.
+    var lv = levels || {};
+    var tags = [
+      ["entry", "ENTRY", "#38BDF8"], ["sl", "SMALL SL", "#F43F5E"], ["trail", "TRAILING SL", "#10B981"],
+      ["t1", "T1", "#22C55E"], ["t2", "T2", "#A855F7"], ["exit", "EXIT", "#F59E0B"]
+    ];
+    tags.forEach(function (tg) {
+      var v = lv[tg[0]];
+      if (v == null || isNaN(Number(v))) return;
+      ctx.strokeStyle = tg[2];
+      ctx.beginPath(); ctx.moveTo(0, y(v)); ctx.lineTo(w, y(v)); ctx.stroke();
+      ctx.fillStyle = tg[2];
+      ctx.fillText(tg[1] + " ₹" + Number(v).toFixed(2), w - 130, y(v) - 4);
+    });
   }
 
-  function openChart(symbol) {
+  // openChartModal(symbol, frozen): a frozen shot (completed trade) draws its saved
+  // candles and levels; otherwise the live payload candles for that symbol.
+  function openChartModal(symbol, frozen) {
     var snap = lastPayload || {};
+    var candles = frozen ? frozen.candles : (snap.candles || []);
+    var levels = frozen ? frozen.levels : null;
     var modal = document.createElement("div");
     modal.className = "desk-modal";
     modal.innerHTML = '<div class="desk-modal-box"><div class="desk-modal-head">' +
-      esc(symbol) + ' · 5m <button class="desk-modal-close">✕</button></div>' +
+      esc(symbol) + (frozen ? " · saved shot" : " · 5m live") +
+      ' <button class="desk-modal-close">✕</button></div>' +
       '<canvas width="720" height="360"></canvas></div>';
     document.body.appendChild(modal);
-    drawChart(modal.querySelector("canvas"), snap.candles || [], snap.vwap);
+    drawChart(modal.querySelector("canvas"), candles, snap.vwap, levels);
     modal.addEventListener("click", function (e) {
       if (e.target === modal || e.target.classList.contains("desk-modal-close")) modal.remove();
     });
@@ -150,8 +209,16 @@
 
   document.addEventListener("click", function (event) {
     var chart = event.target && event.target.closest && event.target.closest(".desk-chart-btn");
-    if (chart) openChart(chart.getAttribute("data-symbol") || "NIFTY");
+    if (chart) openChartModal(chart.getAttribute("data-symbol") || "NIFTY", null);
+    var shot = event.target && event.target.closest && event.target.closest(".desk-shot-btn");
+    if (shot) openChartModal("saved", loadShots()[shot.getAttribute("data-shot")] || null);
   });
+
+  // Called when a trade reaches ✅ TRADE DONE: freeze its candles and levels.
+  function onTradeDone(sid, trade) {
+    saveShot(sid, trade, (lastPayload && lastPayload.candles) || []);
+  }
+  window.kronosDeskTradeDone = onTradeDone;
 
   function render(payload) {
     var host = document.getElementById("deskFlowPanel");
