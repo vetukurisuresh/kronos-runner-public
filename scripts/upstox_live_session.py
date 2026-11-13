@@ -2331,10 +2331,20 @@ def main(argv: list[str] | None = None) -> int:
                     bars_5m=[{"o": float(getattr(b, "open", 0.0)), "c": float(getattr(b, "close", 0.0))}
                              for b in (spot_bars or [])[-20:]],
                 )
+                vel = window.spot_velocity()
+                if abs(vel) < 0.01 and spot_bars:
+                    # Sub-second ticks can coalesce into one sample per cycle, so
+                    # fall back to the forming 1m bar's own slope.
+                    bar = spot_bars[-1]
+                    try:
+                        elapsed = max(1.0, (now_ist_dt - bar.start).total_seconds()) if getattr(bar, "start", None) else 60.0
+                    except Exception:  # noqa: BLE001
+                        elapsed = 60.0
+                    vel = round((float(getattr(bar, "close", 0.0)) - float(getattr(bar, "open", 0.0))) / elapsed, 3)
                 _INTRA_MODES[name] = {
                     "mode": mode_now.get("mode"),
                     "mode_side": mode_now.get("side"),
-                    "spot_velocity_pts_per_sec": window.spot_velocity(),
+                    "spot_velocity_pts_per_sec": vel,
                     "option_velocity_inr_per_sec": window.option_velocity(),
                     "mode_reason": mode_now.get("reason"),
                     "ticks": len(window.rows),
