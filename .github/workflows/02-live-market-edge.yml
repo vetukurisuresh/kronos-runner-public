@@ -65,6 +65,24 @@ jobs:
           test -f brain/scripts/upstox_live_session.py || { echo "private checkout missing entrypoint"; exit 1; }
           echo "private brain checkout OK: $(git -C brain rev-parse --short HEAD)"
 
+      - name: Generate Fresh Upstox Token
+        working-directory: brain
+        env:
+          UPSTOX_API_KEY: ${{ secrets.UPSTOX_API_KEY }}
+          UPSTOX_API_SECRET: ${{ secrets.UPSTOX_API_SECRET }}
+          UPSTOX_MOBILE: ${{ secrets.UPSTOX_MOBILE }}
+          UPSTOX_PIN: ${{ secrets.UPSTOX_PIN }}
+          UPSTOX_TOTP_SECRET: ${{ secrets.UPSTOX_TOTP_SECRET }}
+          UPSTOX_REDIRECT_URI: ${{ secrets.UPSTOX_REDIRECT_URI }}
+        run: |
+          set -euo pipefail
+          python -c "import pyotp" 2>/dev/null || python -m pip install pyotp
+          python scripts/auto_upstox_morning_login.py --require || true
+          TOKEN=$(python -c "import json;print(json.load(open('state/upstox_token.json'))['access_token'])")
+          test -n "$TOKEN"
+          echo "::add-mask::$TOKEN"
+          echo "UPSTOX_ACCESS_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+
       - name: Install cloudflared
         run: |
           curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64             -o /usr/local/bin/cloudflared
