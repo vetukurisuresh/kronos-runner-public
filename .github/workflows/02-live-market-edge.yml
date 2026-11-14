@@ -1,9 +1,16 @@
-name: 02 Live Market Edge (08:32 IST + 12:35 overlap handoff)
+name: 02 Live Market Edge (public bridge)
 
-# 08:32 IST = 03:02 UTC.  The second schedule is 12:40 IST = 07:10 UTC.
-# The runner owns the SSE server and Cloudflare Quick Tunnel, so the user's PC
-# never has to be awake.  Shift 1 runs 248 minutes; shift 2 takes the close.
+# Runs the PRIVATE kronos-trading-brain code on this PUBLIC repo's runner.
+# Public-repo Actions minutes are free/unlimited; the private repo now holds
+# zero schedules so its 2000-minute quota is never touched again.
+# Source code is fetched at runtime with a PAT and is never committed here.
+
 on:
+  schedule:
+    - cron: "02 3 * * 1-5"    # 08:32 IST shift 1
+    - cron: "35 3 * * 1-5"    # 09:05 IST backup
+    - cron: "46 3 * * 1-5"    # 09:16 IST backup
+    - cron: "05 7 * * 1-5"    # 12:35 IST shift 2 handoff
   workflow_dispatch:
     inputs:
       shift:
@@ -13,193 +20,65 @@ on:
         type: choice
         options: [shift-1, shift-2]
       dry_run:
-        description: "Validate dependencies and token without starting the stream"
+        description: "Validate dependencies without streaming"
         required: false
         default: false
         type: boolean
 
 permissions:
-  contents: write
+  contents: read
+
+timeout-minutes: 420
 
 concurrency:
-  # Shift 2 must start while Shift 1 is still streaming. A shared group would
-  # queue it until Shift 1 exits and destroy the zero-gap overlap.
-  group: kronos-live-edge-${{ github.event.schedule || github.event.inputs.shift || 'manual' }}
-  cancel-in-progress: false
-
-env:
-  TZ: Asia/Kolkata
-  PYTHONUNBUFFERED: "1"
-  KRONOS_MODE: paper
-  UPSTOX_ACCESS_TOKEN: ${{ secrets.UPSTOX_ACCESS_TOKEN }}
-  UPSTOX_API_KEY: ${{ secrets.UPSTOX_API_KEY }}
-  UPSTOX_API_SECRET: ${{ secrets.UPSTOX_API_SECRET }}
-  UPSTOX_MOBILE: ${{ secrets.UPSTOX_MOBILE }}
-  UPSTOX_PIN: ${{ secrets.UPSTOX_PIN }}
-  UPSTOX_TOTP_SECRET: ${{ secrets.UPSTOX_TOTP_SECRET }}
-  UPSTOX_MOBILE_REDIRECT_URI: ${{ vars.UPSTOX_MOBILE_REDIRECT_URI }}
-  SECRET_PAT: ${{ secrets.SECRET_PAT }}
-  FIREBASE_CREDENTIALS_JSON: ${{ secrets.FIREBASE_CREDENTIALS_JSON }}
-  FIREBASE_DB_URL: ${{ secrets.FIREBASE_DB_URL }}
-  GITHUB_REPOSITORY: ${{ github.repository }}
+  # Separate groups per shift so shift 2 can overlap shift 1 (zero-gap relay).
+  group: kronos-public-edge-${{ github.event.schedule || github.event.inputs.shift || 'manual' }}
+  cancel-in-progress: true
 
 jobs:
-  guard:
-    name: IST session gate
+  live-edge:
     runs-on: ubuntu-latest
-    timeout-minutes: 2
-    outputs:
-      run: ${{ steps.window.outputs.run }}
+    timeout-minutes: 420
     steps:
-      - name: Evaluate the market window
-        id: window
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          DRY_RUN: ${{ inputs.dry_run }}
-        run: |
-          python - <<'PY'
-          import os
-          from datetime import datetime, time
-          from pathlib import Path
-          from zoneinfo import ZoneInfo
-
-          now = datetime.now(ZoneInfo("Asia/Kolkata"))
-          active = now.weekday() < 5 and time(8, 30) <= now.time() <= time(15, 30)
-          dry_run = os.environ.get("DRY_RUN", "").lower() == "true"
-          print(f"IST now={now.isoformat(timespec='seconds')} in_session={active} dry_run={dry_run}")
-
-          if not active and not dry_run:
-              if os.environ.get("EVENT_NAME") == "schedule":
-                  print("Scheduled edge arrived outside 08:30-15:30 IST - clean no-op; no orders placed.")
-                  Path(os.environ["GITHUB_OUTPUT"]).write_text("run=false\n", encoding="utf-8")
-                  raise SystemExit(0)
-              raise SystemExit("Outside the 08:30-15:30 IST session window - refusing to start live edge.")
-
-          Path(os.environ["GITHUB_OUTPUT"]).write_text("run=true\n", encoding="utf-8")
-          PY
-
-  edge:
-    name: Zero-lag edge relay
-    needs: guard
-    if: needs.guard.outputs.run == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 300
-    steps:
-      - name: Checkout
+      - name: Checkout public repo
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Checkout Private Brain Repo
+        uses: actions/checkout@v4
+        with:
+          repository: vetukurisuresh/kronos-trading-brain
+          token: ${{ secrets.GH_PAT || secrets.SECRET_PAT }}
+          path: brain
+
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.11"
           cache: pip
 
-      - name: Install runtime dependencies
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests websocket-client protobuf numpy pandas google-auth google-auth-httplib2 pyotp playwright pynacl python-dotenv
-          python -m playwright install --with-deps chromium
+          if [ -f brain/requirements.txt ]; then pip install -r brain/requirements.txt; fi
 
-      - name: Verify 100-way and CE/PE contracts on the runner
+      - name: Verify private checkout
         run: |
-          set -euo pipefail
-          python -m pip install pytest
-          python -m pytest -q tests/test_cloud_100way_selection.py tests/test_four_angle_autonomous_engine.py tests/test_today_full_lifecycle_audit.py tests/test_live_session_helpers.py tests/test_quorum_intra_candle_proof.py
+          test -f brain/scripts/upstox_live_session.py || { echo "private checkout missing entrypoint"; exit 1; }
+          echo "private brain checkout OK: $(git -C brain rev-parse --short HEAD)"
 
-      - name: Install cloudflared
-        if: ${{ inputs.dry_run != true }}
+      - name: Run Live Edge
+        env:
+          UPSTOX_API_KEY: ${{ secrets.UPSTOX_API_KEY }}
+          UPSTOX_API_SECRET: ${{ secrets.UPSTOX_API_SECRET }}
+          UPSTOX_ACCESS_TOKEN: ${{ secrets.UPSTOX_ACCESS_TOKEN }}
+          UPSTOX_REDIRECT_URI: ${{ secrets.UPSTOX_REDIRECT_URI }}
+          UPSTOX_MOBILE: ${{ secrets.UPSTOX_MOBILE }}
+          UPSTOX_PIN: ${{ secrets.UPSTOX_PIN }}
+          UPSTOX_TOTP_SECRET: ${{ secrets.UPSTOX_TOTP_SECRET }}
+          FIREBASE_CREDENTIALS_JSON: ${{ secrets.FIREBASE_CREDENTIALS_JSON }}
+          FIREBASE_DB_URL: ${{ secrets.FIREBASE_DB_URL }}
+          KRONOS_RUNNER: public-bridge
+          PYTHONUNBUFFERED: "1"
         run: |
-          set -euo pipefail
-          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
-            -o /usr/local/bin/cloudflared
-          chmod +x /usr/local/bin/cloudflared
-          cloudflared --version
-
-      - name: Verify or refresh morning token
-        run: |
-          set -euo pipefail
-          if python - <<'PY'
-          import os, sys
-          sys.path.insert(0, ".")
-          from market.upstox_health import verify_token
-          token = os.environ.get("UPSTOX_ACCESS_TOKEN", "")
-          probe = verify_token(token) if token else {"ok": False, "status": None}
-          print(f"token profile HTTP {probe.get('status')} ok={probe.get('ok')}")
-          raise SystemExit(0 if probe.get("ok") else 1)
-          PY
-          then
-            echo "morning token verified"
-          else
-            echo "token unavailable/expired; running headless fallback login"
-            python scripts/auto_upstox_morning_login.py --require --push-secret
-          fi
-
-      - name: Publish WARMING readiness
-        run: |
-          python - <<'PY'
-          import json, time
-          from datetime import datetime, timedelta, timezone
-          from pathlib import Path
-          IST = timezone(timedelta(hours=5, minutes=30))
-          p = Path("state/autopilot_readiness.json")
-          p.parent.mkdir(parents=True, exist_ok=True)
-          p.write_text(json.dumps({
-              "status": "WARMING_0840",
-              "runner": {"online": True, "heartbeat_epoch": time.time(), "host": "github-actions"},
-              "target_ist": "08:40:00",
-              "started_at_ist": datetime.now(tz=IST).isoformat(timespec="seconds"),
-              "updated_epoch": time.time(),
-          }, indent=1), encoding="utf-8")
-          print(p.read_text())
-          PY
-
-      - name: Run runner-hosted Upstox edge
-        if: ${{ inputs.dry_run != true }}
-        run: |
-          set -euo pipefail
-          MINUTES=250
-          if [ "${{ github.event.schedule }}" = "05 7 * * 1-5" ] || [ "${{ github.event.inputs.shift }}" = "shift-2" ]; then
-            MINUTES=170
-            export KRONOS_SHIFT="shift-2"
-          else
-            export KRONOS_SHIFT="shift-1"
-          fi
-          echo "edge shift minutes=${MINUTES}"
-          # Keepalive guard: a transient websocket/tunnel crash must not leave a
-          # gap until the next scheduled shift. Restart only while this shift's
-          # own deadline has time left, never beyond the job timeout.
-          START_EPOCH=$(date +%s)
-          DEADLINE_EPOCH=$((START_EPOCH + MINUTES * 60))
-          ATTEMPT=0
-          while [ "$(date +%s)" -lt "${DEADLINE_EPOCH}" ]; do
-            ATTEMPT=$((ATTEMPT + 1))
-            REMAIN_MINUTES=$(( (DEADLINE_EPOCH - $(date +%s)) / 60 ))
-            if [ "${REMAIN_MINUTES}" -lt 1 ]; then REMAIN_MINUTES=1; fi
-            echo "edge attempt=${ATTEMPT} remaining_minutes=${REMAIN_MINUTES}"
-            if python scripts/upstox_live_session.py --edge --minutes "${REMAIN_MINUTES}"; then
-              echo "edge stream completed cleanly on attempt ${ATTEMPT}"
-              exit 0
-            fi
-            echo "edge stream exited non-zero; watchdog restarting in 1s" >&2
-            sleep 1
-          done
-          echo "edge stream exhausted its shift without a clean exit" >&2
-          exit 1
-
-      - name: Dry-run validation
-        if: ${{ inputs.dry_run == true }}
-        run: |
-          echo "Dry run passed: dependencies and the verified access token are wired."
-          echo "The edge stream and Cloudflare tunnel were intentionally not started."
-
-      - name: Upload edge evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: kronos-edge-${{ github.run_id }}
-          path: |
-            state/autopilot_readiness.json
-            state/logs/
-            state/live_feed.json
-          if-no-files-found: ignore
-          retention-days: 7
+          cd brain
+          python scripts/upstox_live_session.py
