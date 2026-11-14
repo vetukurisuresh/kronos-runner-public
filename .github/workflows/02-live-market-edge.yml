@@ -6,11 +6,6 @@ name: 02 Live Market Edge (public bridge)
 # Source code is fetched at runtime with a PAT and is never committed here.
 
 on:
-  schedule:
-    - cron: "02 3 * * 1-5"    # 08:32 IST shift 1
-    - cron: "35 3 * * 1-5"    # 09:05 IST backup
-    - cron: "46 3 * * 1-5"    # 09:16 IST backup
-    - cron: "05 7 * * 1-5"    # 12:35 IST shift 2 handoff
   workflow_dispatch:
     inputs:
       shift:
