@@ -28,7 +28,6 @@ on:
 permissions:
   contents: read
 
-timeout-minutes: 420
 
 concurrency:
   # Separate groups per shift so shift 2 can overlap shift 1 (zero-gap relay).
@@ -47,7 +46,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: vetukurisuresh/kronos-trading-brain
-          token: ${{ secrets.GH_PAT || secrets.SECRET_PAT }}
+          token: ${{ secrets.SECRET_PAT }}
           path: brain
 
       - name: Setup Python
