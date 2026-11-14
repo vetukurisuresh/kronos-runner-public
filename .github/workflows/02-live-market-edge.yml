@@ -77,6 +77,8 @@ jobs:
         run: |
           set -euo pipefail
           python -c "import pyotp" 2>/dev/null || python -m pip install pyotp
+          python -c "import playwright" 2>/dev/null || python -m pip install playwright
+          python -m playwright install --with-deps chromium
           python scripts/auto_upstox_morning_login.py --require || true
           TOKEN=$(python -c "import json;print(json.load(open('state/upstox_token.json'))['access_token'])")
           test -n "$TOKEN"
